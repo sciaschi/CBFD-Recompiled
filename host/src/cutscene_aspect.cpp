@@ -79,6 +79,10 @@ namespace {
 
 void conker::cutscene_aspect::update(uint8_t* rdram) {
 #if defined(CONKER_RT64)
+    if (!conker::graphics_config_ready()) {
+        pillarbox = false;
+        return;
+    }
     const auto chosen = static_cast<ultramodern::renderer::AspectRatio>(std::get<uint32_t>(
         recompui::config::get_graphics_config().get_option_value(recompui::config::graphics::options::ar_option)));
     pillarbox = conker::cutscene_aspect::in_4x3() && chosen != ultramodern::renderer::AspectRatio::Original &&

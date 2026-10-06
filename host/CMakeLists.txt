@@ -216,3 +216,9 @@ elseif (WIN32)
     # functions must not be folded into one.
     target_link_options(ConkerRecomp PRIVATE /OPT:NOICF)
 endif()
+if (APPLE)
+    # Mods patch the recompiled functions' machine code, which needs __TEXT's maximum protection
+    # to allow writing; Apple's linker caps it at r-x, so a wrapper raises it after linking
+    # (host/macos/ld64; without it macOS killed the game as soon as a mod was enabled, issue #81).
+    target_link_options(ConkerRecomp PRIVATE "-fuse-ld=${CMAKE_CURRENT_SOURCE_DIR}/macos/ld64")
+endif()

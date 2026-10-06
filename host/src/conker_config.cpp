@@ -1,5 +1,6 @@
 // The settings menu (recompui's config tabs) for the RT64 build.
 
+#include <stdexcept>
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -134,12 +135,33 @@ void conker::init_config() {
     recompui::config::finalize();
 }
 
+bool conker::graphics_config_ready() {
+    // Not with --headless, which makes no menus: the game still asks for these every frame, and
+    // reading them threw ("Graphics config has not been created yet").
+    static bool ready = false;
+    if (!ready) {
+        try {
+            (void)recompui::config::get_graphics_config();
+            ready = true;
+        }
+        catch (const std::exception&) {
+        }
+    }
+    return ready;
+}
+
 bool conker::cutscene_aspect::in_4x3() {
+    if (!conker::graphics_config_ready()) {
+        return false;
+    }
     const auto value = recompui::config::get_graphics_config().get_option_value(cutscene_aspect_id);
     return static_cast<CutsceneAspect>(std::get<uint32_t>(value)) == CutsceneAspect::Original;
 }
 
 bool conker::overscan_borders::hidden() {
+    if (!conker::graphics_config_ready()) {
+        return true;
+    }
     const auto value = recompui::config::get_graphics_config().get_option_value(overscan_borders_id);
     return static_cast<OverscanBorders>(std::get<uint32_t>(value)) == OverscanBorders::Hidden;
 }
@@ -153,6 +175,9 @@ bool conker::model_detail::always_highest() {
 }
 
 bool conker::fps_counter::enabled() {
+    if (!conker::graphics_config_ready()) {
+        return false;
+    }
     const auto value = recompui::config::get_graphics_config().get_option_value(show_fps_id);
     return static_cast<ShowFps>(std::get<uint32_t>(value)) == ShowFps::On;
 }

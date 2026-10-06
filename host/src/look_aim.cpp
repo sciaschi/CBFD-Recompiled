@@ -29,6 +29,8 @@
 #include <cstring>
 #include <deque>
 #include <mutex>
+#include <stdexcept>
+#include <type_traits>
 
 #include "recomp.h"
 
@@ -117,8 +119,31 @@ namespace {
     enum class Toggle : uint32_t { On, Off };
     enum class Invert : uint32_t { None, X, Y, Both };
 
+    // Whether the General tab's settings exist: not with --headless, which makes no menus, though
+    // the game still asks for the camera's settings (its field of view every frame). Reading them
+    // then threw, and the headless run aborted ("General config has not been created yet").
+    bool general_ready() {
+        static bool ready = false;
+        if (!ready) {
+            try {
+                (void)recompui::config::get_general_config();
+                ready = true;
+            }
+            catch (const std::exception&) {
+            }
+        }
+        return ready;
+    }
+
+    // An enum setting, or its first value without the General tab (Off for a toggle).
     template <typename T>
     T option(const std::string& id) {
+        if (!general_ready()) {
+            if constexpr (std::is_same_v<T, Toggle>) {
+                return Toggle::Off;
+            }
+            return T{};
+        }
         return static_cast<T>(std::get<uint32_t>(recompui::config::get_general_config().get_option_value(id)));
     }
 
@@ -259,6 +284,10 @@ bool conker::look_aim::stick_free_camera() {
 }
 
 float conker::look_aim::camera_field_of_view() {
+    // None without the General tab: the game's own field of view (field_of_view.cpp).
+    if (!general_ready()) {
+        return 0.0f;
+    }
     return (float)std::get<double>(recompui::config::get_general_config().get_option_value(options::camera_fov));
 }
 
@@ -324,6 +353,9 @@ extern "C" void conker_camera_turn_invert(uint8_t* rdram, recomp_context* ctx) {
 
 #if defined(CONKER_RT64)
 float conker::look_aim::camera_turn_speed() {
+    if (!general_ready()) {
+        return 1.0f;
+    }
     return (float)(std::get<double>(recompui::config::get_general_config().get_option_value(options::camera_turn_speed)) / 100.0);
 }
 #endif
