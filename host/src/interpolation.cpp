@@ -16,6 +16,10 @@
 // frame and drawn with the shadow's texture projected onto it: its own group asks RT64
 // to interpolate its texture coordinates from last frame's projection (rt64.patch),
 // so the shadow slides with the character instead of stepping at the game's rate.
+// The silhouette in the shadow's texture is drawn from a camera the game aims at the character
+// anew every frame, its distance and zoom changing together; RT64 interpolates that camera whole
+// (rt64.patch, ProjectionProcessor), as taken apart and put together halfway it drew the shadow
+// larger (issue #76).
 
 #include <cstdint>
 

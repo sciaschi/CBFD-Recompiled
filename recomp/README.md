@@ -361,6 +361,21 @@ coordinates, by least squares) and takes each vertex's coordinates last frame
 from it, if the fit is close, covers the texture and moves no vertex more than
 a quarter of the texture.
 
+The shadow's texture is a silhouette the game draws first, into a 64 by 64
+8-bit image (0x800DE080), with a camera it aims at the character from the light
+anew every frame, moving it nearer or further and zooming to match (standing
+still, its distance and zoom both doubled between two frames, the silhouette the
+same size in each). Its view matrix is scaled and skewed, not a rotation: RT64
+interpolated it as a camera, taken apart into position, rotation and scale and
+put together halfway, and the shadow was drawn larger on the frames between
+(issue #76; only at more than 30 fps). A scene drawn into a 64 pixel wide 8-bit
+image has its camera interpolated whole instead (`ProjectionProcessor`): each
+frame's view and projection together, scaled so the place it's aimed at
+(halfway between its near and far planes) is at w = 1, then blended. The
+silhouette's points on the texture then move as the texture coordinates on the
+ground do. Drawing the silhouettes uninterpolated stopped the expanding but
+didn't match the interpolated coordinates, and the shadow shook.
+
 Texture packs named for Rice (issue #63): GLideN64 and Rice Video name each
 replacement by its texture's Rice hash (`<name>#<crc>#<format>#<size>[#<palette
 crc>]_all.png`), which RT64 can only use through an `rt64.json` pairing it with

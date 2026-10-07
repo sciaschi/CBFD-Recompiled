@@ -2147,7 +2147,7 @@ index 9fae0d4..c6b1bf0 100644
                          bool usesViewport = (proj.type == Projection::Type::Perspective) || (proj.type == Projection::Type::Orthographic);
                          if (usesViewport) {
 diff --git a/src/render/rt64_projection_processor.cpp b/src/render/rt64_projection_processor.cpp
-index e842dcc..c0e4b44 100644
+index e842dcc..1a8a0b9 100644
 --- a/src/render/rt64_projection_processor.cpp
 +++ b/src/render/rt64_projection_processor.cpp
 @@ -4,6 +4,7 @@
@@ -2158,7 +2158,32 @@ index e842dcc..c0e4b44 100644
  #include "common/rt64_math.h"
  #include "hle/rt64_workload_queue.h"
  
-@@ -92,13 +93,26 @@ namespace RT64 {
+@@ -14,7 +15,23 @@ namespace RT64 {
+         matrix[2][0] *= aspectRatioScale;
+         matrix[3][0] *= aspectRatioScale;
+     }
+-    
++
++    // How far ahead a perspective projection's camera is aimed: halfway between its near and far planes. Conker's Bad
++    // Fur Day aims each shadow's silhouette camera at the character, its planes just around it. With row vectors, w
++    // is the depth ahead (m[2][3] = -1) and z = m[2][2] * z + m[3][2] is -w at the near plane and w at the far one.
++    inline bool aimedDepth(const interop::float4x4 &m, float &depth) {
++        const float a = m[2][2];
++        const float b = m[3][2];
++        if ((m[2][3] != -1.0f) || (fabsf(a - 1.0f) < 1e-6f) || (fabsf(a + 1.0f) < 1e-6f)) {
++            return false;
++        }
++
++        const float nearDepth = b / (a - 1.0f);
++        const float farDepth = b / (a + 1.0f);
++        depth = 0.5f * (nearDepth + farDepth);
++        return std::isfinite(depth) && (nearDepth > 0.0f) && (farDepth > nearDepth);
++    }
++
+     // ProjectionProcessor
+ 
+     ProjectionProcessor::ProjectionProcessor() { }
+@@ -92,13 +109,26 @@ namespace RT64 {
                  }
  
                  if (!intersectionRect.isEmpty()) {
@@ -2186,7 +2211,7 @@ index e842dcc..c0e4b44 100644
              interop::float4x4 &viewMatrix = drawData.modViewTransforms[proj.transformsIndex];
              interop::float4x4 &projMatrix = drawData.modProjTransforms[proj.transformsIndex];
              interop::float4x4 &viewProjMatrix = drawData.modViewProjTransforms[proj.transformsIndex];
-@@ -121,8 +135,20 @@ namespace RT64 {
+@@ -121,8 +151,20 @@ namespace RT64 {
                  const interop::float4x4 curProjTransform = projMatrix;
                  interop::float4x4 adjustedPrevProj = *prevProjMatrix;
                  adjustProjectionMatrix(adjustedPrevProj, projRatioScale);
@@ -2209,6 +2234,38 @@ index e842dcc..c0e4b44 100644
  
                  // We only interpolate the projection if the view matrix has been interpolated.
                  const bool interpolateProjection = rigidBody->lerpTranslation || rigidBody->lerpRotation;
+@@ -144,6 +186,31 @@ namespace RT64 {
+ 
+             interop::float4x4 &prevViewProjTransform = drawData.prevViewProjTransforms[proj.transformsIndex];
+             prevViewProjTransform = hlslpp::mul(prevViewTransform, prevProjTransform);
++
++            // A shadow's silhouette (Conker's Bad Fur Day draws each into a 64 pixel wide 8-bit image, 0x800DE080, then
++            // lays it on the ground under the character as a texture): its camera is interpolated whole, each frame's
++            // scaled first so the place it's aimed at is at w = 1 (issue #76). The game aims the camera at the
++            // character anew every frame, from the light, and moves it nearer or further, zooming to match: standing
++            // still, its distance and zoom both doubled from one frame to the next, the silhouette the same size in
++            // both. View and projection interpolated apart, halfway each, were a camera neither frame had, and the
++            // shadow was drawn larger on the frames drawn in between. Scaled so, the cameras interpolate as the
++            // silhouette's points on the texture do near the character, as the shadow's texture coordinates on the
++            // ground are (GameFrame::matchTransform), and the two stay together.
++            const bool shadowSilhouette = (fbPair.colorImage.width == 64) && (fbPair.colorImage.siz == G_IM_SIZ_8b) && (proj.type == Projection::Type::Perspective);
++            if (shadowSilhouette && (prevProjMatrix != nullptr) && (prevViewMatrix != nullptr) && (rigidBody != nullptr) && (rigidBody->lerpTranslation || rigidBody->lerpRotation)) {
++                interop::float4x4 adjustedPrevProj = *prevProjMatrix;
++                adjustProjectionMatrix(adjustedPrevProj, projRatioScale);
++                const interop::float4x4 curProjTransform = drawData.projTransforms[proj.transformsIndex];
++                float prevDepth = 0.0f, curDepth = 0.0f;
++                if (aimedDepth(adjustedPrevProj, prevDepth) && aimedDepth(curProjTransform, curDepth)) {
++                    interop::float4x4 adjustedCurProj = curProjTransform;
++                    adjustProjectionMatrix(adjustedCurProj, projRatioScale);
++                    const interop::float4x4 prevAimed = hlslpp::mul(*prevViewMatrix, adjustedPrevProj) * (1.0f / prevDepth);
++                    const interop::float4x4 curAimed = hlslpp::mul(drawData.viewTransforms[proj.transformsIndex], adjustedCurProj) * (1.0f / curDepth);
++                    viewProjMatrix = lerpMatrix(prevAimed, curAimed, p.curFrameWeight);
++                    prevViewProjTransform = lerpMatrix(prevAimed, curAimed, p.prevFrameWeight);
++                }
++            }
+         }
+     }
+ 
 diff --git a/src/render/rt64_texture_cache.cpp b/src/render/rt64_texture_cache.cpp
 index 0848f3e..a153536 100644
 --- a/src/render/rt64_texture_cache.cpp
