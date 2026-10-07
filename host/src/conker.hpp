@@ -90,12 +90,9 @@ namespace conker {
 
     // pad_mappings.cpp: C-buttons SDL maps as face buttons made the right stick (issue #28).
     namespace pad_mappings {
-        // Rewrites the mapping of each such controller connected.
+        // Rewrites the mapping of each such controller connected. From the main thread only: at start,
+        // and from SDL's event watch as a controller connects (it lists SDL's devices, issue #88).
         void fix_all();
-        // From SDL's event watch: a controller was connected (fixed at the next update).
-        void on_device_added();
-        // Every VI: fixes the controllers connected since the last one.
-        void update();
     }
 
     // texture_packs.cpp: RT64 texture packs (issue #63).

@@ -68,15 +68,77 @@ namespace {
         SDL_free(mapping);
     }
 
-    // Watches controllers connecting: each is printed, and its C-buttons remapped if they need it
-    // (pad_mappings.cpp).
+    // The controllers connected, each opened here too (SDL counts its opens, so recompinput's own
+    // stays as it is), by instance ID. Only the main thread changes this, as SDL announces a
+    // controller connecting or disconnecting (watch_controllers) and at start (create_gfx); the
+    // other threads read it (get_port_controllers), so none of them asks SDL for its devices.
+    //
+    // Issue #88: macOS crashed when a controller connected while playing. The Mac build's SDL2 is
+    // sdl2-compat, SDL2's functions over SDL3, and it keeps one list of devices for the index-based
+    // calls: SDL_NumJoysticks frees it and fetches it again, without a lock around the two. As a
+    // DualSense connected, sdl2-compat refreshed it on the main thread for the event while the VI
+    // thread's rumble listed the controllers (SDL_NumJoysticks, for the port controllers), and the
+    // list was freed twice. Listing them only on the main thread, as SDL announces each, they're
+    // never listed at once. A controller's buttons, sticks and rumble are safe from any thread.
+    std::mutex open_controllers_mutex;
+    std::vector<std::pair<SDL_JoystickID, SDL_GameController*>> open_controllers;
+
+    // From the main thread: the controller at device index, if it's one SDL has a mapping for and
+    // it isn't in the list yet.
+    void open_controller(int index) {
+        if (!SDL_IsGameController(index)) {
+            return;
+        }
+        const SDL_JoystickID id = SDL_JoystickGetDeviceInstanceID(index);
+        {
+            std::lock_guard lock{ open_controllers_mutex };
+            for (const auto& [open_id, controller] : open_controllers) {
+                if (open_id == id) {
+                    return;
+                }
+            }
+        }
+        SDL_GameController* controller = SDL_GameControllerOpen(index);
+        if (controller == nullptr) {
+            std::printf("[controller] couldn't open device %d: %s\n", index, SDL_GetError());
+            return;
+        }
+        std::lock_guard lock{ open_controllers_mutex };
+        open_controllers.emplace_back(SDL_JoystickInstanceID(SDL_GameControllerGetJoystick(controller)), controller);
+    }
+
+    // From the main thread: the controller with that instance ID leaves the list.
+    void close_controller(SDL_JoystickID id) {
+        SDL_GameController* closing = nullptr;
+        {
+            std::lock_guard lock{ open_controllers_mutex };
+            for (auto it = open_controllers.begin(); it != open_controllers.end(); ++it) {
+                if (it->first == id) {
+                    closing = it->second;
+                    open_controllers.erase(it);
+                    break;
+                }
+            }
+        }
+        if (closing != nullptr) {
+            SDL_GameControllerClose(closing);
+        }
+    }
+
+    // Watches controllers connecting: each is printed, opened into the list above, and its C-buttons
+    // remapped if they need it (pad_mappings.cpp). SDL calls this on the thread that announces the
+    // device, the main one, as it pumps events, so the devices are listed there.
     int SDLCALL watch_controllers(void*, SDL_Event* event) {
         switch (event->type) {
         case SDL_JOYDEVICEADDED:
-            conker::pad_mappings::on_device_added();
+            conker::pad_mappings::fix_all();
             break;
         case SDL_CONTROLLERDEVICEADDED:
             print_controller(event->cdevice.which);
+            open_controller(event->cdevice.which);
+            break;
+        case SDL_CONTROLLERDEVICEREMOVED:
+            close_controller(event->cdevice.which);
             break;
         }
         std::fflush(stdout);
@@ -125,6 +187,7 @@ namespace {
         // The controllers connected at start were announced before the watch.
         for (int index = 0; index < SDL_NumJoysticks(); index++) {
             print_controller(index);
+            open_controller(index);
         }
         conker::pad_mappings::fix_all();
         // The file dialogs (Load ROM, mods). Only after SDL: on macOS, NFD_Init creates the
@@ -293,7 +356,6 @@ namespace {
 
 void conker::frontend::on_vi() {
     conker::rumble::update();
-    conker::pad_mappings::update();
 }
 
 // Controller ports. recompinput's single-player mode reports all four ports as plugged
@@ -328,18 +390,12 @@ namespace {
     // order. Returns how many hold ports; `connected` gets how many controllers are open.
     int get_port_controllers(std::array<SDL_GameController*, max_ports>& out, int* connected = nullptr) {
         std::lock_guard lock{ port_mutex };
-        // The controllers recompinput has opened.
+        // The controllers connected, from the main thread's list (open_controllers): this runs on
+        // the game's threads (input, rumble), where SDL's own device list isn't safe to read (#88).
         std::vector<std::pair<SDL_JoystickID, SDL_GameController*>> open;
-        int num_joysticks = SDL_NumJoysticks();
-        for (int i = 0; i < num_joysticks; i++) {
-            if (!SDL_IsGameController(i)) {
-                continue;
-            }
-            SDL_JoystickID id = SDL_JoystickGetDeviceInstanceID(i);
-            SDL_GameController* controller = SDL_GameControllerFromInstanceID(id);
-            if (controller != nullptr) {
-                open.emplace_back(id, controller);
-            }
+        {
+            std::lock_guard open_lock{ open_controllers_mutex };
+            open = open_controllers;
         }
         auto find_open = [&](SDL_JoystickID id) -> SDL_GameController* {
             for (const auto& [open_id, controller] : open) {
