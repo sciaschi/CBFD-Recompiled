@@ -434,6 +434,14 @@ func = "func_151D6418"
 before_vram = 0x151D66E8
 text = "{ extern void conker_frame_copy_end(uint8_t*, recomp_context*); conker_frame_copy_end(rdram, ctx); }"
 
+# Graphics: Conker's Detail: each game frame func_1502C6E8 picks every object's model by how far
+# it is from the camera; at 0x1502C92C the level is picked ($v1) and not yet compared with the
+# object's last, and Conker's is set to 0, his most detailed (host/src/model_detail.cpp).
+[[patches.hook]]
+func = "func_1502C6E8"
+before_vram = 0x1502C92C
+text = "{ extern void conker_model_detail(uint8_t*, recomp_context*); conker_model_detail(rdram, ctx); }"
+
 # Frame interpolation: each game object's drawing (func_1502CCFC) is wrapped in an
 # RT64 matrix group naming the object, so RT64 pairs its matrices with the same
 # object's last frame instead of guessing (host/src/interpolation.cpp).

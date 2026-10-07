@@ -462,6 +462,13 @@ Conker's hand below it, pitched up: in the distance they land 20% of the screen'
 height above the middle, where the reticle is (closer, a little lower).
 Overscan Borders, in the same tab, crops the N64's black border off each side
 of the picture (`widescreen.cpp`, with RT64's changes above).
+Conker's Detail (Always Highest by default) keeps Conker on his most detailed
+model (`model_detail.cpp`): every game frame `func_1502C6E8` picks each object's
+model by its distance from the camera (level 0 under 500 units, then further
+levels, one closer when nearly still) and stores the level at +0x1C8, so he
+flipped between levels 0, 1 and 2 as the camera pulled back and as he started and
+stopped walking; a hook sets the level to 0 for him before it's compared with his
+last. The multiplayer arenas (`D_800BE616`) keep the original's level 1.
 `patches/` holds the headers recompui includes for the
 game-side patch code that mods will use. `null_renderer.cpp` is used with
 `--headless`, and in a build configured with `-DCONKER_RT64=OFF` (no window, input

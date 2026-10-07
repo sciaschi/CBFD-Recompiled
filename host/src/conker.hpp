@@ -158,6 +158,12 @@ namespace conker {
         bool hidden();
     }
 
+    // Graphics: Conker's Detail (conker_config.cpp; the model is picked in model_detail.cpp).
+    namespace model_detail {
+        // Always Highest: Conker stays on his most detailed model in single player.
+        bool always_highest();
+    }
+
     // reticle.cpp: Aiming: Reticle, a ring in the middle of the screen while aiming (issue #74).
     namespace reticle {
         // look_aim.cpp: whether the setting is on.

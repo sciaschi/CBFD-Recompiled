@@ -21,6 +21,10 @@ namespace {
     // Overscan Borders (widescreen.cpp, RT64's presentation crop), on the Graphics tab.
     const std::string overscan_borders_id = "overscan_borders";
     enum class OverscanBorders : uint32_t { Hidden, Shown };
+    // Conker's Detail (model_detail.cpp, the model the game picks by the camera's distance), on the
+    // Graphics tab.
+    const std::string conker_detail_id = "conker_detail";
+    enum class ConkerDetail : uint32_t { AlwaysHighest, Original };
 
     void add_graphics_options(recomp::config::Config& config) {
         static const std::vector<recomp::config::ConfigOptionEnumOption> choices = {
@@ -60,6 +64,17 @@ namespace {
             "the same amount both ways so nothing is stretched (a sliver of the top and bottom goes with it). "
             "<recomp-color primary>Shown</recomp-color> shows the whole picture, border and all.",
             border_choices, OverscanBorders::Hidden);
+        static const std::vector<recomp::config::ConfigOptionEnumOption> detail_choices = {
+            {ConkerDetail::AlwaysHighest, "AlwaysHighest", "Always Highest"},
+            {ConkerDetail::Original, "Original", "Original"},
+        };
+        config.add_enum_option(conker_detail_id, "Conker's Detail",
+            "Characters have a few models, from the most detailed down, and the game picks one by how far the "
+            "camera is, and whether they're moving. "
+            "<recomp-color primary>Always Highest</recomp-color> keeps Conker on his most detailed model, so it no "
+            "longer swaps as the camera pulls back or as he starts and stops walking. Multiplayer is left as it was. "
+            "<recomp-color primary>Original</recomp-color> lets the game pick, as on the N64.",
+            detail_choices, ConkerDetail::AlwaysHighest);
     }
 
     void set_control_descriptions() {
@@ -127,6 +142,14 @@ bool conker::cutscene_aspect::in_4x3() {
 bool conker::overscan_borders::hidden() {
     const auto value = recompui::config::get_graphics_config().get_option_value(overscan_borders_id);
     return static_cast<OverscanBorders>(std::get<uint32_t>(value)) == OverscanBorders::Hidden;
+}
+
+bool conker::model_detail::always_highest() {
+    if (!conker::graphics_config_ready()) {
+        return true;
+    }
+    const auto value = recompui::config::get_graphics_config().get_option_value(conker_detail_id);
+    return static_cast<ConkerDetail>(std::get<uint32_t>(value)) == ConkerDetail::AlwaysHighest;
 }
 
 bool conker::fps_counter::enabled() {
