@@ -1999,7 +1999,7 @@ index 5a331aa..e6c0eae 100644
                      const bool resetTicks = !generateInterpolatedFrames || (originalRateForTicks != workload.viOriginalRate) || (displayRateForTicks != workloadConfig.targetRate) || !displayRateAboveOriginal;
                      if (resetTicks) {
 diff --git a/src/render/rt64_framebuffer_renderer.cpp b/src/render/rt64_framebuffer_renderer.cpp
-index 9fae0d4..8cac619 100644
+index 9fae0d4..c6b1bf0 100644
 --- a/src/render/rt64_framebuffer_renderer.cpp
 +++ b/src/render/rt64_framebuffer_renderer.cpp
 @@ -7,6 +7,7 @@
@@ -2010,7 +2010,37 @@ index 9fae0d4..8cac619 100644
  #include "common/rt64_math.h"
  #include "hle/rt64_color_converter.h"
  #include "gbi/rt64_f3d.h"
-@@ -1435,6 +1436,16 @@ namespace RT64 {
+@@ -599,8 +600,27 @@ namespace RT64 {
+             case InstanceDrawCall::Type::FillRect: {
+                 const auto &clearRect = drawCall.clearRect;
+                 RenderTarget *chosenTarget = (fbStorage->colorTarget != nullptr) ? fbStorage->colorTarget : fbStorage->depthTarget;
+-                bool rectCoversWholeTarget = (clearRect.rect.left == 0) && (clearRect.rect.top == 0) && (uint32_t(clearRect.rect.right) == chosenTarget->width) && (uint32_t(clearRect.rect.bottom) == chosenTarget->height);
+-                const RenderRect *clearRects = rectCoversWholeTarget ? nullptr : &clearRect.rect;
++
++                // The rect, clipped to the target. A fill rect (drawn as this clear) can reach past the target's
++                // sides: Conker's cutscene pillarbox bars reach past both sides of the window. A clear's rects must
++                // be inside the target (Vulkan's vkCmdClearAttachments makes anything else undefined), and
++                // drivers differ in what they do with one that isn't. On Windows (NVIDIA, D3D12 and Vulkan)
++                // it was clipped as wanted. On Linux, lavapipe moved a rect starting left of the target to
++                // its left edge but kept its width, so the left bar came out too wide by the part that was
++                // off screen; and on the Steam Deck (RADV) one starting left of it seems not to be cleared at all,
++                // so there was no left bar and the strip kept old frames' pictures (issue #82). The right
++                // bar, which starts inside, was right everywhere.
++                RenderRect clippedRect = clearRect.rect;
++                clippedRect.left = std::max(clippedRect.left, 0);
++                clippedRect.top = std::max(clippedRect.top, 0);
++                clippedRect.right = std::min(clippedRect.right, int32_t(chosenTarget->width));
++                clippedRect.bottom = std::min(clippedRect.bottom, int32_t(chosenTarget->height));
++                if ((clippedRect.right <= clippedRect.left) || (clippedRect.bottom <= clippedRect.top)) {
++                    break;
++                }
++
++                bool rectCoversWholeTarget = (clippedRect.left == 0) && (clippedRect.top == 0) && (uint32_t(clippedRect.right) == chosenTarget->width) && (uint32_t(clippedRect.bottom) == chosenTarget->height);
++                const RenderRect *clearRects = rectCoversWholeTarget ? nullptr : &clippedRect;
+                 uint32_t clearRectCount = rectCoversWholeTarget ? 0 : 1;
+                 if (fbStorage->colorTarget != nullptr) {
+                     worker->commandList->clearColor(0, clearRect.color, clearRects, clearRectCount);
+@@ -1435,6 +1455,16 @@ namespace RT64 {
          const float scissorRatio = static_cast<float>(fbPair.scissorRect.width(false, true)) / static_cast<float>(fbPair.scissorRect.height(false, true));
          const bool adjustRatio = (abs((scissorRatio / p.aspectRatioSource) - 1.0f) < SimilarityPercentage);
          const float aspectRatioScale = adjustRatio ? (p.aspectRatioTarget / p.aspectRatioSource) : 1.0f;
@@ -2027,7 +2057,7 @@ index 9fae0d4..8cac619 100644
          InstanceDrawCall instanceDrawCall;
          interop::RenderIndices renderIndices;
          uint32_t globalCallIndex = 0;
-@@ -1488,9 +1499,17 @@ namespace RT64 {
+@@ -1488,9 +1518,17 @@ namespace RT64 {
                  // The call's scissor spans the whole width of the framebuffer pair scissor. Custom origin must not be in use to be able to use the stretched viewport.
                  const auto &viewport = drawData.rspViewports[proj.transformsIndex];
                  FixedRect intersectionRect = proj.scissorRect.intersection(viewport.rect(viewportClipRatios));
@@ -2046,7 +2076,7 @@ index 9fae0d4..8cac619 100644
                  if (useWideViewport) {
                      projInvRatioScale = 1.0f;
                  }
-@@ -1625,6 +1644,7 @@ namespace RT64 {
+@@ -1625,6 +1663,7 @@ namespace RT64 {
  
                          float invRatioScale = 1.0f / aspectRatioScale;
                          float horizontalMisalignment = 0.0f;
@@ -2054,7 +2084,7 @@ index 9fae0d4..8cac619 100644
                          switch (proj.type) {
                          case Projection::Type::Perspective:
                          case Projection::Type::Orthographic: {
-@@ -1645,14 +1665,46 @@ namespace RT64 {
+@@ -1645,14 +1684,46 @@ namespace RT64 {
                              // The call's scissor spans the whole width of the framebuffer pair scissor. The rect must not be using extended origins.
                              const bool regularOrigins = (call.callDesc.rectLeftOrigin == G_EX_ORIGIN_NONE) && (call.callDesc.rectRightOrigin == G_EX_ORIGIN_NONE);
                              const bool coversScissorWidth = regularOrigins && (call.callDesc.rect.ulx <= fbPair.scissorRect.ulx) && (call.callDesc.rect.lrx >= fbPair.scissorRect.lrx);
@@ -2102,7 +2132,7 @@ index 9fae0d4..8cac619 100644
                              triangles.screenScale = { viewportRect.width / framebuffer.viewport.width, viewportRect.height / framebuffer.viewport.height };
                              triangles.screenOffset.x = halfPixelOffset.x + ((viewportRect.x + viewportRect.width / 2.0f) - halfViewportSize.x) / halfViewportSize.x;
                              triangles.screenOffset.y = halfPixelOffset.y + (halfViewportSize.y - (viewportRect.y + viewportRect.height / 2.0f)) / halfViewportSize.y;
-@@ -1676,7 +1728,12 @@ namespace RT64 {
+@@ -1676,7 +1747,12 @@ namespace RT64 {
                              break;
                          }
  

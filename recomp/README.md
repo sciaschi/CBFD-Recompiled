@@ -296,6 +296,15 @@ only a picture over the 4:3 frame, it showed as a thin blue line near the right
 edge. In widescreen that fill ends a pixel short, inside the frame
 (`conker_camera_background_fill`).
 
+A fill rectangle in fill mode is drawn as a clear of that part of the framebuffer
+(`FramebufferRenderer`, `InstanceDrawCall::Type::FillRect`). The clear's rectangle
+is now clipped to the framebuffer first. A clear outside it is undefined in Vulkan
+(`vkCmdClearAttachments`), and the cutscene pillarbox bars
+(`host/src/cutscene_aspect.cpp`) reach past both sides of the window. NVIDIA's
+drivers clipped it as wanted, but on the Steam Deck (RADV) the left bar, which
+starts left of the window, wasn't drawn: the picture showed widescreen on that
+side, and old frames stayed in the strip (issue #82).
+
 The game's 3D and its fill rectangles stop 2 pixels short of each side of its
 292-pixel frame (its camera scissor, and `func_1501A6CC` clamps its fills the
 same): a black border the N64 left for the TV's overscan, which showed down
