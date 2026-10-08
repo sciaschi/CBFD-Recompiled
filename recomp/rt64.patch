@@ -1353,7 +1353,7 @@ index 778e08b..f53d597 100644
          void updatePerspective(const hlslpp::float4x4 &prevTransform, const hlslpp::float4x4 &curTransform, uint8_t perspInterpolation);
  
 diff --git a/src/hle/rt64_rsp.cpp b/src/hle/rt64_rsp.cpp
-index 1da2550..ba78568 100644
+index 1da2550..c2c7517 100644
 --- a/src/hle/rt64_rsp.cpp
 +++ b/src/hle/rt64_rsp.cpp
 @@ -4,7 +4,9 @@
@@ -1615,7 +1615,30 @@ index 1da2550..ba78568 100644
          if (modelViewProjChanged) {
              computeModelViewProj();
              curTransformIndex = static_cast<uint16_t>(worldTransforms.size());
-@@ -841,7 +1063,12 @@ namespace RT64 {
+@@ -731,6 +953,22 @@ namespace RT64 {
+                 tcFloats.emplace_back((float)((double)((vertices[i].s) * TextureSc) / Divisor));
+                 tcFloats.emplace_back((float)((double)((vertices[i].t) * TextureTc) / Divisor));
+             }
++
++            // Conker's shadows (issues #73 and #75): a character's shadow is the patch of ground under it drawn again
++            // with a 64 by 64 texture on it, which the game draws every frame (the character's silhouette) and
++            // RT64 renders at the resolution's scale. Its texture coordinates are pulled in 1/16 of the way towards the
++            // middle (2 texels at each edge), so the patch never samples the texture's outermost texels. On the
++            // reporter's AMD GPU under Linux, at high resolutions, those came out dark, and a thin dark line ran along
++            // the edge of the patch next to Conker. Clamping the texture instead of wrapping it kept the line, so it's
++            // in the edge texels themselves; this inset took it away. The silhouette is drawn inside the edges, so the
++            // shadow looks the same, 6% larger (checked on Windows).
++            if ((workload.drawData.transformGroups[extended.curModelMatrixIdGroupIndex].matrixId >> 16) == 0x5348) {
++                const float shadowPull = 1.0f - 1.0f / 16.0f;
++                const size_t added = size_t(dstMax - dstIndex) * 2;
++                for (size_t i = tcFloats.size() - added; i < tcFloats.size(); i++) {
++                    tcFloats[i] = 32.0f + (tcFloats[i] - 32.0f) * shadowPull;
++                }
++            }
+         }
+     }
+ 
+@@ -841,7 +1079,12 @@ namespace RT64 {
          const uint32_t globalIndex = indices[vtxIndex];
          const float screenZ = workload.drawData.posScreen[globalIndex][2] * DepthRange;
          const float zValueFloat = zValue / 65536.0f;
@@ -1629,7 +1652,7 @@ index 1da2550..ba78568 100644
              const uint32_t rdramAddress = fromSegmentedMasked(branchDl);
              *dl = reinterpret_cast<DisplayList *>(state->fromRDRAM(rdramAddress)) - 1;
          }
-@@ -1152,6 +1379,16 @@ namespace RT64 {
+@@ -1152,6 +1395,16 @@ namespace RT64 {
  
              const interop::RSPViewport &viewport = viewportStack[viewportStackSize - 1];
              const FixedRect viewportClipRect = viewport.rect(clipRatios.data());

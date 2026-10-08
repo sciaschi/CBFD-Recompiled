@@ -20,10 +20,23 @@
 // anew every frame, its distance and zoom changing together; RT64 interpolates that camera whole
 // (rt64.patch, ProjectionProcessor), as taken apart and put together halfway it drew the shadow
 // larger (issue #76).
+//
+// A shadow isn't drawn on the first game frame it's back after frames without it (issue
+// #75). Walking into a room, the game draws no shadow while the room loads, then for
+// one frame lays the shadow from where Conker was before the room switched over onto
+// the new room's ground: a big patch of it, only the dark middle of the shadow's texture
+// on it. Measured (RT64's shadows logged, frame by frame): the shadow back after the
+// gap was a 90-vertex patch at the wrong height, the next one a normal 28-vertex patch
+// on the floor 160 units away. The game draws it so at 30 FPS too, so it isn't the
+// smoothing; on the frame after, all is right. Anywhere else a shadow shows up a frame
+// late, 1/30 of a second, after a cutscene or a load.
 
 #include <cstdint>
+#include <unordered_map>
 
 #include "recomp.h"
+
+#include "conker.hpp"
 
 namespace {
     // RT64's extended GBI (tools/rt64/include/rt64_extended_gbi.h) for F3DEX2,
@@ -78,6 +91,17 @@ namespace {
     void put_pop(uint8_t* rdram, gpr& dl) {
         put_command(rdram, dl, (rt64_extended_opcode << 24) | g_ex_popmatrixgroup_v1, 1);
     }
+
+    // Game frames so far (conker::shadows::game_frame), and the last one each shadow (by its
+    // index) was drawn in. The shadow being drawn: its index, and where its commands start.
+    uint32_t game_frames = 0;
+    std::unordered_map<uint32_t, uint32_t> shadow_last_drawn;
+    uint32_t shadow_index = 0;
+    gpr shadow_dl_start = 0;
+}
+
+void conker::shadows::game_frame() {
+    game_frames++;
 }
 
 // func_1502CCFC, after its first instruction (the stack frame): $a0 is where it
@@ -105,12 +129,23 @@ extern "C" void conker_object_matrix_group_end(uint8_t* rdram, recomp_context* c
 extern "C" void conker_shadow_matrix_group_begin(uint8_t* rdram, recomp_context* ctx) {
     const uint32_t shadow = (uint32_t)ctx->r5 & 0xFFFF;
     gpr dl = ctx->r4;
+    shadow_index = shadow;
+    shadow_dl_start = dl;
     put_group(rdram, dl, 0x53480000u | shadow, shadow_group_params);
     ctx->r4 = dl;
 }
 
-// At its return: $v0 is the end of what it wrote.
+// At its return: $v0 is the end of what it wrote. A shadow not drawn last game frame isn't
+// drawn in this one either (see the top): handing back where its commands started drops
+// everything it wrote, the group's commands too.
 extern "C" void conker_shadow_matrix_group_end(uint8_t* rdram, recomp_context* ctx) {
+    const auto last = shadow_last_drawn.find(shadow_index);
+    const bool back_after_gap = last == shadow_last_drawn.end() || game_frames - last->second > 1;
+    shadow_last_drawn[shadow_index] = game_frames;
+    if (back_after_gap) {
+        ctx->r2 = shadow_dl_start;
+        return;
+    }
     gpr dl = ctx->r2;
     put_pop(rdram, dl);
     ctx->r2 = dl;

@@ -376,6 +376,15 @@ silhouette's points on the texture then move as the texture coordinates on the
 ground do. Drawing the silhouettes uninterpolated stopped the expanding but
 didn't match the interpolated coordinates, and the shadow shook.
 
+A shadow isn't drawn on the first game frame it's back after frames without it
+(`interpolation.cpp`, issue #75): walking into a room, the game draws no shadow
+while the room loads, then for one frame lays the shadow from where Conker was
+before the room switched over onto the new room's ground, a dark patch (at 30
+fps too). And the shadow's texture coordinates are pulled in 2 texels from each
+edge (`rt64_rsp.cpp`): on an AMD GPU under Linux, at high resolutions, the
+texture's outermost texels came out dark and drew a thin line along the patch's
+edge next to Conker (issue #73).
+
 Texture packs named for Rice (issue #63): GLideN64 and Rice Video name each
 replacement by its texture's Rice hash (`<name>#<crc>#<format>#<size>[#<palette
 crc>]_all.png`), which RT64 can only use through an `rt64.json` pairing it with

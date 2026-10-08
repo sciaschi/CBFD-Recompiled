@@ -164,6 +164,12 @@ namespace conker {
         bool always_highest();
     }
 
+    // interpolation.cpp: shadows aren't drawn on their first game frame back after a gap (issue #75).
+    namespace shadows {
+        // From the game thread, as the game starts a frame's display list.
+        void game_frame();
+    }
+
     // reticle.cpp: Aiming: Reticle, a ring in the middle of the screen while aiming (issue #74).
     namespace reticle {
         // look_aim.cpp: whether the setting is on.
