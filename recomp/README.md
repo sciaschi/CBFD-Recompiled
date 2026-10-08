@@ -327,6 +327,29 @@ and bottom are always clipped; left and right only when the scissor is narrower
 than the frame, as a split-screen view's is, so a fill across the frame is still
 stretched to the widened window and the pillarbox bars stay.
 
+With three or four players the views sit side by side, and in widescreen they
+weren't all widened alike (issue #78). RT64 widens a 3D view that covers its
+framebuffer pair's scissor:
+- Player 1's view shares its pair with the frame's clear, a fill across the
+  whole frame, so it wasn't widened. A pair's widening scissor
+  (`FramebufferPair::wideningScissor`) now leaves out projections of fill rects
+  only, when what's left is a split-screen view (reaching one side of the
+  frame, at least 40% of its width).
+- Each player's level is drawn in a pair of its own, but every player's
+  characters, doors and HUD in one pair across the frame, where no view covers
+  the pair: the characters were drawn at 4:3, off the middle of their widened
+  view. A view widened in any pair of the frame is widened in all of them
+  (`Workload::widensView`), in `FramebufferRenderer` and `ProjectionProcessor`
+  alike.
+- The HUD is drawn with a scissor across the frame, each player's inside their
+  view's 4:3 area. A rect wholly inside a widened split-screen view is scaled
+  about that view's middle (an origin there) instead of the frame's, so each HUD
+  keeps its 4:3 layout on its own view; the match timer, between the views,
+  stays put.
+- `ProjectionProcessor` squeezes a widened split-screen view's projection about
+  the view's own middle (`adjustProjectionMatrix` with a centre), in case its
+  projection is moved sideways rather than its viewport.
+
 The game's 3D and its fill rectangles stop 2 pixels short of each side of its
 292-pixel frame (its camera scissor, and `func_1501A6CC` clamps its fills the
 same): a black border the N64 left for the TV's overscan, which showed down
