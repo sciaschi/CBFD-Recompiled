@@ -607,6 +607,19 @@ func = "func_151408A4"
 before_vram = 0x15140DB4
 text = "{ extern void conker_light_glow_depth(uint8_t*, recomp_context*); conker_light_glow_depth(rdram, ctx); }"
 
+# Light glows at the widescreen edges: func_151408A4 also hides a glow whose light is
+# outside the camera's 4:3 left and right bounds. Widen them like the sprite cull
+# (host/src/widescreen.cpp).
+[[patches.hook]]
+func = "func_151408A4"
+before_vram = 0x15140988
+text = "{ extern void conker_widen_light_glow_left(uint8_t*, recomp_context*); conker_widen_light_glow_left(rdram, ctx); }"
+
+[[patches.hook]]
+func = "func_151408A4"
+before_vram = 0x151409A0
+text = "{ extern void conker_widen_light_glow_right(uint8_t*, recomp_context*); conker_widen_light_glow_right(rdram, ctx); }"
+
 # TEMP-DEBUG: switches for the game's mid-frame depth-buffer copies (host/src/render_fixes.cpp).
 [[patches.hook]]
 func = "func_1510B9D0"

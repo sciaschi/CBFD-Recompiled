@@ -282,6 +282,17 @@ the same three commands as the game's `G_TEXRECT`. The enable goes where the
 sprite's pipe sync was, so the display lists don't grow; they're allocated to
 fit what the game writes.
 
+Light glows (`func_151408A4`, such as the two over the Feral Reserve's doors) are
+3D billboards, which RT64 draws anywhere in the widened view, but the game keeps
+one only while its light's projected point is inside the camera's 4:3 left and
+right bounds (+0x2C, +0x30), so they vanished toward the sides. Those bounds are
+widened by the sprite cull's margin before the two compares (`widescreen.cpp`).
+The same function's depth test, which RT64's depth samples fail, is skipped
+(`render_fixes.cpp`). Still open: in widescreen the door glows can vanish inside
+the 4:3 area too, seen straight on; nothing after the bounds in the game's code
+depends on screen x, so it's most likely RT64's own depth test of the glow
+against the wall just behind the light.
+
 Cutscene speech bubbles (`func_15095D34`, issue #59) are clamped at the screen's
 left edge the same way. A piece near or past it is drawn that many whole pixels
 to the right, so the game doesn't clamp it, and moved back as an extended
