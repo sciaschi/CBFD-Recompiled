@@ -152,6 +152,10 @@ namespace conker {
         float camera_field_of_view();
     }
 
+    // conker_config.cpp: whether the Graphics tab's settings exist (not with --headless, which makes
+    // no menus). Their readers fall back to the defaults without them.
+    bool graphics_config_ready();
+
     // Graphics: Overscan Borders (conker_config.cpp; the crop is set in widescreen.cpp).
     namespace overscan_borders {
         // Hidden: the picture is zoomed so the game's black border at its sides is off the screen.

@@ -1,5 +1,6 @@
 // The settings menu (recompui's config tabs) for the RT64 build.
 
+#include <stdexcept>
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -132,6 +133,21 @@ void conker::init_config() {
     recompui::config::create_mods_tab();
 
     recompui::config::finalize();
+}
+
+bool conker::graphics_config_ready() {
+    // Not with --headless, which makes no menus: the game still asks for these every frame, and
+    // reading them threw ("Graphics config has not been created yet").
+    static bool ready = false;
+    if (!ready) {
+        try {
+            (void)recompui::config::get_graphics_config();
+            ready = true;
+        }
+        catch (const std::exception&) {
+        }
+    }
+    return ready;
 }
 
 bool conker::cutscene_aspect::in_4x3() {
