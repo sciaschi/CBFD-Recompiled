@@ -1,0 +1,91 @@
+# Test builds for macOS, on Apple Silicon and Intel, with a self-test of mods (issue #81: enabling
+# any mod killed the game on macOS). Runs for a push to a test/macos-* branch, or by hand. Each
+# build is kept as the run's artifact (a zip with the app, host/test_mods_macos.sh and the test mods),
+# not published: download it from the run's page and run the script on a Mac with your ROM.
+#
+# It gets the ROM like build.yml and release.yml (the ROM_REPO and ROM_REPO_TOKEN secrets), and has
+# no pull request trigger, so the token is never exposed to code from forks. The one action it uses
+# is GitHub's own upload-artifact; the rest is git and the shell.
+name: test-macos
+
+on:
+  push:
+    branches: ['test/macos-*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  GIT_TERMINAL_PROMPT: '0'
+
+jobs:
+  macos:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: AppleSilicon
+          - runner: macos-15-intel
+            arch: Intel
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 150
+    steps:
+      - name: Checkout
+        run: |
+          git clone -q --no-checkout "https://github.com/$GITHUB_REPOSITORY" .
+          git checkout -q "$GITHUB_SHA"
+
+      - name: Get the ROM
+        env:
+          ROM_REPO: ${{ secrets.ROM_REPO }}
+          ROM_REPO_TOKEN: ${{ secrets.ROM_REPO_TOKEN }}
+        run: git clone -q --depth 1 "https://x-access-token:$ROM_REPO_TOKEN@github.com/$ROM_REPO.git" rom-src
+
+      - name: Install dependencies
+        run: |
+          brew install cmake ninja pkg-config sdl2 freetype dylibbundler
+          # Xcode 26 and later download the Metal compiler separately.
+          xcrun -sdk macosx metal --version || xcodebuild -downloadComponent MetalToolchain
+
+      # RT64's prebuilt Intel dxc (the shader compiler) looks for zlib at a path it doesn't ship
+      # (@rpath/zlib.net/v1/lib/libz.dylib), and dyld also looks for libz.dylib in its library
+      # folder: link Homebrew's there. The Apple Silicon dxc doesn't need it.
+      - name: Give the Intel dxc its zlib
+        if: matrix.arch == 'Intel'
+        run: |
+          # build.sh gets the submodules later; RT64's is needed now (it's left as it is after).
+          git submodule update --init --recursive tools/rt64
+          brew install zlib
+          ln -sf "$(brew --prefix zlib)/lib/libz.dylib" tools/rt64/src/contrib/dxc/lib/x64/libz.dylib
+          DYLD_LIBRARY_PATH=tools/rt64/src/contrib/dxc/lib/x64 tools/rt64/src/contrib/dxc/bin/x64/dxc-macos --version
+
+      - name: Build
+        run: ./build.sh rom-src/baserom.us.z64 < /dev/null
+
+      - name: Check the linker wrapper raised __TEXT's maximum protection
+        run: |
+          # maxprot 0x7 (rwx) for __TEXT, initprot 0x5 (r-x): mods can patch the code (host/macos/ld64).
+          otool -l host/build/ConkerRecomp | grep -A10 "segname __TEXT" | grep -E "maxprot|initprot"
+          otool -l host/build/ConkerRecomp | grep -A10 "segname __TEXT" | grep -q "maxprot 0x00000007"
+
+      - name: Package
+        run: |
+          out=package/ConkerRecompiled-mod-test-${{ matrix.arch }}
+          mkdir -p "$out/test-mods"
+          sh host/package_macos.sh "$out"
+          cp host/test_mods_macos.sh "$out/"
+          cp host/test-mods/*.nrm "$out/test-mods/"
+          cp .github/release/README.txt LICENSE "$out/"
+          cp .github/release/LICENSES.txt "$out/"
+          cp tools/N64ModernRuntime/COPYING "$out/LICENSE-GPL-3.0.txt"
+          codesign -d --entitlements - "$out/ConkerRecomp.app" | head -20
+          ditto -c -k --norsrc --noextattr --noacl --keepParent "$out" "package/ConkerRecompiled-mod-test-${{ matrix.arch }}.zip"
+
+      - name: Keep the test build
+        uses: actions/upload-artifact@v4
+        with:
+          name: ConkerRecompiled-mod-test-${{ matrix.arch }}
+          path: package/ConkerRecompiled-mod-test-${{ matrix.arch }}.zip
+          retention-days: 14

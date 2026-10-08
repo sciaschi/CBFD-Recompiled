@@ -69,6 +69,10 @@ static void install_crash_handler() {
 #elif defined(_WIN32)
 #include <Windows.h>
 #include <DbgHelp.h>
+#include <fcntl.h>
+#include <io.h>
+#include <deque>
+#include <mutex>
 #include <atomic>
 #include <csignal>
 #include <cstdarg>
@@ -116,9 +120,74 @@ static void crash_add_stack(CrashReport& report, void* const* frames, USHORT cou
     }
 }
 
+// The console's error output (stderr) goes through a pipe that a thread copies on to where it
+// went before, keeping its last lines for crash reports: the libraries say why they failed there
+// (e.g. plume's "CreateResource failed with error code 0x887A0005", the Direct3D 12 device
+// removed, just before RT64 crashes on the resource it couldn't make: issue #21), and a player's
+// crash.log didn't have it.
+static std::mutex stderr_lines_mutex;
+static std::deque<std::string> stderr_lines;
+static constexpr size_t stderr_lines_kept = 40;
+
+static void tee_stderr() {
+    HANDLE pipe_read = nullptr, pipe_write = nullptr;
+    const int original_fd = _dup(_fileno(stderr));
+    if (original_fd < 0 || !CreatePipe(&pipe_read, &pipe_write, nullptr, 0)) {
+        return;
+    }
+    const HANDLE original = (HANDLE)_get_osfhandle(original_fd);
+    const int write_fd = _open_osfhandle((intptr_t)pipe_write, _O_BINARY);
+    if (write_fd < 0 || _dup2(write_fd, _fileno(stderr)) != 0) {
+        return;
+    }
+    SetStdHandle(STD_ERROR_HANDLE, pipe_write);
+    std::setvbuf(stderr, nullptr, _IONBF, 0);
+    std::thread([pipe_read, original]() {
+        char buffer[4096];
+        DWORD read = 0;
+        std::string line;
+        while (ReadFile(pipe_read, buffer, sizeof(buffer), &read, nullptr) && read > 0) {
+            DWORD written = 0;
+            if (original != INVALID_HANDLE_VALUE) {
+                WriteFile(original, buffer, read, &written, nullptr);
+            }
+            std::lock_guard lock{ stderr_lines_mutex };
+            for (DWORD i = 0; i < read; i++) {
+                if (buffer[i] == '\n') {
+                    stderr_lines.push_back(std::move(line));
+                    line.clear();
+                    if (stderr_lines.size() > stderr_lines_kept) {
+                        stderr_lines.pop_front();
+                    }
+                }
+                else if (buffer[i] != '\r' && line.size() < 512) {
+                    line += buffer[i];
+                }
+            }
+        }
+    }).detach();
+}
+
+// The last lines of the console's error output, for a crash report (without waiting, should the
+// crash have come while they were being kept).
+static void crash_add_stderr(CrashReport& report) {
+    std::unique_lock lock{ stderr_lines_mutex, std::try_to_lock };
+    if (!lock.owns_lock() || stderr_lines.empty()) {
+        return;
+    }
+    crash_add(report, "Console errors before the crash:\n");
+    for (const std::string& line : stderr_lines) {
+        crash_add(report, "  %s\n", line.c_str());
+    }
+}
+
 // The console window closes with the process, so also keep the report in
 // crash.log next to the executable, and show it with where it was saved.
-static void crash_publish(const CrashReport& report) {
+static void crash_publish(const CrashReport& crash) {
+    // Give the copying thread a moment with what the other threads printed as they failed.
+    Sleep(100);
+    CrashReport report = crash;
+    crash_add_stderr(report);
     std::fputs(report.c_str(), stderr);
     std::fflush(stderr);
     wchar_t exe[MAX_PATH];
@@ -199,6 +268,7 @@ static void on_terminate() {
 }
 
 static void install_crash_handler() {
+    tee_stderr();
     // Only exceptions nothing else handles: libraries like DXC raise and catch their own.
     SetUnhandledExceptionFilter(crash_handler);
     std::signal(SIGABRT, abort_handler);
@@ -235,6 +305,8 @@ namespace {
 
     void on_init(uint8_t* rdram, recomp_context* ctx) {
         crash_rdram = rdram;
+        // The ROM is loaded by now and the game hasn't read it yet.
+        conker::roms::fix_data();
         set_fr_mode(ctx);
         conker::register_tlb_mapped_code();
         conker::map_tlb_code_pages(rdram);

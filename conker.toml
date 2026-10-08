@@ -368,6 +368,14 @@ func = "func_1501B22C"
 before_vram = 0x1501B308
 text = "{ extern void conker_widen_frustum(uint8_t*, recomp_context*); conker_widen_frustum(rdram, ctx); }"
 
+# Camera: Field of View (host/src/field_of_view.cpp): func_1510B128 has just stored
+# the camera's horizontal and vertical fields of view ($v0 the camera, $s0 its offset);
+# the projection, frustum and culls are worked out from them after this.
+[[patches.hook]]
+func = "func_1510B128"
+before_vram = 0x1510B1A8
+text = "{ extern void conker_field_of_view(uint8_t*, recomp_context*); conker_field_of_view(rdram, ctx); }"
+
 # Widescreen: func_151103C8 fills the camera's view with its background colour up to the scissor's
 # edge, which RT64 lines up with the window's, leaving a thin line at the right edge where nothing
 # covers it (the screens before the N64 logo). Just before the fill ($a3 its right edge), it ends a
@@ -376,14 +384,6 @@ text = "{ extern void conker_widen_frustum(uint8_t*, recomp_context*); conker_wi
 func = "func_151103C8"
 before_vram = 0x15110458
 text = "{ extern void conker_camera_background_fill(uint8_t*, recomp_context*); conker_camera_background_fill(rdram, ctx); }"
-
-# Camera: Field of View (host/src/field_of_view.cpp): func_1510B128 has just stored
-# the camera's horizontal and vertical fields of view ($v0 the camera, $s0 its offset);
-# the projection, frustum and culls are worked out from them after this.
-[[patches.hook]]
-func = "func_1510B128"
-before_vram = 0x1510B1A8
-text = "{ extern void conker_field_of_view(uint8_t*, recomp_context*); conker_field_of_view(rdram, ctx); }"
 
 # Widescreen: the scale the level's culls compare view-space x with is set for
 # the 4:3 view too. Widen it to the window (host/src/widescreen.cpp).
@@ -576,6 +576,81 @@ func = "func_151284C4"
 before_vram = 0x151284C8
 text = "{ extern void conker_mouse_camera(uint8_t*, recomp_context*); conker_mouse_camera(rdram, ctx); }"
 
+# TEMP-DEBUG (issue #84, host/src/look_aim.cpp): in Conker's state 0x3B (the shotgun), the test of Z
+# held at 0x15068D80; with CONKER_LASER_ON_R set, R counts as Z for it ($t8, at 0x15068D84).
+[[patches.hook]]
+func = "func_15065A5C"
+before_vram = 0x15068D84
+text = "{ extern void conker_laser_on_r(uint8_t*, recomp_context*); conker_laser_on_r(rdram, ctx); }"
+
+# TEMP-DEBUG (issue #84, host/src/look_aim.cpp): after R alone's movement in Conker's state 0x3B
+# (func_15063E84 returned, $s0 Conker), CONKER_LASER_TRY sets what R and Z set, to find the laser's switch.
+[[patches.hook]]
+func = "func_15065A5C"
+before_vram = 0x15069028
+text = "{ extern void conker_laser_try(uint8_t*, recomp_context*); conker_laser_try(rdram, ctx); }"
+
+# TEMP-DEBUG (issue #84, host/src/look_aim.cpp): R alone's walk in state 0x3B (func_15064B94 picked 0x224
+# in $v1); CONKER_LASER_TRY's aimwalk plays R and Z's (0x31B) instead.
+[[patches.hook]]
+func = "func_15064B94"
+before_vram = 0x150651FC
+text = "{ extern void conker_laser_walk(uint8_t*, recomp_context*); conker_laser_walk(rdram, ctx); }"
+
+# Aiming: Lock-On (host/src/look_aim.cpp): func_15063A38 turns the aim by the stick, or toward an enemy
+# with func_150639BC while +0x84 of $a0's +0x31C is set ($t1, tested at 0x15063A80). With the setting
+# Off the flag reads as clear.
+[[patches.hook]]
+func = "func_15063A38"
+before_vram = 0x15063A80
+text = "{ extern void conker_aim_lock_on(uint8_t*, recomp_context*); conker_aim_lock_on(rdram, ctx); }"
+
+# The bank's slow motion leaps (host/src/mouse_camera.cpp, issue #85): the view's eye is raised in a leap
+# (conker_leap_view_lift, below) and lowered back as func_15122C5C, the follow camera's update, starts,
+# once $s0 is the camera (0x15122C64), before it copies the view's eye back into the eye wanted.
+[[patches.hook]]
+func = "func_15122C5C"
+before_vram = 0x15122C6C
+text = "{ extern void conker_leap_view_restore(uint8_t*, recomp_context*); conker_leap_view_restore(rdram, ctx); }"
+
+# Mouse camera: func_1512C490 (in func_151284C4) has copied the look-at point and the eye into
+# the view's (+0x2E0, +0x2EC; $s0 the camera). Tilted up past where the eye stops, the view's
+# look-at point is raised to aim higher from the same eye (issue #70). While aiming with Aiming: Swap
+# Sticks, it's also turned to the aim's direction, so walking doesn't turn the view (issue #84,
+# host/src/look_aim.cpp). In the bank's slow motion leaps, the view's eye is raised (issue #85).
+[[patches.hook]]
+func = "func_1512C490"
+before_vram = 0x1512C640
+text = "{ extern void conker_mouse_camera_aim(uint8_t*, recomp_context*); conker_mouse_camera_aim(rdram, ctx); extern void conker_look_view(uint8_t*, recomp_context*); conker_look_view(rdram, ctx); extern void conker_leap_view_lift(uint8_t*, recomp_context*); conker_leap_view_lift(rdram, ctx); }"
+
+# Game Frame Rate (host/src/frame_rate.cpp): func_10004FE0 swaps to a drawn frame only once a
+# display tick has passed since it started; at 60 it swaps at once (func_10005020, as its other
+# path does), returning with its stack put back.
+[[patches.hook]]
+func = "func_10004FE0"
+before_vram = 0x10004FE4
+text = "{ extern int conker_frame_rate_swap_now(uint8_t*, recomp_context*); if (conker_frame_rate_swap_now(rdram, ctx)) { func_10005020(rdram, ctx); ctx->r29 = ADD32(ctx->r29, 0X18); return; } }"
+
+# Game Frame Rate: swinging props (func_151189AC: the doors Birdy's lever opens) step their angle by
+# their speed, and their speed by their acceleration, once a frame. Both are scaled by the frame's
+# length (host/src/frame_rate.cpp): the angle's add at 0x15118B6C, the acceleration before the add
+# at 0x15118C44.
+[[patches.hook]]
+func = "func_151189AC"
+before_vram = 0x15118B6C
+text = "{ extern void conker_frame_rate_prop_angle(uint8_t*, recomp_context*); conker_frame_rate_prop_angle(rdram, ctx); }"
+
+[[patches.hook]]
+func = "func_151189AC"
+before_vram = 0x15118C44
+text = "{ extern void conker_frame_rate_prop_speed(uint8_t*, recomp_context*); conker_frame_rate_prop_speed(rdram, ctx); }"
+
+# Game Frame Rate: the scheduler's minimum ticks a frame kept at 1.
+[[patches.hook]]
+func = "func_10004DB0"
+before_vram = 0x10004DB4
+text = "{ extern void conker_frame_rate_schedule(uint8_t*, recomp_context*); conker_frame_rate_schedule(rdram, ctx); }"
+
 [[patches.hook]]
 func = "func_15120158"
 before_vram = 0x1512015C
@@ -653,3 +728,50 @@ text = "{ extern void conker_bubble_begin(uint8_t*, recomp_context*); conker_bub
 func = "func_15095D34"
 before_vram = 0x15096294
 text = "{ extern void conker_bubble_end(uint8_t*, recomp_context*); conker_bubble_end(rdram, ctx); }"
+
+# TEMP-DEBUG (issues #66, #21): the music log (host/src/ultra_extras.cpp, CONKER_MUSIC_LOG).
+[[patches.hook]]
+func = "func_10008CE8"
+before_vram = 0x10008CE8
+text = "{ extern void conker_music_log_play(uint8_t*, recomp_context*); conker_music_log_play(rdram, ctx); }"
+
+[[patches.hook]]
+func = "func_10008CE8"
+before_vram = 0x10008DB4
+text = "{ extern void conker_music_log_played(uint8_t*, recomp_context*); conker_music_log_played(rdram, ctx); }"
+
+[[patches.hook]]
+func = "func_10008EE0"
+before_vram = 0x10008EE0
+text = "{ extern void conker_music_log_volume(uint8_t*, recomp_context*); conker_music_log_volume(rdram, ctx); }"
+
+
+[[patches.hook]]
+func = "func_10008F58"
+before_vram = 0x10008F58
+text = "{ extern void conker_music_log_f58(uint8_t*, recomp_context*); conker_music_log_f58(rdram, ctx); }"
+
+[[patches.hook]]
+func = "func_10008BC0"
+before_vram = 0x10008BC0
+text = "{ extern void conker_music_log_bc0(uint8_t*, recomp_context*); conker_music_log_bc0(rdram, ctx); }"
+
+[[patches.hook]]
+func = "func_10008B60"
+before_vram = 0x10008B60
+text = "{ extern void conker_music_log_b60(uint8_t*, recomp_context*); conker_music_log_b60(rdram, ctx); }"
+
+[[patches.hook]]
+func = "func_10008C6C"
+before_vram = 0x10008C6C
+text = "{ extern void conker_music_log_c6c(uint8_t*, recomp_context*); conker_music_log_c6c(rdram, ctx); }"
+
+[[patches.hook]]
+func = "func_10008C04"
+before_vram = 0x10008C04
+text = "{ extern void conker_music_log_c04(uint8_t*, recomp_context*); conker_music_log_c04(rdram, ctx); }"
+
+[[patches.hook]]
+func = "func_1000D2F8"
+before_vram = 0x1000D2F8
+text = "{ extern void conker_music_log_manager(uint8_t*, recomp_context*); conker_music_log_manager(rdram, ctx); }"

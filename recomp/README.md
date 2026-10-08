@@ -484,6 +484,16 @@ states 0x2 and 0xA; plain R-Look is 0x0) or in the second aiming mode
 split screen. Both modes aim the camera itself, but the thrown shots leave
 Conker's hand below it, pitched up: in the distance they land 20% of the screen's
 height above the middle, where the reticle is (closer, a little lower).
+Aiming: Swap Sticks (`look_aim.cpp`, issue #84, off by default) swaps the
+controller's sticks while player 1 aims in single player: while either aiming
+mode ran for their camera in the last few frames (R-Look too), `frontend.cpp`
+reads every binding to one stick from the other, so the right stick aims and the
+left stick presses the C-buttons, which move Conker while aiming, but not C-Left
+and C-Right while Z is held: the shotgun's laser sight turns the aim with them.
+Aiming: Lock-On (on by default, as the original) can turn off the game's lock-on:
+`func_15063A38` turns the aim by the stick, or, while an enemy is there to lock on
+to (+0x84 of its +0x31C, the shotgun's zombies), straight toward it with
+`func_150639BC`, and the camera follows the aim; a hook clears that flag.
 Overscan Borders, in the same tab, crops the N64's black border off each side
 of the picture (`widescreen.cpp`, with RT64's changes above).
 Conker's Detail (Always Highest by default) keeps Conker on his most detailed
@@ -501,6 +511,22 @@ or sound). On Linux the window build creates the SDL window with
 and the recompiled audio microcode is compiled with `-msse4.1`. A crash prints a backtrace (SIGSEGV on Linux; on
 Windows an unhandled-exception filter with DbgHelp, which also writes
 `crash.log` next to the exe and shows a message box).
+
+The bank robbery's slow motion leaps from a B pad (issue #85): the leap keeps
+the follow camera as it is when walking, and the stick turns into Conker's
+movement as ever, turning him in the air and his guns with him; the crosshair is
+where they point. The C-buttons turn the camera, as in the original game, so with
+Right Stick: Free Camera off the right stick does too. The mouse orbit turned the
+camera there and never moved the crosshair. In a leap (`look_aim.cpp`: Conker in
+the bank's state 0x96, +0x4 of his object, with the leap's animation 0x20F or
+0x20E) the mouse is the stick: its movement moves a tilt, kept where the mouse
+leaves it, added to player 1's (`frontend.cpp`), and the orbit doesn't run. The
+view is raised 110 units (`mouse_camera.cpp`), so it looks down past Conker
+instead of through him: only the view's eye, raised as it's copied from the eye
+the camera wants (func_1512C490) and lowered back before the next update copies
+it back (func_15122C5C). Raising the eye wanted stacked up from frame to frame, or
+the game eased it back; the height it keeps above Conker (+0x344) isn't used in
+a leap.
 
 ## Mods
 

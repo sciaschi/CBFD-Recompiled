@@ -19,6 +19,8 @@
 // the new size, a moment with both sets in video memory, and in fullscreen at 4K a tester's game
 // crashed at those switches (issue #21). Drawing the bars changes nothing in the renderer.
 
+#include <algorithm>
+#include <cmath>
 #include <cstdint>
 
 #include "recomp.h"
@@ -27,7 +29,12 @@
 #include "conker.hpp"
 
 #if defined(CONKER_RT64)
+#include <SDL.h>
+
 #include "recompui/config.h"
+
+// The game window (frontend.cpp).
+extern SDL_Window* window;
 #endif
 
 namespace {
@@ -42,8 +49,13 @@ namespace {
     constexpr uint32_t rt64_extended_opcode = 0x64;
     constexpr uint32_t g_ex_fillrect_v1 = 0x000003;
     constexpr uint32_t g_ex_origin_none = 0x800;
-    // How far past the frame's sides the bars reach, in N64 pixels: past any window's edge.
-    constexpr int32_t bar_reach = 2048;
+    // How far past the frame's sides the bars reach, in N64 pixels: as far as the window widens the
+    // picture past each side (see bar_reach), and this much more. They reached 2048 pixels past (some
+    // thousands of the window's), and on the Steam Deck the left bar wasn't drawn at all, the picture
+    // showing fully widescreen at that side (issue #82): coordinates that far outside the screen are
+    // where GPU drivers differ. Reaching only past the window's edge draws the same bars.
+    constexpr int32_t bar_margin = 16;
+    constexpr int32_t bar_reach_max = 2048;
     // And how far into the frame: the game's cameras draw 2 pixels short of each side (the 3D's
     // scissor, and the black of a closed iris wipe), a border the N64 shows black. RT64 draws the
     // widened scene into it, which showed as thin lines at the 4:3 edges between scenes.
@@ -57,6 +69,23 @@ namespace {
     uint32_t bars_dl_next = 0;
 
     bool pillarbox = false; // this frame is a cutscene shown in 4:3
+
+    // How far the window shows the picture past each side of a frame width pixels wide: RT64 widens it
+    // about its middle to the window's aspect ratio, at the same height.
+    int32_t bar_reach(int32_t width) {
+        float ratio = 16.0f / 9.0f / (4.0f / 3.0f);
+#if defined(CONKER_RT64)
+        int window_width = 0, window_height = 0;
+        if (window != nullptr) {
+            SDL_GetWindowSize(window, &window_width, &window_height);
+        }
+        if (window_width > 0 && window_height > 0) {
+            ratio = std::max(1.0f, (float)window_width / (float)window_height / (4.0f / 3.0f));
+        }
+#endif
+        const int32_t past = (int32_t)std::ceil((ratio - 1.0f) * (float)width * 0.5f);
+        return std::min(past + bar_margin, bar_reach_max);
+    }
 
     bool cutscene_playing_now(uint8_t* rdram) {
         return MEM_BU(0, (gpr)(int32_t)cutscene_playing) == 1 || MEM_BU(1, (gpr)(int32_t)cutscene_playing) == 1;
@@ -79,6 +108,10 @@ namespace {
 
 void conker::cutscene_aspect::update(uint8_t* rdram) {
 #if defined(CONKER_RT64)
+    if (!conker::graphics_config_ready()) {
+        pillarbox = false;
+        return;
+    }
     const auto chosen = static_cast<ultramodern::renderer::AspectRatio>(std::get<uint32_t>(
         recompui::config::get_graphics_config().get_option_value(recompui::config::graphics::options::ar_option)));
     pillarbox = conker::cutscene_aspect::in_4x3() && chosen != ultramodern::renderer::AspectRatio::Original &&
@@ -110,8 +143,9 @@ extern "C" void conker_frame_dl_end(uint8_t* rdram, recomp_context* ctx) {
     put_command(rdram, dl, 0xED000000, ((uint32_t)(width * 4) << 12) | (uint32_t)(height * 4));
     put_command(rdram, dl, 0xE3000A01, 0x00300000);                 // G_SETOTHERMODE_H: cycle type fill
     put_command(rdram, dl, 0xF7000000, 0);                          // G_SETFILLCOLOR: black
-    put_fill(rdram, dl, -bar_reach, 0, bar_overlap, height);
-    put_fill(rdram, dl, width - bar_overlap, 0, width + bar_reach, height);
+    const int32_t reach = bar_reach(width);
+    put_fill(rdram, dl, -reach, 0, bar_overlap, height);
+    put_fill(rdram, dl, width - bar_overlap, 0, width + reach, height);
     put_command(rdram, dl, 0xDF000000, 0);                          // G_ENDDL
 
     // The call, in place of where the game's full sync goes (which then follows it).

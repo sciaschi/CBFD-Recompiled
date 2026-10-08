@@ -32,6 +32,9 @@
 // late, 1/30 of a second, after a cutscene or a load.
 
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <unordered_map>
 
 #include "recomp.h"
@@ -139,6 +142,48 @@ extern "C" void conker_shadow_matrix_group_begin(uint8_t* rdram, recomp_context*
 // drawn in this one either (see the top): handing back where its commands started drops
 // everything it wrote, the group's commands too.
 extern "C" void conker_shadow_matrix_group_end(uint8_t* rdram, recomp_context* ctx) {
+    // TEMP-DEBUG (issues #73 and #75: a thin dark line next to Conker, only on the reporter's AMD
+    // GPU under Linux, only at high resolutions). A shadow is a texture the game draws every frame:
+    // it points its drawing at a 64 by 64 8-bit buffer (G_SETCIMG to 0x800DE080), draws the
+    // character's silhouette into it, then loads that buffer as a texture (G_SETTIMG, the same
+    // address) and lays it over the patch of ground under the character. Its tile wraps at 64 both
+    // ways (cms/cmt 0, masks 6), so a sample just past an edge of the patch reads the buffer's
+    // other side, and RT64 draws the buffer at the resolution's scale, so its edges change with it.
+    // CONKER_LINE_TEST picks a test, to tell what the line is on the reporter's machine:
+    //   noshadow  no shadows: does the line go with them?
+    //   clamp     the shadow's texture clamped at its edges instead of wrapped
+    //   noinset   without the inset that took the line away (rt64.patch, rt64_rsp.cpp: the shadow's texture
+    //             coordinates pulled in 2 texels from each edge, now always), to compare
+    //   outline   the patch's edges shown as a hard border (rt64.patch), to compare with the line
+    // CONKER_SHADOW_DUMP prints the commands of the first few shadows drawn.
+    static const char* line_test = std::getenv("CONKER_LINE_TEST");
+    static const bool no_shadow_test = line_test != nullptr && std::strcmp(line_test, "noshadow") == 0;
+    static const bool clamp_test = line_test != nullptr && std::strcmp(line_test, "clamp") == 0;
+    static const bool shadow_dump = std::getenv("CONKER_SHADOW_DUMP") != nullptr;
+    static int shadow_dumps = 0;
+    if (shadow_dump && shadow_dumps < 3 && ctx->r2 - shadow_dl_start > 6 * 8) {
+        shadow_dumps++;
+        std::fprintf(stderr, "[shadow dump] index %u\n", shadow_index);
+        for (gpr at = shadow_dl_start; at < ctx->r2; at += 8) {
+            std::fprintf(stderr, "  %08X %08X\n", (uint32_t)MEM_W(0, at), (uint32_t)MEM_W(4, at));
+        }
+    }
+    if (clamp_test) {
+        // The shadow's tiles: G_SETTILE (0xF5) of an I 8-bit texture (format 4, size 1), wrapping
+        // at 64 both ways. G_TX_CLAMP (2) is set in cmt (bits 18-19 of w1) and cms (bits 8-9).
+        for (gpr at = shadow_dl_start; at < ctx->r2; at += 8) {
+            const uint32_t w0 = (uint32_t)MEM_W(0, at);
+            const uint32_t w1 = (uint32_t)MEM_W(4, at);
+            if ((w0 >> 24) == 0xF5 && ((w0 >> 21) & 7) == 4 && ((w0 >> 19) & 3) == 1 && (w1 & 0x000FFFFF) == 0x00018060) {
+                MEM_W(4, at) = (int32_t)(w1 | (2u << 18) | (2u << 8));
+            }
+        }
+    }
+    if (no_shadow_test) {
+        shadow_last_drawn[shadow_index] = game_frames;
+        ctx->r2 = shadow_dl_start;
+        return;
+    }
     const auto last = shadow_last_drawn.find(shadow_index);
     const bool back_after_gap = last == shadow_last_drawn.end() || game_frames - last->second > 1;
     shadow_last_drawn[shadow_index] = game_frames;

@@ -4,6 +4,12 @@
 #include <chrono>
 #include <csetjmp>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <ctime>
+#include <string>
+
+#include <SDL.h>
 
 #include "recomp.h"
 #include "librecomp/addresses.hpp"
@@ -47,6 +53,11 @@ namespace {
 extern "C" void yield_self_1ms(uint8_t* rdram);
 extern "C" void conker_spin_wait_pass(uint8_t* rdram, recomp_context* ctx) {
     constexpr uint32_t passes_per_ms = 3000;
+    // TEMP-DEBUG (issues #66, #21): CONKER_SPIN_NO_YIELD turns this fix off, the loop as before it.
+    static const bool off = std::getenv("CONKER_SPIN_NO_YIELD") != nullptr;
+    if (off) {
+        return;
+    }
     yield_self_1ms(rdram);
     const uint32_t count = (uint32_t)ctx->r16;
     const uint32_t bound = (uint32_t)ctx->r17;
@@ -74,8 +85,10 @@ namespace {
 // func_10008CE8 at 0x10008EC4, just after it starts the song: its player number is its first
 // argument, the byte at $sp + 0x43.
 extern "C" void conker_song_started(uint8_t* rdram, recomp_context* ctx) {
+    // TEMP-DEBUG (issue #66): CONKER_SPIN_NO_YIELD turns this off too.
+    static const bool off = std::getenv("CONKER_SPIN_NO_YIELD") != nullptr;
     const uint32_t player = MEM_BU(0x43, ctx->r29);
-    if (player >= sequence_players) {
+    if (off || player >= sequence_players) {
         return;
     }
     song_just_started[player] = true;
@@ -102,6 +115,157 @@ extern "C" void conker_song_state(uint8_t* rdram, recomp_context* ctx) {
         return;
     }
     ctx->r2 = 1; // AL_PLAYING
+}
+
+// TEMP-DEBUG (issues #66, #21: loud or missing music after a song change): with CONKER_MUSIC_LOG set,
+// the game's music calls are logged next to the executable (a music_log_<time>_fix-on/off.txt per launch), with the time and the
+// scene: starting a song on a sequence player (func_10008CE8: player, song, and how many passes its
+// wait for the player to stop took, 2,000,000 or more being a timeout), and the calls that set a
+// player's volume (func_10008EE0), stop it (func_10008F24), func_10008F58, func_10008BC0 (two floats)
+// and func_10008B60.
+namespace {
+    FILE* music_log() {
+        static FILE* log = [] {
+            if (std::getenv("CONKER_MUSIC_LOG") == nullptr) {
+                return (FILE*)nullptr;
+            }
+            // A file per launch, named for when and with the fix on or off, so no run overwrites another.
+            const bool fix_off = std::getenv("CONKER_SPIN_NO_YIELD") != nullptr;
+            const std::time_t now = std::time(nullptr);
+            char name[64];
+            std::strftime(name, sizeof(name), "music_log_%Y%m%d_%H%M%S", std::localtime(&now));
+            char* base = SDL_GetBasePath();
+            const std::string path = std::string(base != nullptr ? base : "") + name + (fix_off ? "_fix-off.txt" : "_fix-on.txt");
+            SDL_free(base);
+            FILE* f = std::fopen(path.c_str(), "w");
+            if (f != nullptr) {
+                std::fprintf(f, "wait fix %s\n", std::getenv("CONKER_SPIN_NO_YIELD") != nullptr ? "OFF" : "on");
+            }
+            return f;
+        }();
+        return log;
+    }
+
+    void music_line(uint8_t* rdram, const char* what, int player, const char* details) {
+        FILE* log = music_log();
+        if (log == nullptr) {
+            return;
+        }
+        static const auto start = std::chrono::steady_clock::now();
+        const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+        std::fprintf(log, "%9.3f  scene %02X  %-6s player %d  %s\n", seconds, (uint32_t)MEM_W(0, (gpr)(int32_t)0x800BE9F0),
+            what, player, details);
+        std::fflush(log);
+    }
+    uint32_t music_song = 0;
+}
+
+void conker_music_log_text(uint8_t* rdram, const char* text) {
+    music_line(rdram, "note", -1, text);
+}
+
+// Each sequence player's state (+0x2C of D_8003C900[i]: 0 stopped, 1 playing, 2 stopping), logged
+// when it changes; checked from the music manager's calls, every frame.
+void conker_music_log_player_states(uint8_t* rdram) {
+    static int32_t last[3] = { -1, -1, -1 };
+    for (int i = 0; i < 3; i++) {
+        const gpr player = (gpr)MEM_W(i * 4, (gpr)(int32_t)0x8003C900);
+        const int32_t state = player != 0 ? MEM_W(0x2C, player) : -2;
+        if (state != last[i]) {
+            last[i] = state;
+            char text[64];
+            std::snprintf(text, sizeof(text), "player %d (%08X) state now %d", i, (uint32_t)player, state);
+            music_line(rdram, "pstate", i, text);
+        }
+    }
+}
+
+extern "C" void conker_music_log_play(uint8_t* rdram, recomp_context* ctx) {
+    music_song = (uint32_t)ctx->r5 & 0xFFFF;
+}
+
+extern "C" void conker_music_log_played(uint8_t* rdram, recomp_context* ctx) {
+    char details[96];
+    const uint32_t passes = (uint32_t)ctx->r16;
+    std::snprintf(details, sizeof(details), "song %u  waited %u passes%s  (song loaded %u)", music_song, passes,
+        passes >= 2000000 ? " TIMEOUT" : "", (uint32_t)MEM_HU(((uint32_t)MEM_BU(0x43, ctx->r29)) * 2, (gpr)(int32_t)0x8003CA3C));
+    music_line(rdram, "play", (int)MEM_BU(0x43, ctx->r29), details);
+}
+
+extern "C" void conker_music_log_volume(uint8_t* rdram, recomp_context* ctx) {
+    char details[48];
+    std::snprintf(details, sizeof(details), "value %d (0x%X)", (int32_t)ctx->r5, (uint32_t)ctx->r5);
+    music_line(rdram, "volume", (int)(ctx->r4 & 0xFF), details);
+}
+
+extern "C" void conker_music_log_stop(uint8_t* rdram, recomp_context* ctx) {
+    music_line(rdram, "stop", (int)(ctx->r4 & 0xFF), "");
+}
+
+extern "C" void conker_music_log_f58(uint8_t* rdram, recomp_context* ctx) {
+    music_line(rdram, "F58", (int)(ctx->r4 & 0xFF), "");
+}
+
+extern "C" void conker_music_log_bc0(uint8_t* rdram, recomp_context* ctx) {
+    // The first argument is an integer, so the floats come in $a1 and $a2.
+    char details[64];
+    uint32_t words[2] = { (uint32_t)ctx->r5, (uint32_t)ctx->r6 };
+    float values[2];
+    std::memcpy(values, words, sizeof(values));
+    std::snprintf(details, sizeof(details), "%.3f %.3f", values[0], values[1]);
+    music_line(rdram, "BC0", (int)(ctx->r4 & 0xFF), details);
+}
+
+extern "C" void conker_music_log_b60(uint8_t* rdram, recomp_context* ctx) {
+    char details[64];
+    std::snprintf(details, sizeof(details), "%u %u %u %d", (uint32_t)ctx->r5 & 0xFF, (uint32_t)ctx->r6 & 0xFF,
+        (uint32_t)ctx->r7 & 0xFF, (int32_t)MEM_W(0x10, ctx->r29));
+    music_line(rdram, "B60", (int)(ctx->r4 & 0xFF), details);
+}
+
+extern "C" void conker_music_log_c6c(uint8_t* rdram, recomp_context* ctx) {
+    char details[48];
+    std::snprintf(details, sizeof(details), "arg %u", (uint32_t)ctx->r5 & 0xFF);
+    music_line(rdram, "C6C", (int)(ctx->r4 & 0xFF), details);
+}
+
+extern "C" void conker_music_log_c04(uint8_t* rdram, recomp_context* ctx) {
+    char details[48];
+    std::snprintf(details, sizeof(details), "arg %u %d", (uint32_t)ctx->r5 & 0xFF, (int32_t)ctx->r6);
+    music_line(rdram, "C04", (int)(ctx->r4 & 0xFF), details);
+}
+
+// func_1000D2F8, the music manager's update for one channel ($a0): its state (D_800417B0[channel]),
+// the song it plays (+0x4), its pending request (+0x60, that request's song at +0x4) and +0x20/+0x24.
+// Logged only when any of them changed since the channel's last call, as it runs every frame.
+extern "C" void conker_music_log_manager(uint8_t* rdram, recomp_context* ctx) {
+    if (music_log() == nullptr) {
+        return;
+    }
+    conker_music_log_player_states(rdram);
+    const uint32_t channel = (uint32_t)ctx->r4 & 0xFF;
+    if (channel >= 8) {
+        return;
+    }
+    const uint32_t state = (uint32_t)MEM_W(channel * 4, (gpr)(int32_t)0x800417B0);
+    uint32_t now[6] = { state, 0, 0, 0, 0, 0 };
+    if (state != 0) {
+        const gpr base = (gpr)(int32_t)state;
+        now[1] = (uint32_t)MEM_W(0x4, base);
+        now[2] = (uint32_t)MEM_W(0x60, base);
+        now[3] = now[2] != 0 ? (uint32_t)MEM_W(0x4, (gpr)(int32_t)now[2]) : 0;
+        now[4] = (uint32_t)MEM_W(0x20, base);
+        now[5] = (uint32_t)MEM_W(0x24, base);
+    }
+    static uint32_t last[8][6] = {};
+    if (std::memcmp(last[channel], now, sizeof(now)) == 0) {
+        return;
+    }
+    std::memcpy(last[channel], now, sizeof(now));
+    char details[128];
+    std::snprintf(details, sizeof(details), "state %08X  song %d  pending %08X (song %d)  +20 %d  +24 %d", now[0],
+        (int32_t)now[1], now[2], (int32_t)now[3], (int32_t)now[4], (int32_t)now[5]);
+    music_line(rdram, "manage", (int)channel, details);
 }
 
 // Reads a word through a KSEG1 (uncached) address, for game code that reads

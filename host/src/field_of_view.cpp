@@ -20,11 +20,16 @@
 //
 // Only player 1's camera (index 0) in the normal camera (where the C-buttons turn it: not
 // R-Look, aiming, cutscenes or other special cameras, so the scope's zoom and cutscenes' framing
-// are the game's). Changing between them eases the change over a few frames.
+// are the game's). Changing between them eases the change over a few frames. And only while its
+// view fills the screen: in multiplayer's split screen, camera 0 is player 1's part of it, with a
+// base field of view of its own, and the setting is for single player (issue #78: player 1's view
+// showed no level in split screen).
 
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 #include "recomp.h"
@@ -66,6 +71,21 @@ namespace {
         return 2.0f * std::atan(t) / degrees_to_radians;
     }
 
+    // A camera's view fills the screen: its edges on the N64's 292 by 216 screen (+ 0x24 top,
+    // + 0x28 bottom, + 0x2C left, + 0x30 right) are a full-screen camera's, 2..290 across (as
+    // widescreen.cpp clips it). Split-screen views stop in the middle.
+    bool full_screen(uint8_t* rdram, gpr camera) {
+        return read_float(rdram, camera, 0x2C) <= 4.0f && read_float(rdram, camera, 0x30) >= 286.0f &&
+            read_float(rdram, camera, 0x24) <= 4.0f && read_float(rdram, camera, 0x28) >= 210.0f;
+    }
+
+    // TEMP-DEBUG (issue #78): with CONKER_FOV_LOG set, camera 0's fields of view, edges and cull
+    // scales each frame, to fov_log.txt in the working directory.
+    FILE* fov_log() {
+        static FILE* file = (std::getenv("CONKER_FOV_LOG") != nullptr) ? std::fopen("fov_log.txt", "w") : nullptr;
+        return file;
+    }
+
     // The setting's vertical field of view, or 0 without one (the build without the menus).
     float setting_degrees() {
 #if defined(CONKER_RT64)
@@ -85,9 +105,18 @@ extern "C" void conker_field_of_view(uint8_t* rdram, recomp_context* ctx) {
     const gpr camera = ctx->r2;
     const float base_y = read_float(rdram, camera, 0x70);
     const float setting = setting_degrees();
+    const bool whole_screen = full_screen(rdram, camera);
     float target = 1.0f;
-    if (conker::mouse_camera::normal_camera() && setting > 0.0f && base_y > 0.0f && base_y < 180.0f) {
+    if (whole_screen && conker::mouse_camera::normal_camera() && setting > 0.0f && base_y > 0.0f && base_y < 180.0f) {
         target = half_tan(setting) / half_tan(base_y);
+    }
+    if (FILE* log = fov_log()) {
+        std::fprintf(log, "fov edges=(%.0f,%.0f,%.0f,%.0f) full=%d normal=%d base=(%.2f,%.2f) in_use=(%.2f,%.2f) base_scale=(%.3f,%.3f) setting=%.1f target=%.3f widening=%.3f" "\n",
+            read_float(rdram, camera, 0x2C), read_float(rdram, camera, 0x30), read_float(rdram, camera, 0x24), read_float(rdram, camera, 0x28),
+            whole_screen ? 1 : 0, conker::mouse_camera::normal_camera() ? 1 : 0, read_float(rdram, camera, 0x6C), base_y,
+            read_float(rdram, camera, 0x74), read_float(rdram, camera, 0x78), read_float(rdram, camera, 0x64), read_float(rdram, camera, 0x68),
+            setting, target, widening);
+        std::fflush(log);
     }
     widening += (target - widening) * ease;
     if (std::fabs(widening - target) < 0.001f) {
@@ -126,5 +155,10 @@ void conker::field_of_view::adjust_cull_scales(uint8_t* rdram, uint64_t camera_a
         }
         const float scale = base_scale - (game_fov[i] / base_fov - 1.0f);
         write_float(rdram, scales, i * 4, scale / widened[i]);
+        if (FILE* log = fov_log()) {
+            std::fprintf(log, "cull axis=%d base_fov=%.2f base_scale=%.3f game_fov=%.2f widened=%.3f scale=%.3f" "\n",
+                i, base_fov, base_scale, game_fov[i], widened[i], scale / widened[i]);
+            std::fflush(log);
+        }
     }
 }

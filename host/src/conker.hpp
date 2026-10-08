@@ -55,6 +55,9 @@ namespace conker {
         bool switch_to_next();
         // The region a ROM file's header names ("US", "European"...); empty if it can't tell.
         std::string region_of(const std::filesystem::path& rom_path);
+        // As the game starts (on_init, the ROM loaded): puts back the US ROM's data where ROM hacks are
+        // known to have broken it (issue #79), in the ROM the game reads, not its file.
+        void fix_data();
     }
 
     // main.cpp: why a ROM was refused.
@@ -93,6 +96,10 @@ namespace conker {
         // Rewrites the mapping of each such controller connected. From the main thread only: at start,
         // and from SDL's event watch as a controller connects (it lists SDL's devices, issue #88).
         void fix_all();
+        // TEMP-DEBUG: CONKER_FAKE_PAD's virtual controller.
+        void attach_fake_pad();
+        // Every VI: presses the fake one's C-buttons (TEMP-DEBUG).
+        void update();
     }
 
     // texture_packs.cpp: RT64 texture packs (issue #63).
@@ -141,12 +148,34 @@ namespace conker {
         // The Right Stick: Free Camera setting (issue #65), in single player: whether the right stick
         // turns the third-person camera (mouse_camera.cpp) instead of pressing the C-buttons.
         bool stick_free_camera();
+        // The bank's slow motion leaps (issue #85): from the game thread as a frame starts, whether
+        // player 1's Conker is leaping; whether he was, from any thread; and, from the input thread,
+        // the mouse's tilt added to player 1's stick while he is (the mouse moves the crosshair).
+        void leap_frame(uint8_t* rdram);
+        bool leaping_now();
+        void leap_stick(float& x, float& y);
+        // Aiming: Swap Sticks (issue #84), in single player: whether player 1 is aiming now (either
+        // aiming mode ran for their camera in the last few frames) with the setting on, so the
+        // controller's sticks are swapped (frontend.cpp): the right stick aims and the left moves.
+        bool swap_sticks_now();
+        // TEMP-DEBUG (issue #84): milliseconds since player 1's last aiming frame, and CONKER_SWAP_LOG's
+        // line (printf-style; from any thread).
+        double since_aiming_ms();
+        void swap_log(const char* format, ...);
         // Camera: Invert Turning, for the free camera's stick: turning (x) and tilting (y).
         void free_camera_invert(bool& x, bool& y);
         // Camera: Turning Speed, 1 at 100%.
         float camera_turn_speed();
         // Camera: Field of View: the normal camera's vertical field of view, degrees.
         float camera_field_of_view();
+    }
+
+    // frame_rate.cpp: Game Frame Rate.
+    namespace frame_rate {
+        // TEMP-DEBUG: each game frame, with CONKER_ACTION_LOG set, what changed in player 1's object.
+        void log_game_frame(uint8_t* rdram);
+        // TEMP-DEBUG: each game frame, with CONKER_MEMORY_SCAN set, words that step the same every frame.
+        void scan_game_frame(uint8_t* rdram);
     }
 
     // conker_config.cpp: whether the Graphics tab's settings exist (not with --headless, which makes

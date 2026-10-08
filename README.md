@@ -393,6 +393,11 @@ their own licenses, and a build combines them:
   GlideHQ (Hiroshi Morii, as in GLideN64) and Rice Video, both under the GPL
   version 2 or later ([recomp/README.md](recomp/README.md#local-changes-to-the-tools)).
   That's compatible with the GPL version 3.
+- The macOS linker wrapper, [`host/macos/ld64`](host/macos/ld64), which lets mods
+  patch the program's code there, follows Banjo: Recompiled's
+  ([github.com/BanjoRecomp/BanjoRecomp](https://github.com/BanjoRecomp/BanjoRecomp),
+  `.github/macos/ld64`) and is under the GPL, version 3, as that is. It's only
+  used to build, and isn't part of the program.
 
 The game itself is not included and not covered by them.
 

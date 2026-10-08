@@ -33,7 +33,7 @@ index d387090..75ab87d 100644
  #define G_EX_VERTEX_POSITION        0x0
  #define G_EX_VERTEX_VELOCITY        0x1
 diff --git a/src/common/rt64_common.h b/src/common/rt64_common.h
-index f79adbf..6e0a6f9 100644
+index f79adbf..e40a61d 100644
 --- a/src/common/rt64_common.h
 +++ b/src/common/rt64_common.h
 @@ -70,6 +70,18 @@ namespace RT64 {
@@ -203,6 +203,12 @@ index 3f74ea2..3988595 100644
          void resolveOperations(std::unordered_map<uint64_t, ReplacementResolvedPath> &resolvedPathMap);
          void resolveShifts(std::unordered_map<uint64_t, ReplacementResolvedPath> &resolvedPathMap);
          static uint64_t stringToHash(const std::string &str);
+diff --git a/src/contrib/zstd b/src/contrib/zstd
+--- a/src/contrib/zstd
++++ b/src/contrib/zstd
+@@ -1 +1 @@
+-Subproject commit 0ff651dd876823b99fa5c5f53292be28381aee9b
++Subproject commit 0ff651dd876823b99fa5c5f53292be28381aee9b-dirty
 diff --git a/src/gbi/rt64_gbi.cpp b/src/gbi/rt64_gbi.cpp
 index 7006549..4984e7c 100644
 --- a/src/gbi/rt64_gbi.cpp
