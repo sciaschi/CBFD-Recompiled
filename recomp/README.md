@@ -316,6 +316,17 @@ drivers clipped it as wanted, but on the Steam Deck (RADV) the left bar, which
 starts left of the window, wasn't drawn: the picture showed widescreen on that
 side, and old frames stayed in the strip (issue #82).
 
+The clear is also clipped to the fill's scissor, as the RDP clips a fill rectangle
+(RT64 didn't). In split screen the game fills each player's view with its
+background colour from a rectangle across the whole frame, the scissor set to
+that view, so each view's fill covered the whole frame and every view before it:
+only the last player's level showed, and players 1 to 3 saw just the characters
+and doors, which are drawn after all the fills (issue #78; RT64's inspector
+showed player 1's level drawn, then covered by player 2's background fill). Top
+and bottom are always clipped; left and right only when the scissor is narrower
+than the frame, as a split-screen view's is, so a fill across the frame is still
+stretched to the widened window and the pillarbox bars stay.
+
 The game's 3D and its fill rectangles stop 2 pixels short of each side of its
 292-pixel frame (its camera scissor, and `func_1501A6CC` clamps its fills the
 same): a black border the N64 left for the TV's overscan, which showed down

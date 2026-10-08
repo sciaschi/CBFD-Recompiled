@@ -2022,7 +2022,7 @@ index 5a331aa..e6c0eae 100644
                      const bool resetTicks = !generateInterpolatedFrames || (originalRateForTicks != workload.viOriginalRate) || (displayRateForTicks != workloadConfig.targetRate) || !displayRateAboveOriginal;
                      if (resetTicks) {
 diff --git a/src/render/rt64_framebuffer_renderer.cpp b/src/render/rt64_framebuffer_renderer.cpp
-index 9fae0d4..c6b1bf0 100644
+index 9fae0d4..fb772cb 100644
 --- a/src/render/rt64_framebuffer_renderer.cpp
 +++ b/src/render/rt64_framebuffer_renderer.cpp
 @@ -7,6 +7,7 @@
@@ -2099,7 +2099,35 @@ index 9fae0d4..c6b1bf0 100644
                  if (useWideViewport) {
                      projInvRatioScale = 1.0f;
                  }
-@@ -1625,6 +1663,7 @@ namespace RT64 {
+@@ -1548,6 +1586,27 @@ namespace RT64 {
+                     }
+ 
+                     clearRect.rect = convertFixedRect(call.callDesc.rect, p.resolutionScale, p.fbWidth, invRatioScale, extOriginPercentage, horizontalMisalignment, call.callDesc.rectLeftOrigin, call.callDesc.rectRightOrigin);
++
++                    // The RDP clips a fill rect to the scissor, but the clear it's drawn as doesn't. Conker's split screen
++                    // (issue #78) fills each player's view with its background colour from a rect across the whole
++                    // frame, the scissor set to that view: each view's fill covered the whole frame, the views before
++                    // it included, so only the last player's level showed (the characters and doors, drawn after all
++                    // the fills, still did). The fill is clipped to its scissor, converted as the rect is: top and
++                    // bottom always, left and right when the scissor is narrower than the frame (a split-screen view).
++                    // A scissor across the frame leaves the sides as they were: a rect across it is stretched to the
++                    // widened frame, and rects drawn past the 4:3 area (the cutscene pillarbox bars, issue #82) stay.
++                    const FixedRect &fillScissor = call.callDesc.scissorRect;
++                    if (!fillScissor.isNull()) {
++                        const RenderRect scissorRect = convertFixedRect(fillScissor, p.resolutionScale, p.fbWidth, invRatioScale, extOriginPercentage, horizontalMisalignment, call.callDesc.scissorLeftOrigin, call.callDesc.scissorRightOrigin);
++                        clearRect.rect.top = std::max(clearRect.rect.top, scissorRect.top);
++                        clearRect.rect.bottom = std::min(clearRect.rect.bottom, scissorRect.bottom);
++                        const int32_t frameRight = int32_t(fbPair.colorImage.width) * 4;
++                        const bool scissorAcrossFrame = (fillScissor.ulx <= CoversWidthSlack) && (fillScissor.lrx >= frameRight - CoversWidthSlack);
++                        if (!scissorAcrossFrame) {
++                            clearRect.rect.left = std::max(clearRect.rect.left, scissorRect.left);
++                            clearRect.rect.right = std::min(clearRect.rect.right, scissorRect.right);
++                        }
++                    }
+                 }
+                 else if (call.callDesc.extendedType != DrawExtendedType::None) {
+                     switch (call.callDesc.extendedType) {
+@@ -1625,6 +1684,7 @@ namespace RT64 {
  
                          float invRatioScale = 1.0f / aspectRatioScale;
                          float horizontalMisalignment = 0.0f;
@@ -2107,7 +2135,7 @@ index 9fae0d4..c6b1bf0 100644
                          switch (proj.type) {
                          case Projection::Type::Perspective:
                          case Projection::Type::Orthographic: {
-@@ -1645,14 +1684,46 @@ namespace RT64 {
+@@ -1645,14 +1705,46 @@ namespace RT64 {
                              // The call's scissor spans the whole width of the framebuffer pair scissor. The rect must not be using extended origins.
                              const bool regularOrigins = (call.callDesc.rectLeftOrigin == G_EX_ORIGIN_NONE) && (call.callDesc.rectRightOrigin == G_EX_ORIGIN_NONE);
                              const bool coversScissorWidth = regularOrigins && (call.callDesc.rect.ulx <= fbPair.scissorRect.ulx) && (call.callDesc.rect.lrx >= fbPair.scissorRect.lrx);
@@ -2155,7 +2183,7 @@ index 9fae0d4..c6b1bf0 100644
                              triangles.screenScale = { viewportRect.width / framebuffer.viewport.width, viewportRect.height / framebuffer.viewport.height };
                              triangles.screenOffset.x = halfPixelOffset.x + ((viewportRect.x + viewportRect.width / 2.0f) - halfViewportSize.x) / halfViewportSize.x;
                              triangles.screenOffset.y = halfPixelOffset.y + (halfViewportSize.y - (viewportRect.y + viewportRect.height / 2.0f)) / halfViewportSize.y;
-@@ -1676,7 +1747,12 @@ namespace RT64 {
+@@ -1676,7 +1768,12 @@ namespace RT64 {
                              break;
                          }
  
