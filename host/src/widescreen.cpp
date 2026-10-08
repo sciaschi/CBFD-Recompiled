@@ -206,6 +206,7 @@ extern "C" void conker_frame_dl_begin(uint8_t* rdram, recomp_context* ctx) {
     extended_enabled = false;
     conker::cutscene_aspect::update(rdram);
     conker::shadows::game_frame();
+    conker::look_aim::leap_frame(rdram);
 #if defined(CONKER_RT64)
     conker::achievements::game_frame(rdram);
 #endif

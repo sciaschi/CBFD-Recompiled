@@ -151,6 +151,12 @@ namespace conker {
         // Whether the player's character is aiming the shotgun (state 0x3B), where Z (the laser sight) makes
         // C-Left and C-Right turn the aim: the swapped left stick leaves them out while Z is held (frontend.cpp).
         bool z_turns_aim(int player);
+        // The bank's slow motion leaps (issue #85): from the game thread as a frame starts, whether
+        // player 1's Conker is leaping; whether he was, from any thread; and, from the input thread,
+        // the mouse's tilt added to player 1's stick while he is (the mouse moves the crosshair).
+        void leap_frame(uint8_t* rdram);
+        bool leaping_now();
+        void leap_stick(float& x, float& y);
         // Camera: Invert Turning, for the free camera's stick: turning (x) and tilting (y).
         void free_camera_invert(bool& x, bool& y);
         // Camera: Turning Speed, 1 at 100%.

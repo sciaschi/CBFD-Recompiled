@@ -605,6 +605,10 @@ namespace {
                 cur_y += kb_y;
             }
         }
+        // In the bank's slow motion leaps the mouse moves the crosshair, as the stick (issue #85): port 1's.
+        if (keyboard) {
+            conker::look_aim::leap_stick(cur_x, cur_y);
+        }
         *buttons = cur_buttons;
         *x = std::clamp(cur_x, -1.0f, 1.0f);
         *y = std::clamp(cur_y, -1.0f, 1.0f);
