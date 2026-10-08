@@ -151,11 +151,17 @@ bool conker::graphics_config_ready() {
 }
 
 bool conker::cutscene_aspect::in_4x3() {
+    if (!conker::graphics_config_ready()) {
+        return false;
+    }
     const auto value = recompui::config::get_graphics_config().get_option_value(cutscene_aspect_id);
     return static_cast<CutsceneAspect>(std::get<uint32_t>(value)) == CutsceneAspect::Original;
 }
 
 bool conker::overscan_borders::hidden() {
+    if (!conker::graphics_config_ready()) {
+        return true;
+    }
     const auto value = recompui::config::get_graphics_config().get_option_value(overscan_borders_id);
     return static_cast<OverscanBorders>(std::get<uint32_t>(value)) == OverscanBorders::Hidden;
 }
@@ -169,6 +175,9 @@ bool conker::model_detail::always_highest() {
 }
 
 bool conker::fps_counter::enabled() {
+    if (!conker::graphics_config_ready()) {
+        return false;
+    }
     const auto value = recompui::config::get_graphics_config().get_option_value(show_fps_id);
     return static_cast<ShowFps>(std::get<uint32_t>(value)) == ShowFps::On;
 }

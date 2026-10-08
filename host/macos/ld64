@@ -1,0 +1,78 @@
+#!/usr/bin/env python3
+"""
+A wrapper around macOS's linker (/usr/bin/ld) that lets the program's code be patched at run time.
+
+Mods replace recompiled functions by writing a jump over the start of their machine code
+(librecomp's patch_func, tools/N64ModernRuntime/librecomp/src/mods.cpp), which makes the page
+writable with mprotect first. A Mach-O segment can never be given more access than its maxprot,
+and Apple's linker writes r-x as __TEXT's maxprot whatever -segprot asks for. So the mprotect
+failed, the write that followed hit read-only code, and macOS killed the game the moment a mod
+was enabled, leaving no crash report (issue #81).
+
+This links as usual, then sets the maxprot of __TEXT (and of any segment a -segprot option names)
+in the output's Mach-O header: rwx for __TEXT unless -segprot says otherwise. Its initial
+protection stays r-x, so the code is only writable while a mod's patch is being written.
+
+The approach is Banjo: Recompiled's (.github/macos/ld64 in github.com/BanjoRecomp/BanjoRecomp,
+GPL-3.0), which edits the header with macholib. This one parses the header itself, so it runs
+with the system's python3 and needs no packages: a 64-bit Mach-O's load commands follow its
+32-byte header, and in each LC_SEGMENT_64 command the segment name is at offset 8 and maxprot at
+offset 56.
+"""
+
+import struct
+import subprocess
+import sys
+
+MH_MAGIC_64 = 0xFEEDFACF
+LC_SEGMENT_64 = 0x19
+HEADER_SIZE = 32
+SEGNAME_OFFSET = 8
+MAXPROT_OFFSET = 56
+
+
+def parse_rwx(text):
+    return (1 if 'r' in text else 0) | (2 if 'w' in text else 0) | (4 if 'x' in text else 0)
+
+
+def apply_maxprots(path, maxprots):
+    with open(path, 'r+b') as f:
+        data = bytearray(f.read())
+        magic, = struct.unpack_from('<I', data, 0)
+        if magic != MH_MAGIC_64:
+            sys.exit(f"ld64 wrapper: {path} isn't a 64-bit Mach-O (magic 0x{magic:08X})")
+        ncmds, = struct.unpack_from('<I', data, 16)
+        offset = HEADER_SIZE
+        changed = False
+        for _ in range(ncmds):
+            cmd, cmdsize = struct.unpack_from('<II', data, offset)
+            if cmd == LC_SEGMENT_64:
+                name = bytes(data[offset + SEGNAME_OFFSET:offset + SEGNAME_OFFSET + 16]).rstrip(b'\0').decode('ascii', 'replace')
+                if name in maxprots:
+                    struct.pack_into('<I', data, offset + MAXPROT_OFFSET, maxprots[name])
+                    changed = True
+            offset += cmdsize
+        if changed:
+            f.seek(0)
+            f.write(data)
+
+
+try:
+    subprocess.check_call(['/usr/bin/ld'] + sys.argv[1:])
+except subprocess.CalledProcessError as ex:
+    sys.exit(ex.returncode)
+
+output_file = 'a.out'
+maxprots = {'__TEXT': parse_rwx('rwx')}
+i = 1
+while i < len(sys.argv):
+    if sys.argv[i] == '-o' and i + 1 < len(sys.argv):
+        output_file = sys.argv[i + 1]
+        i += 2
+    elif sys.argv[i] == '-segprot' and i + 3 < len(sys.argv):
+        maxprots[sys.argv[i + 1]] = parse_rwx(sys.argv[i + 2])
+        i += 4
+    else:
+        i += 1
+
+apply_maxprots(output_file, maxprots)

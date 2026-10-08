@@ -105,6 +105,29 @@ done
 
 # install_name_tool invalidated the libraries' signatures: sign everything again, ad hoc.
 codesign --force --sign - "$APP"/Contents/Frameworks/*.dylib
-codesign --force --sign - "$APP"
+# The app with the hardened runtime and the entitlements mods need, as Banjo: Recompiled signs
+# its own (issue #81: enabling a mod killed the game). Mods patch the recompiled functions'
+# code (disable-executable-page-protection, with host/macos/ld64 making __TEXT writable at all)
+# and run code the live recompiler generates (allow-jit, allow-unsigned-executable-memory), and
+# the bundled libraries are signed ad hoc, not by the same team (disable-library-validation).
+ENTITLEMENTS="$(mktemp -t conker-entitlements).plist"
+cat > "$ENTITLEMENTS" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>com.apple.security.cs.allow-jit</key>
+	<true/>
+	<key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+	<true/>
+	<key>com.apple.security.cs.disable-executable-page-protection</key>
+	<true/>
+	<key>com.apple.security.cs.disable-library-validation</key>
+	<true/>
+</dict>
+</plist>
+PLIST
+codesign --force --options=runtime --entitlements "$ENTITLEMENTS" --sign - "$APP"
+rm -f "$ENTITLEMENTS"
 codesign --verify --strict "$APP"
 echo "Packaged $APP (macOS $MIN_MACOS or later)"
