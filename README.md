@@ -213,8 +213,10 @@ Run `host/build/ConkerRecomp` (Linux and macOS) or `host\build-win\ConkerRecomp.
 **Start Game**.
 
 - **Settings** (in the launcher, or Esc / the controller's menu button in game)
-  has graphics (resolution, aspect ratio, anti-aliasing, frame rate), controls,
-  sound and mod options.
+  has its options by tab: General (deadzone, rumble), Camera (turning, the free
+  camera, field of view, aiming with the stick), Mouse & Gyro, Graphics
+  (resolution, aspect ratio, anti-aliasing, frame rate, texture packs), Controls,
+  Sound and Mods. The tabs scroll sideways when they don't all fit.
 - Saves, settings and the stored ROM live in `~/.config/ConkerRecompiled` on
   Linux, `~/Library/Application Support/ConkerRecompiled` on macOS and
   `%LOCALAPPDATA%\ConkerRecompiled` on Windows. Put an empty `portable.txt` next
@@ -278,7 +280,7 @@ Texture packs replace the game's textures with new ones, such as HD textures.
 They're RT64 texture packs, the same format as Zelda 64: Recompiled's and Banjo:
 Recompiled's: an `rt64.json` listing each texture's hash and its replacement
 image. Install a `.rtz` pack like a mod (the `mods` folder, or dropped onto the
-Mods menu), then pick it in **Settings > Texture Packs**, which turns it on and
+Mods menu), then pick it in **Settings > Graphics > Texture Pack**, which turns it on and
 the other packs off. Packs installed while the game runs are listed there from
 the next start. Its default, **Set in the Mods Menu**, leaves them to the
 **Mods** menu instead, where several can be on at once (later ones in the list
@@ -289,7 +291,7 @@ pack's `.htc` file the same way (**Install Mods** or dropped onto the Mods menu)
 or put it in the `mods` folder and start the game or press the Mods menu's
 refresh button: it's unpacked, once, into a pack folder beside it, with its
 progress shown (a large pack takes a minute or so), and turned on. It's then in
-the **Mods** menu, and listed in **Settings > Texture Packs**. GLideN64 names each texture by a
+the **Mods** menu, and listed in **Settings > Graphics > Texture Pack**. GLideN64 names each texture by a
 different hash than RT64 (Rice's), which the game's RT64 works out as each
 texture is loaded. Only packs stored as RGBA8 are unpacked (not those built with
 texture compression).

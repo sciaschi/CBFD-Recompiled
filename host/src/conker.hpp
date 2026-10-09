@@ -111,9 +111,9 @@ namespace conker {
         void update_unpacking();
         // gliden64_packs.cpp: the mod id of the pack a .htc unpacks into.
         std::string gliden64_pack_id(const std::filesystem::path& htc);
-        // The Texture Packs settings tab, listing the packs in the mods folder (a .htc as the pack it
-        // unpacks into).
-        void add_tab();
+        // The Texture Pack setting, at the end of the Graphics tab, listing the packs in the mods
+        // folder (a .htc as the pack it unpacks into).
+        void add_options(recomp::config::Config& config);
         // Turns on the pack chosen in the settings and the others off (unless it's left to the
         // Mods menu). Needs the runtime to have opened the mods.
         void apply();
@@ -134,8 +134,10 @@ namespace conker {
 
     // look_aim.cpp: gyro and mouse in the look mode (hold R), and how each input moves the view.
     namespace look_aim {
-        // Its settings, on the General tab.
-        void add_options(recomp::config::Config& config);
+        // Its settings: the camera's and the stick's aiming on the Camera tab, the mouse's and
+        // gyro's on the Mouse & Gyro tab.
+        void add_camera_options(recomp::config::Config& config);
+        void add_mouse_gyro_options(recomp::config::Config& config);
         // Called on every input poll: queues its mouse and gyro movement for the look mode.
         void on_input_poll();
         // The Mouse: Turn the Camera setting: whether the mouse turns the third-person camera

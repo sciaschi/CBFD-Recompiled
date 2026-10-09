@@ -1,7 +1,7 @@
 // Mouse camera for keyboard and mouse players: a free orbit camera, called from hooks
 // in conker.toml.
 //
-// RecompFrontend's General tab has a Mouse Sensitivity option. Above 0, the cursor is
+// RecompFrontend's Mouse Sensitivity option (on the Mouse & Gyro tab, look_aim.cpp). Above 0, the cursor is
 // captured while the game is played (and released in the menus), and
 // recompinput::get_mouse_deltas() gives the mouse's movement since the game last read
 // its controllers, scaled by that sensitivity.

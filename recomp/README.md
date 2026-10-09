@@ -487,7 +487,7 @@ Free Camera, the right stick, which then presses no C-buttons while it turns it
 func_1510B128 sets it, and works the level's cull scales out for the wider view.
 `fps_counter.cpp` is the Graphics tab's Show FPS: a corner counter of the frames
 RT64 presented and the game's own, a context of its own that takes no input.
-`reticle.cpp` is the General tab's Aiming: Reticle (issue #74, off by default): a
+`reticle.cpp` is the Camera tab's Aiming: Reticle (issue #74, off by default): a
 green ring like Conker: Live & Reloaded's, drawn the same way, while Conker aims
 the slingshot or the throwing knives (the look mode, `func_15120158`, in its
 states 0x2 and 0xA; plain R-Look is 0x0) or in the second aiming mode

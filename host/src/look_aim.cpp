@@ -119,32 +119,31 @@ namespace {
     enum class Toggle : uint32_t { On, Off };
     enum class Invert : uint32_t { None, X, Y, Both };
 
-    // Whether the General tab's settings exist: not with --headless, which makes no menus, though
-    // the game still asks for the camera's settings (its field of view every frame). Reading them
-    // then threw, and the headless run aborted ("General config has not been created yet").
-    bool general_ready() {
-        static bool ready = false;
-        if (!ready) {
-            try {
-                (void)recompui::config::get_general_config();
-                ready = true;
-            }
-            catch (const std::exception&) {
-            }
-        }
-        return ready;
+    // The settings are on the Camera and Mouse & Gyro tabs (conker_config.cpp), read from whichever
+    // config has them. There are none with --headless, which makes no menus, though the game still
+    // asks for the camera's settings (its field of view every frame): reading the General tab's then
+    // threw, and the headless run aborted ("General config has not been created yet").
+    recomp::config::Config* option_config(const std::string& id) {
+        return recompui::config::find_option_config(id);
     }
 
-    // An enum setting, or its first value without the General tab (Off for a toggle).
+    // An enum setting, or its first value without the settings (Off for a toggle).
     template <typename T>
     T option(const std::string& id) {
-        if (!general_ready()) {
+        recomp::config::Config* config = option_config(id);
+        if (config == nullptr) {
             if constexpr (std::is_same_v<T, Toggle>) {
                 return Toggle::Off;
             }
             return T{};
         }
-        return static_cast<T>(std::get<uint32_t>(recompui::config::get_general_config().get_option_value(id)));
+        return static_cast<T>(std::get<uint32_t>(config->get_option_value(id)));
+    }
+
+    // A number setting, or the fallback without the settings.
+    double number_option(const std::string& id, double fallback) {
+        recomp::config::Config* config = option_config(id);
+        return config ? std::get<double>(config->get_option_value(id)) : fallback;
     }
 
     void apply_invert(Invert invert, float& x, float& y) {
@@ -159,40 +158,35 @@ namespace {
 // input direct), gyro now and then hitches turning left and right, never up and down; with Smooth
 // throughout it doesn't. Not yet traced: input noise the spring hides, or something the game does
 // to the yaw alone.
-void conker::look_aim::add_options(recomp::config::Config& config) {
+namespace {
     using EnumOptions = const std::vector<recomp::config::ConfigOptionEnumOption>;
-    static EnumOptions response = {
+    EnumOptions response = {
         {Response::Smooth, "Smooth", "Smooth"},
         {Response::Direct, "Direct", "Direct"},
     };
-    static EnumOptions invert = {
+    EnumOptions invert = {
         {Invert::None, "None", "None"},
         {Invert::X, "InvertX", "Invert X"},
         {Invert::Y, "InvertY", "Invert Y"},
         {Invert::Both, "InvertBoth", "Invert Both"},
+    };
+    EnumOptions toggle = {
+        {Toggle::On, "On", "On"},
+        {Toggle::Off, "Off", "Off"},
     };
     const std::string about =
         "<br /><recomp-color primary>Smooth</recomp-color>: the view eases toward where you aim, as in the original game."
         "<br /><recomp-color primary>Direct</recomp-color>: the view follows it exactly, with no easing.";
-    static EnumOptions turn_invert = {
-        {Invert::None, "None", "None"},
-        {Invert::X, "InvertX", "Invert X"},
-        {Invert::Y, "InvertY", "Invert Y"},
-        {Invert::Both, "InvertBoth", "Invert Both"},
-    };
-    static EnumOptions toggle = {
-        {Toggle::On, "On", "On"},
-        {Toggle::Off, "Off", "Off"},
-    };
+}
 
-    // Grouped by what they're about, each group's names starting alike: the camera, then aiming with
-    // the stick, the mouse and gyro. The sensitivities are RecompFrontend's options (same ids, so
-    // saved values carry over), added here instead of by its General tab to sit with their group.
+// The Camera tab: the normal camera, then aiming with the stick (R-Look and the second aiming mode) and
+// the reticle. Grouped by what they're about, each group's names starting alike.
+void conker::look_aim::add_camera_options(recomp::config::Config& config) {
     config.add_enum_option(options::camera_turn_invert, "Camera: Invert Turning",
         "Inverts the camera's left and right turning in single player, with the right stick or C-Left and C-Right. "
         "<recomp-color primary>None</recomp-color> matches the original game. Strafing in multiplayer isn't affected. "
         "Y inverts tilting up and down, with the right stick when Right Stick: Free Camera is on.",
-        turn_invert, Invert::None);
+        invert, Invert::None);
     config.add_number_option(options::camera_turn_speed, "Camera: Turning Speed",
         "Sets how fast the camera turns left and right in single player, with the right stick or C-Left and C-Right. "
         "Strafing in multiplayer isn't affected.",
@@ -224,7 +218,13 @@ void conker::look_aim::add_options(recomp::config::Config& config) {
         "its own crosshair) or in split screen. <recomp-color primary>Off</recomp-color> matches the original game, "
         "where you aim by eye.",
         toggle, Toggle::Off);
+}
 
+// The Mouse & Gyro tab. The sensitivities are RecompFrontend's options (same ids, so saved values carry
+// over), added here instead of by its General tab to sit with their group; RecompFrontend reads them from
+// here (find_option_config). Each input's other settings are hidden while its sensitivity is zero, which
+// turns that input off.
+void conker::look_aim::add_mouse_gyro_options(recomp::config::Config& config) {
     config.add_percent_number_option(recompui::config::general::options::mouse_sensitivity, "Mouse: Sensitivity",
         "How fast the mouse turns the camera and aims, in R-Look (hold R and look around) and the second aiming mode "
         "(e.g. the sniper scope). <b>Zero turns mouse control off</b> and leaves the cursor free. "
@@ -254,6 +254,14 @@ void conker::look_aim::add_options(recomp::config::Config& config) {
     config.add_enum_option(options::gyro_invert, "Gyro: Invert Aiming",
         "Inverts gyro in R-Look (hold R and look around) and the second aiming mode (e.g. the sniper scope), separately from the stick and the mouse. With <recomp-color primary>None</recomp-color>, the view turns the way the controller is turned.",
         invert, Invert::None);
+
+    static std::vector<recomp::config::ConfigValueVariant> off = { 0.0 };
+    for (const std::string& id : { options::mouse_camera, options::mouse_response, options::mouse_invert }) {
+        config.add_option_hidden_dependency(id, recompui::config::general::options::mouse_sensitivity, off);
+    }
+    for (const std::string& id : { options::gyro_response, options::gyro_invert }) {
+        config.add_option_hidden_dependency(id, recompui::config::general::options::gyro_sensitivity, off);
+    }
 }
 #endif
 
@@ -284,11 +292,8 @@ bool conker::look_aim::stick_free_camera() {
 }
 
 float conker::look_aim::camera_field_of_view() {
-    // None without the General tab: the game's own field of view (field_of_view.cpp).
-    if (!general_ready()) {
-        return 0.0f;
-    }
-    return (float)std::get<double>(recompui::config::get_general_config().get_option_value(options::camera_fov));
+    // None without the settings: the game's own field of view (field_of_view.cpp).
+    return (float)number_option(options::camera_fov, 0.0);
 }
 
 void conker::look_aim::free_camera_invert(bool& x, bool& y) {
@@ -353,10 +358,7 @@ extern "C" void conker_camera_turn_invert(uint8_t* rdram, recomp_context* ctx) {
 
 #if defined(CONKER_RT64)
 float conker::look_aim::camera_turn_speed() {
-    if (!general_ready()) {
-        return 1.0f;
-    }
-    return (float)(std::get<double>(recompui::config::get_general_config().get_option_value(options::camera_turn_speed)) / 100.0);
+    return (float)(number_option(options::camera_turn_speed, 100.0) / 100.0);
 }
 #endif
 
