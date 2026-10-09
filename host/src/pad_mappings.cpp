@@ -12,7 +12,6 @@
 //   halves to Back (up), X (down), Y (left) and Misc2 (right). Those two axes become the right stick.
 // A mapping that already has a right stick is left alone (SDL2's own on Windows, for instance).
 
-#include <atomic>
 #include <cstdio>
 #include <string>
 #include <vector>
@@ -129,12 +128,9 @@ namespace {
         }
         return result + c_stick + ",";
     }
-
-    std::atomic<bool> devices_added{ false };
 }
 
 void conker::pad_mappings::fix_all() {
-    devices_added = false;
     for (int index = 0; index < SDL_NumJoysticks(); index++) {
         char* mapping = SDL_GameControllerMappingForDeviceIndex(index);
         if (mapping == nullptr) {
@@ -152,14 +148,4 @@ void conker::pad_mappings::fix_all() {
         }
     }
     std::fflush(stdout);
-}
-
-void conker::pad_mappings::on_device_added() {
-    devices_added = true;
-}
-
-void conker::pad_mappings::update() {
-    if (devices_added) {
-        fix_all();
-    }
 }
