@@ -49,6 +49,7 @@
 #include <fstream>
 #include <map>
 #include <mutex>
+#include <span>
 #include <string>
 #include <thread>
 #include <vector>
@@ -726,6 +727,37 @@ void conker::achievements::game_frame(uint8_t* rdram) {
         log_line("[birdy] version %u level %u/%u pointer 0x%06X flag %u / pointer 0x%06X flag %u", read_le(0x4, 2),
             read_le(0x0BEE14, 1), read_le(0x0BE9F4, 1), pointer_a, (read_le(pointer_a + 3, 1) >> 3) & 1, pointer_b, (read_le(pointer_b + 3, 1) >> 3) & 1);
     }
+}
+
+std::vector<uint8_t> conker::achievements::save_progress() {
+    std::vector<uint8_t> progress;
+    if (client == nullptr) {
+        return progress;
+    }
+    progress.resize(rc_client_progress_size(client));
+    if (progress.empty() || rc_client_serialize_progress_sized(client, progress.data(), progress.size()) != RC_OK) {
+        progress.clear();
+    }
+    return progress;
+}
+
+void conker::achievements::load_progress(std::span<const uint8_t> progress) {
+    if (client == nullptr) {
+        return;
+    }
+    // Without progress (a state taken before the game's achievements loaded), rcheevos starts them over.
+    rc_client_deserialize_progress_sized(client, progress.empty() ? nullptr : progress.data(), progress.size());
+}
+
+bool conker::achievements::hardcore() {
+    return client != nullptr && rc_client_get_hardcore_enabled(client);
+}
+
+void conker::achievements::show_notice(const std::string& text) {
+    std::printf("[notice] %s\n", text.c_str());
+    std::fflush(stdout);
+    std::lock_guard lock{messages_mutex};
+    messages.push_back(text);
 }
 
 void conker::achievements::on_ui_ready() {

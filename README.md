@@ -35,6 +35,8 @@ yourself instead, read on.
 - Mod support (`.nrm` mods: function patches and hooks). Three mods are
   included: **Skip Intro**, **Skip Any Cutscene** and **Cheats**.
 - Texture packs (RT64's `.rtz`), for HD textures and other replacements.
+- Save states: save anywhere with F5 and load with F7, in nine slots
+  ([how to use them, and how they work](docs/save-states.md)).
 
 ## Status
 
@@ -222,6 +224,9 @@ Run `host/build/ConkerRecomp` (Linux and macOS) or `host\build-win\ConkerRecomp.
   Linux, `~/Library/Application Support/ConkerRecompiled` on macOS and
   `%LOCALAPPDATA%\ConkerRecompiled` on Windows. Put an empty `portable.txt` next
   to the executable to keep them there instead.
+- **Save states**: F5 saves the game exactly as it is, F7 loads it back, F6
+  picks the next of the nine slots. They never touch the game's own saves. See
+  [docs/save-states.md](docs/save-states.md).
 - Default keyboard controls: move with WASD, A = Space, B = Left Shift,
   Z = Q, L = E, R = R, Start = Enter, C buttons = arrow keys, D-pad = IJKL.
   Everything can be remapped in Controls.

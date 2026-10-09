@@ -196,6 +196,8 @@ namespace {
         NFD_Init();
         // The mouse camera's scroll wheel zoom (mouse_camera.cpp).
         conker_mouse_camera_init();
+        // Save states' keys, and the runtime's idle moment they're taken at (save_states.cpp).
+        conker::save_states::init();
         return nullptr;
     }
 

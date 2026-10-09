@@ -211,6 +211,20 @@ namespace conker {
         void on_ui_ready();
         // On the main thread (update_gfx): shows the unlock messages, one at a time.
         void update();
+        // Save states (save_states.cpp), from the idle moment: the achievements' progress (how far
+        // each is toward unlocking), to keep in a state and to put back as it's loaded.
+        std::vector<uint8_t> save_progress();
+        void load_progress(std::span<const uint8_t> progress);
+        // Whether RetroAchievements' Hardcore mode is on (it forbids loading states).
+        bool hardcore();
+        // A line in the messages' corner, as the unlocks are shown (save states' "State saved"...).
+        void show_notice(const std::string& text);
+    }
+
+    // save_states.cpp: save states (issue #94), F5 to save, F7 to load, F6 for the next slot.
+    namespace save_states {
+        // At start (frontend.cpp): the keys, and the runtime's idle moment that states are taken at.
+        void init();
     }
 
     // fps_counter.cpp: Show FPS, the frame rate counter.
