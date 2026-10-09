@@ -196,6 +196,9 @@ namespace conker {
     namespace achievements {
         // At start (frontend.cpp, once the config folder is known): logs in, if there's a login.
         void init();
+        // With the other settings tabs (conker_config.cpp): the RetroAchievements tab, to log in and
+        // out and see the game's achievements.
+        void add_tab();
         // From the game thread, as the game starts a frame's display list: loads the game's
         // achievements once logged in, then checks them against the game's memory.
         void game_frame(uint8_t* rdram);

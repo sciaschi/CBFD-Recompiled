@@ -14,11 +14,23 @@
 //   builds report the request failed, so they run as without achievements.
 // - The UI: an unlock shows as a line in the top-left corner for a few seconds (a recompui context of its
 //   own that takes no input, as the FPS counter's), and everything rc_client says goes to the console.
+//   The line waits for the game to start: recompui shows the launcher only while no context is shown, so
+//   shown at the launcher ("logged in as ...", a second after it opens) it kept the screen black until it
+//   went.
 //
-// Login, for now: retroachievements.txt in the config folder (next to the other settings) with
+// The RetroAchievements settings tab (add_tab, made with the other tabs in conker_config.cpp) logs in and
+// out and lists the game's achievements, unlocked and not, once the game has started and been recognized
+// (the ROM is hashed as the game starts: mods may patch it then, and it isn't the final ROM before). It's
+// a tab of its own rather than a config: the login isn't an option to keep in a json, and its parts change
+// as the login and the unlocks come back from the server, so it rebuilds itself when they do (a version
+// number each, bumped from whichever thread a reply came on, read on the UI's own update).
+//
+// The login is kept in retroachievements.txt in the config folder (next to the other settings):
 //   username=<name>
-//   password=<password>
-// Once logged in, the password is replaced by the token the server gives (token=...), so it isn't kept.
+//   token=<token>
+// The password typed in the tab is only sent: once logged in, the token the server gives is kept instead.
+// (A password=<password> line, written by hand, logs in the same way and is replaced by the token too.)
+// Logging out deletes the file. Without it RetroAchievements does nothing until you log in.
 // Casual (softcore) only: hardcore mode needs RetroAchievements' approval of the program, and its rules (no
 // cheats: the mods would have to be off) aren't in place yet.
 //
@@ -43,7 +55,9 @@
 
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
+#ifndef NOMINMAX
 #define NOMINMAX
+#endif
 #include <windows.h>
 #include <winhttp.h>
 #endif
@@ -53,7 +67,12 @@
 
 #include "librecomp/game.hpp"
 #include "recompui/recompui.h"
+#include "recompui/config.h"
+#include "elements/ui_button.h"
+#include "elements/ui_config_page.h"
 #include "elements/ui_label.h"
+#include "elements/ui_scroll_container.h"
+#include "elements/ui_text_input.h"
 #include "ultramodern/ultramodern.hpp"
 
 #include "conker.hpp"
@@ -72,6 +91,37 @@ namespace {
     std::atomic<bool> logged_in = false;
     std::atomic<bool> game_load_started = false;
     std::string user_agent;
+
+    // What the settings tab shows, set from the replies' threads. The versions say what to rebuild: the
+    // account (login state) and the achievement list (the game loading, an unlock).
+    enum class LoginState { Off, LoggingIn, LoggedIn, Failed };
+    enum class GameState { None, Loading, Loaded, Unknown };
+    std::mutex state_mutex;
+    LoginState login_state = LoginState::Off;
+    GameState game_state = GameState::None;
+    std::string login_error;
+    std::string game_error;
+    std::atomic<uint32_t> account_version = 1;
+    std::atomic<uint32_t> list_version = 1;
+
+    void set_login_state(LoginState state, const std::string& error = {}) {
+        {
+            std::lock_guard lock{state_mutex};
+            login_state = state;
+            login_error = error;
+        }
+        account_version++;
+        list_version++;
+    }
+
+    void set_game_state(GameState state, const std::string& error = {}) {
+        {
+            std::lock_guard lock{state_mutex};
+            game_state = state;
+            game_error = error;
+        }
+        list_version++;
+    }
 
     std::filesystem::path login_path() {
         return recomp::get_config_path() / "retroachievements.txt";
@@ -244,6 +294,7 @@ namespace {
         case RC_CLIENT_EVENT_ACHIEVEMENT_TRIGGERED:
             show_message(std::string("Achievement unlocked: ") + event->achievement->title + " (" +
                 std::to_string(event->achievement->points) + ")");
+            list_version++;
             break;
         case RC_CLIENT_EVENT_GAME_COMPLETED:
             show_message("All achievements unlocked!");
@@ -261,8 +312,10 @@ namespace {
     void RC_CCONV game_loaded(int result, const char* error_message, rc_client_t* client, void*) {
         if (result != RC_OK) {
             show_message(std::string("RetroAchievements: this ROM isn't recognized (") + (error_message ? error_message : "unknown error") + ")");
+            set_game_state(GameState::Unknown, error_message ? error_message : "unknown error");
             return;
         }
+        set_game_state(GameState::Loaded);
         const rc_client_game_t* game = rc_client_get_game_info(client);
         rc_client_user_game_summary_t summary{};
         rc_client_get_user_game_summary(client, &summary);
@@ -288,6 +341,7 @@ namespace {
     void RC_CCONV logged_in_callback(int result, const char* error_message, rc_client_t* client, void*) {
         if (result != RC_OK) {
             show_message(std::string("RetroAchievements: login failed (") + (error_message ? error_message : "unknown error") + ")");
+            set_login_state(LoginState::Failed, error_message ? error_message : "unknown error");
             return;
         }
         // Keep the token, not the password.
@@ -298,6 +352,41 @@ namespace {
         }
         show_message(std::string("RetroAchievements: logged in as ") + (user ? user->display_name : "?"));
         logged_in = true;
+        set_login_state(LoginState::LoggedIn);
+    }
+
+    // The client, made once whether there's a login yet or not, so the settings tab can log in.
+    void create_client() {
+        if (client != nullptr) {
+            return;
+        }
+        client = rc_client_create(read_memory, server_call);
+        rc_client_enable_logging(client, RC_CLIENT_LOG_LEVEL_INFO, log_message);
+        rc_client_set_event_handler(client, handle_event);
+        rc_client_set_hardcore_enabled(client, 0);
+        char clause[128] = {};
+        rc_client_get_user_agent_clause(client, clause, sizeof(clause));
+        user_agent = std::string(program_name) + "/" + program_version + " " + clause;
+    }
+
+    void log_in_with_password(const std::string& username, const std::string& password) {
+        create_client();
+        set_login_state(LoginState::LoggingIn);
+        rc_client_begin_login_with_password(client, username.c_str(), password.c_str(), logged_in_callback, nullptr);
+    }
+
+    // Logging out unloads the game too (rc_client's own), so a login after loads it again on the next frame.
+    void log_out() {
+        if (client == nullptr) {
+            return;
+        }
+        rc_client_logout(client);
+        logged_in = false;
+        game_load_started = false;
+        std::error_code error;
+        std::filesystem::remove(login_path(), error);
+        set_game_state(GameState::None);
+        set_login_state(LoginState::Off);
     }
 
     // --- The overlay ---
@@ -329,33 +418,249 @@ namespace {
         overlay.close();
         overlay_created = true;
     }
+
+    // --- The settings tab ---
+
+    // The page: the account on the left (logging in, or who's logged in and logging out), the game's
+    // achievements on the right. Made each time the tab is opened (the modal makes a tab's contents
+    // anew), it rebuilds a side when its version moves on.
+    class AchievementsPage : public recompui::ConfigPage {
+    private:
+        uint32_t shown_account = 0;
+        uint32_t shown_list = 0;
+        recompui::TextInput* username_input = nullptr;
+        recompui::TextInput* password_input = nullptr;
+    protected:
+        std::string_view get_type_name() override { return "AchievementsPage"; }
+
+        void process_event(const recompui::Event& e) override {
+            if (e.type == recompui::EventType::Update) {
+                refresh();
+                queue_update();
+            }
+        }
+
+        void refresh() {
+            const uint32_t account = account_version.load();
+            if (account != shown_account) {
+                shown_account = account;
+                build_account();
+            }
+            const uint32_t list = list_version.load();
+            if (list != shown_list) {
+                shown_list = list;
+                build_list();
+            }
+        }
+
+        void build_account() {
+            recompui::ContextId context = recompui::get_current_context();
+            recompui::Element* side = body->get_left();
+            side->clear_children();
+            username_input = nullptr;
+            password_input = nullptr;
+            side->set_display(recompui::Display::Flex);
+            side->set_flex_direction(recompui::FlexDirection::Column);
+            side->set_gap(16.0f);
+            side->set_as_navigation_container(recompui::NavigationType::Vertical);
+
+            LoginState state;
+            std::string error;
+            {
+                std::lock_guard lock{state_mutex};
+                state = login_state;
+                error = login_error;
+            }
+
+            context.create_element<recompui::Label>(side, "RetroAchievements", recompui::theme::Typography::Header3);
+            auto add_text = [&](const std::string& text, recompui::theme::color color) {
+                recompui::Label* label = context.create_element<recompui::Label>(side, text, recompui::theme::Typography::Body);
+                label->set_line_height(28.0f);
+                label->set_color(color);
+                return label;
+            };
+
+            if (state == LoginState::LoggedIn) {
+                const rc_client_user_t* user = client ? rc_client_get_user_info(client) : nullptr;
+                add_text(std::string("Logged in as ") + (user ? user->display_name : "?") + " (" +
+                    std::to_string(user ? user->score_softcore : 0) + " casual points).", recompui::theme::color::Text);
+                add_text("Achievements are earned in casual mode. Hardcore mode isn't available yet.", recompui::theme::color::TextDim);
+                recompui::Button* button = context.create_element<recompui::Button>(side, "Log Out", recompui::ButtonStyle::Secondary, recompui::ButtonSize::Medium);
+                button->add_pressed_callback([] { log_out(); });
+                return;
+            }
+            if (state == LoginState::LoggingIn) {
+                add_text("Logging in...", recompui::theme::color::Text);
+                return;
+            }
+
+            add_text("Log in with your retroachievements.org account to earn the game's achievements as you play.",
+                recompui::theme::color::Text);
+#if !defined(_WIN32)
+            add_text("Not available on this platform yet: logging in will fail.", recompui::theme::color::Warning);
+#endif
+            if (state == LoginState::Failed) {
+                add_text("Login failed: " + error, recompui::theme::color::Danger);
+            }
+            context.create_element<recompui::Label>(side, "Username", recompui::theme::Typography::LabelMD);
+            username_input = context.create_element<recompui::TextInput>(side);
+            {
+                // The name logged in with last, if any: retyping only the password after logging out.
+                const auto login = read_login();
+                const auto username = login.find("username");
+                if (username != login.end()) {
+                    username_input->set_text(username->second);
+                }
+            }
+            context.create_element<recompui::Label>(side, "Password", recompui::theme::Typography::LabelMD);
+            password_input = context.create_element<recompui::TextInput>(side, false);
+            add_text("Only sent to RetroAchievements to log in. The token it gives back is kept instead.",
+                recompui::theme::color::TextDim);
+            recompui::Button* button = context.create_element<recompui::Button>(side, "Log In", recompui::ButtonStyle::Primary, recompui::ButtonSize::Medium);
+            button->add_pressed_callback([this] {
+                if (username_input == nullptr || password_input == nullptr) {
+                    return;
+                }
+                const std::string username = username_input->get_text();
+                const std::string password = password_input->get_text();
+                if (username.empty() || password.empty()) {
+                    return;
+                }
+                log_in_with_password(username, password);
+            });
+        }
+
+        void build_list() {
+            recompui::ContextId context = recompui::get_current_context();
+            recompui::Element* side = body->get_right();
+            side->clear_children();
+            side->set_display(recompui::Display::Flex);
+            side->set_flex_direction(recompui::FlexDirection::Column);
+            side->set_gap(8.0f);
+
+            LoginState login;
+            GameState game;
+            std::string error;
+            {
+                std::lock_guard lock{state_mutex};
+                login = login_state;
+                game = game_state;
+                error = game_error;
+            }
+            auto add_text = [&](recompui::Element* parent, const std::string& text, recompui::theme::Typography typography, recompui::theme::color color) {
+                recompui::Label* label = context.create_element<recompui::Label>(parent, text, typography);
+                if (typography == recompui::theme::Typography::Body) {
+                    label->set_line_height(28.0f);
+                }
+                label->set_color(color);
+                return label;
+            };
+
+            if (login != LoginState::LoggedIn) {
+                add_text(side, "Log in to see the game's achievements.", recompui::theme::Typography::Body, recompui::theme::color::TextDim);
+                return;
+            }
+            if (game == GameState::None || game == GameState::Loading) {
+                add_text(side, game == GameState::None ? "Start the game to load its achievements." : "Loading the game's achievements...",
+                    recompui::theme::Typography::Body, recompui::theme::color::TextDim);
+                return;
+            }
+            if (game == GameState::Unknown) {
+                add_text(side, "RetroAchievements doesn't recognize this ROM (" + error + "). Its achievements are for the US release.",
+                    recompui::theme::Typography::Body, recompui::theme::color::Warning);
+                return;
+            }
+
+            const rc_client_game_t* info = rc_client_get_game_info(client);
+            rc_client_user_game_summary_t summary{};
+            rc_client_get_user_game_summary(client, &summary);
+            add_text(side, info ? info->title : "The game", recompui::theme::Typography::Header3, recompui::theme::color::Text);
+            add_text(side, std::to_string(summary.num_unlocked_achievements) + " of " + std::to_string(summary.num_core_achievements) +
+                " unlocked, " + std::to_string(summary.points_unlocked) + " of " + std::to_string(summary.points_core) + " points",
+                recompui::theme::Typography::Body, recompui::theme::color::TextDim);
+
+            // The list, scrolled: grouped as rcheevos groups them (recently unlocked, almost there, locked,
+            // unlocked...). Each one is focusable, so a controller can scroll through them too.
+            recompui::ScrollContainer* scroll = context.create_element<recompui::ScrollContainer>(side, recompui::ScrollDirection::Vertical);
+            scroll->set_as_navigation_container(recompui::NavigationType::Vertical);
+            recompui::Element* list = context.create_element<recompui::Element>(scroll);
+            list->set_display(recompui::Display::Flex);
+            list->set_flex_direction(recompui::FlexDirection::Column);
+            list->set_gap(8.0f);
+            list->set_padding_right(8.0f);
+            rc_client_achievement_list_t* achievements = rc_client_create_achievement_list(client, RC_CLIENT_ACHIEVEMENT_CATEGORY_CORE,
+                RC_CLIENT_ACHIEVEMENT_LIST_GROUPING_PROGRESS);
+            if (achievements == nullptr) {
+                return;
+            }
+            for (uint32_t b = 0; b < achievements->num_buckets; b++) {
+                const rc_client_achievement_bucket_t& bucket = achievements->buckets[b];
+                recompui::Label* heading = add_text(list, bucket.label ? bucket.label : "", recompui::theme::Typography::LabelMD,
+                    recompui::theme::color::TextDim);
+                heading->set_margin_top(b == 0 ? 0.0f : 12.0f);
+                for (uint32_t a = 0; a < bucket.num_achievements; a++) {
+                    const rc_client_achievement_t* achievement = bucket.achievements[a];
+                    recompui::Element* row = context.create_element<recompui::Element>(list);
+                    row->set_display(recompui::Display::Flex);
+                    row->set_flex_direction(recompui::FlexDirection::Column);
+                    row->set_gap(4.0f);
+                    row->set_padding(12.0f);
+                    row->set_border_radius(recompui::theme::border::radius_sm);
+                    row->set_border_width(recompui::theme::border::width);
+                    row->set_border_color(achievement->unlocked ? recompui::theme::color::SuccessA50 : recompui::theme::color::BorderSoft);
+                    row->set_background_color(achievement->unlocked ? recompui::theme::color::SuccessA5 : recompui::theme::color::BGShadow);
+                    row->set_focusable(true);
+                    row->set_tab_index_auto();
+                    std::string title = std::string(achievement->title) + " (" + std::to_string(achievement->points) + ")";
+                    if (achievement->measured_progress[0] != '\0' && !achievement->unlocked) {
+                        title += "  " + std::string(achievement->measured_progress);
+                    }
+                    add_text(row, title, recompui::theme::Typography::LabelMD,
+                        achievement->unlocked ? recompui::theme::color::Text : recompui::theme::color::TextDim);
+                    add_text(row, achievement->description ? achievement->description : "", recompui::theme::Typography::Body,
+                        recompui::theme::color::TextDim);
+                }
+            }
+            rc_client_destroy_achievement_list(achievements);
+        }
+    public:
+        AchievementsPage(recompui::ResourceId rid, recompui::Element* parent)
+            : ConfigPage(rid, parent, recompui::Events(recompui::EventType::Update)) {
+            set_as_navigation_container(recompui::NavigationType::Horizontal);
+            body->get_right()->set_overflow_y(recompui::Overflow::Hidden);
+            refresh();
+            queue_update();
+        }
+    };
 }
 
 void conker::achievements::init() {
     if (client != nullptr) {
         return;
     }
+    create_client();
     const auto login = read_login();
     const auto username = login.find("username");
     if (username == login.end() || username->second.empty()) {
-        return;  // No login file: RetroAchievements stays off.
+        return;  // No login yet: nothing happens until one is made in the settings tab.
     }
-    client = rc_client_create(read_memory, server_call);
-    rc_client_enable_logging(client, RC_CLIENT_LOG_LEVEL_INFO, log_message);
-    rc_client_set_event_handler(client, handle_event);
-    rc_client_set_hardcore_enabled(client, 0);
-    char clause[128] = {};
-    rc_client_get_user_agent_clause(client, clause, sizeof(clause));
-    user_agent = std::string(program_name) + "/" + program_version + " " + clause;
-
     const auto token = login.find("token");
     const auto password = login.find("password");
     if (token != login.end() && !token->second.empty()) {
+        set_login_state(LoginState::LoggingIn);
         rc_client_begin_login_with_token(client, username->second.c_str(), token->second.c_str(), logged_in_callback, nullptr);
     }
     else if (password != login.end() && !password->second.empty()) {
+        set_login_state(LoginState::LoggingIn);
         rc_client_begin_login_with_password(client, username->second.c_str(), password->second.c_str(), logged_in_callback, nullptr);
     }
+}
+
+void conker::achievements::add_tab() {
+    recompui::config::create_tab("RetroAchievements", "retroachievements",
+        [](recompui::ContextId context, recompui::Element* parent) {
+            context.create_element<AchievementsPage>(parent);
+        });
 }
 
 void conker::achievements::game_frame(uint8_t* rdram) {
@@ -391,6 +696,7 @@ void conker::achievements::game_frame(uint8_t* rdram) {
             log_line("[memory] exception vectors from ROM offset 0x%zX: second word %02X%02X%02X%02X", at, w[4], w[5], w[6], w[7]);
             break;
         }
+        set_game_state(GameState::Loading);
         rc_client_begin_identify_and_load_game(client, RC_CONSOLE_NINTENDO_64, nullptr, rom.data(), rom.size(), game_loaded, nullptr);
     }
     rc_client_do_frame(client);
@@ -428,6 +734,11 @@ void conker::achievements::on_ui_ready() {
 
 void conker::achievements::update() {
     if (!ui_ready || client == nullptr) {
+        return;
+    }
+    // Not before the game has started: shown at the launcher, the line kept it from being shown (recompui
+    // brings the launcher back only while no context is shown) and the screen stayed black. The lines wait.
+    if (!ultramodern::is_game_started()) {
         return;
     }
     const clock::time_point now = clock::now();
