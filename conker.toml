@@ -576,6 +576,27 @@ func = "func_151284C4"
 before_vram = 0x151284C8
 text = "{ extern void conker_mouse_camera(uint8_t*, recomp_context*); conker_mouse_camera(rdram, ctx); }"
 
+# Aiming: Swap Sticks with the shotgun (host/src/look_aim.cpp, issue #84): after R alone's movement in Conker's
+# state 0x3B (func_15063E84 returned, $s0 Conker), R alone shows the laser sight as R and Z do.
+[[patches.hook]]
+func = "func_15065A5C"
+before_vram = 0x15069028
+text = "{ extern void conker_shotgun_laser(uint8_t*, recomp_context*); conker_shotgun_laser(rdram, ctx); }"
+
+# And R alone's walk in state 0x3B (func_15064B94 picked 0x224 in $v1) is R and Z's (0x31B), with the gun up.
+[[patches.hook]]
+func = "func_15064B94"
+before_vram = 0x150651FC
+text = "{ extern void conker_shotgun_laser_walk(uint8_t*, recomp_context*); conker_shotgun_laser_walk(rdram, ctx); }"
+
+# Aiming: Lock-On (host/src/look_aim.cpp): func_15063A38 turns the aim by the stick, or toward an enemy
+# with func_150639BC while +0x84 of $a0's +0x31C is set ($t1, tested at 0x15063A80). With the setting
+# Off the flag reads as clear.
+[[patches.hook]]
+func = "func_15063A38"
+before_vram = 0x15063A80
+text = "{ extern void conker_aim_lock_on(uint8_t*, recomp_context*); conker_aim_lock_on(rdram, ctx); }"
+
 [[patches.hook]]
 func = "func_15120158"
 before_vram = 0x1512015C
@@ -583,11 +604,13 @@ text = "{ extern void conker_mouse_camera_look_mode(uint8_t*, recomp_context*); 
 
 # Mouse camera: func_1512C490 (in func_151284C4) has copied the look-at point and the eye into
 # the view's (+0x2E0, +0x2EC; $s0 the camera). Tilted up past where the eye stops, the view's
-# look-at point is raised to aim higher from the same eye (issue #70).
+# look-at point is raised to aim higher from the same eye (issue #70). While aiming with Aiming: Swap
+# Sticks, the view is turned to the aim's direction, so walking doesn't turn it (issue #84,
+# host/src/look_aim.cpp).
 [[patches.hook]]
 func = "func_1512C490"
 before_vram = 0x1512C640
-text = "{ extern void conker_mouse_camera_aim(uint8_t*, recomp_context*); conker_mouse_camera_aim(rdram, ctx); }"
+text = "{ extern void conker_mouse_camera_aim(uint8_t*, recomp_context*); conker_mouse_camera_aim(rdram, ctx); extern void conker_look_view(uint8_t*, recomp_context*); conker_look_view(rdram, ctx); }"
 
 # Motion blur (func_151D6778, Conker drunk): a frame it's drawn in is drawn without frames between it
 # and the next, so the blur blends with a whole frame's ghost as on the N64 (host/src/widescreen.cpp,

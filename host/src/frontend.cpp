@@ -368,7 +368,23 @@ namespace {
         return count;
     }
 
-    float controller_field_analog(SDL_GameController* controller, const recompinput::InputField& field) {
+    // The stick axis read for an axis bound: with swap (Aiming: Swap Sticks, issue #84), the left stick's
+    // axes are read from the right stick and the right's from the left, so whatever the profile binds to
+    // either stick (by default the N64 stick to the left, the C-buttons to the right) moves to the other.
+    int stick_axis(int axis, bool swap) {
+        if (!swap) {
+            return axis;
+        }
+        switch (axis) {
+        case SDL_CONTROLLER_AXIS_LEFTX: return SDL_CONTROLLER_AXIS_RIGHTX;
+        case SDL_CONTROLLER_AXIS_LEFTY: return SDL_CONTROLLER_AXIS_RIGHTY;
+        case SDL_CONTROLLER_AXIS_RIGHTX: return SDL_CONTROLLER_AXIS_LEFTX;
+        case SDL_CONTROLLER_AXIS_RIGHTY: return SDL_CONTROLLER_AXIS_LEFTY;
+        default: return axis;
+        }
+    }
+
+    float controller_field_analog(SDL_GameController* controller, const recompinput::InputField& field, bool swap = false) {
         switch (field.input_type) {
         case recompinput::InputType::ControllerDigital:
             if (field.input_id >= 0 && field.input_id < SDL_CONTROLLER_BUTTON_MAX) {
@@ -380,7 +396,7 @@ namespace {
             if (axis < 0 || axis >= SDL_CONTROLLER_AXIS_MAX) {
                 return 0.0f;
             }
-            float value = SDL_GameControllerGetAxis(controller, (SDL_GameControllerAxis)axis) * (1.0f / 32768.0f);
+            float value = SDL_GameControllerGetAxis(controller, (SDL_GameControllerAxis)stick_axis(axis, swap)) * (1.0f / 32768.0f);
             if (field.input_id < 0) {
                 value = -value;
             }
@@ -391,11 +407,11 @@ namespace {
         }
     }
 
-    bool controller_field_digital(SDL_GameController* controller, const recompinput::InputField& field) {
+    bool controller_field_digital(SDL_GameController* controller, const recompinput::InputField& field, bool swap = false) {
         if (field.input_type == recompinput::InputType::ControllerAnalog) {
-            return controller_field_analog(controller, field) >= recompinput::axis_digital_threshold;
+            return controller_field_analog(controller, field, swap) >= recompinput::axis_digital_threshold;
         }
-        return controller_field_analog(controller, field) > 0.0f;
+        return controller_field_analog(controller, field, swap) > 0.0f;
     }
 
     // The keyboard and the mouse are player 1's: their bindings count on port 1 only. Mouse buttons
@@ -415,8 +431,9 @@ namespace {
 
     // One controller (or none) and/or the keyboard and mouse, through the single-player bindings.
     // With free_stick (Right Stick: Free Camera, while the stick turns the camera), the controller's
-    // right stick presses no button: it turns the camera instead (mouse_camera.cpp).
-    void read_port(SDL_GameController* controller, bool keyboard, bool free_stick, uint16_t* buttons, float* x, float* y) {
+    // right stick presses no button: it turns the camera instead (mouse_camera.cpp). With swap_sticks
+    // (Aiming: Swap Sticks, while aiming), the controller's two sticks are read the other way round.
+    void read_port(SDL_GameController* controller, bool keyboard, bool free_stick, bool swap_sticks, bool z_turns_aim, uint16_t* buttons, float* x, float* y) {
         using recompinput::GameInput;
         static constexpr uint16_t button_values[] = {
             0x8000, 0x4000, 0x2000, 0x0020, 0x0010, 0x1000, 0x0008,
@@ -437,7 +454,7 @@ namespace {
                     v += keyboard ? recompinput::get_input_analog(0, field) : 0.0f;
                 }
                 else if (controller != nullptr) {
-                    v += controller_field_analog(controller, field);
+                    v += controller_field_analog(controller, field, swap_sticks);
                 }
             }
             return std::clamp(v, 0.0f, 1.0f);
@@ -454,11 +471,15 @@ namespace {
         };
 
         uint16_t cur_buttons = 0;
+        // With swap_sticks, the buttons pressed only by the left stick (bindings to the right stick, read
+        // from the left): see below.
+        uint16_t left_stick_buttons = 0;
         float cur_x = 0.0f;
         float cur_y = 0.0f;
         for (size_t b = 0; b < std::size(button_values); b++) {
             GameInput input = (GameInput)((size_t)GameInput::N64_BUTTON_START + b);
             bool pressed = false;
+            bool by_left_stick = false;
             for (size_t i = 0; i < recompinput::num_bindings_per_input; i++) {
                 if (cont_profile >= 0) {
                     const recompinput::InputField& field = binding(cont_profile, input, i);
@@ -466,7 +487,13 @@ namespace {
                         pressed |= keyboard && recompinput::get_input_digital(0, field);
                     }
                     else if (controller != nullptr && !(free_stick && is_right_stick(field))) {
-                        pressed |= controller_field_digital(controller, field);
+                        const bool down = controller_field_digital(controller, field, swap_sticks);
+                        if (swap_sticks && is_right_stick(field)) {
+                            by_left_stick |= down;
+                        }
+                        else {
+                            pressed |= down;
+                        }
                     }
                 }
                 if (keyboard && kb_profile >= 0) {
@@ -479,15 +506,48 @@ namespace {
             if (pressed) {
                 cur_buttons |= button_values[b];
             }
+            else if (by_left_stick) {
+                left_stick_buttons |= button_values[b];
+            }
         }
+        // Aiming: Swap Sticks: the left stick presses the C-buttons, which move Conker while aiming, but not
+        // C-Left and C-Right while Z is held aiming the shotgun (issue #84, z_turns_aim). With the shotgun, R aims
+        // while he moves and strafes with the C-buttons; Z (the laser sight) makes C-Left and C-Right turn the aim
+        // instead, so pushing the left stick sideways turned the aim against the right stick (logged: 40 degrees in
+        // 0.4 seconds, the right stick still). Its forward and back (C-Up, C-Down) still count. Elsewhere Z is
+        // left alone: in split screen it fires, and strafing while shooting was lost.
+        constexpr uint16_t z_button = 0x2000, c_left = 0x0002, c_right = 0x0001;
+        if ((cur_buttons & z_button) && z_turns_aim) {
+            left_stick_buttons &= (uint16_t)~(c_left | c_right);
+        }
+        cur_buttons |= left_stick_buttons;
         if (controller != nullptr && cont_profile >= 0) {
             cur_x = cont_analog(GameInput::X_AXIS_POS) - cont_analog(GameInput::X_AXIS_NEG);
             cur_y = cont_analog(GameInput::Y_AXIS_POS) - cont_analog(GameInput::Y_AXIS_NEG);
             recompinput::apply_joystick_deadzone(cur_x, cur_y, &cur_x, &cur_y);
         }
         if (keyboard && kb_profile >= 0) {
-            cur_x += kb_analog(GameInput::X_AXIS_POS) - kb_analog(GameInput::X_AXIS_NEG);
-            cur_y += kb_analog(GameInput::Y_AXIS_POS) - kb_analog(GameInput::Y_AXIS_NEG);
+            const float kb_x = kb_analog(GameInput::X_AXIS_POS) - kb_analog(GameInput::X_AXIS_NEG);
+            const float kb_y = kb_analog(GameInput::Y_AXIS_POS) - kb_analog(GameInput::Y_AXIS_NEG);
+            if (swap_sticks) {
+                // Aiming: Swap Sticks with the keyboard: the mouse aims, so the keys bound to the stick (W, A, S, D
+                // by default) press the C-buttons and move Conker, as the left stick does, instead of aiming
+                // (issue #84: they only turned the aim). Not C-Left or C-Right while Z is held, the same as the stick.
+                constexpr uint16_t c_up = 0x0008, c_down = 0x0004;
+                uint16_t keys = 0;
+                if (kb_x <= -recompinput::axis_digital_threshold) keys |= c_left;
+                if (kb_x >= recompinput::axis_digital_threshold) keys |= c_right;
+                if (kb_y >= recompinput::axis_digital_threshold) keys |= c_up;
+                if (kb_y <= -recompinput::axis_digital_threshold) keys |= c_down;
+                if ((cur_buttons & z_button) && z_turns_aim) {
+                    keys &= (uint16_t)~(c_left | c_right);
+                }
+                cur_buttons |= keys;
+            }
+            else {
+                cur_x += kb_x;
+                cur_y += kb_y;
+            }
         }
         *buttons = cur_buttons;
         *x = std::clamp(cur_x, -1.0f, 1.0f);
@@ -515,7 +575,7 @@ namespace {
         if (!recompinput::game_input_disabled()) {
             // Port 1 has the keyboard, and its controller once one has pressed a button.
             read_port(port < count ? controllers[port] : nullptr, port == 0,
-                port == 0 && conker::mouse_camera::stick_turns_camera(), buttons, x, y);
+                port == 0 && conker::mouse_camera::stick_turns_camera(), conker::look_aim::swap_sticks_now(port), conker::look_aim::z_turns_aim(port), buttons, x, y);
         }
         return true;
     }
