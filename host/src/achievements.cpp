@@ -4,8 +4,11 @@
 // fetches its achievements and, once a game frame, checks their conditions against the game's memory. It
 // asks us for three things:
 // - Memory: RetroAchievements' N64 addresses are RDRAM's (0 to 0x7FFFFF, the expansion pak's included, as
-//   0x80000000 on). The recompiled game keeps RDRAM in 32-bit words in the host's byte order, so the N64's
-//   byte at an address is at that address ^ 3 (as MEM_B reads it).
+//   0x80000000 on), laid out as the N64 emulators its sets are made with expose it: 32-bit words in the host's
+//   byte order (mupen64plus's RDRAM, through libretro), not the N64's big-endian bytes. The recompiled game
+//   keeps RDRAM so too, so it's read as it is. (Read as the N64's bytes, with ^ 3 as MEM_B does, nothing
+//   triggered: a set's 24-bit little-endian read of a pointer, I:0xW0d326c, takes the low 24 bits of the
+//   word, the address, only in the emulators' layout.)
 // - HTTP: each request rc_client makes (a URL, with POST data or not) is sent on a thread of its own, and
 //   the reply handed back. On Windows with WinHTTP (the system's, nothing to ship); elsewhere not yet: those
 //   builds report the request failed, so they run as without achievements.
@@ -25,8 +28,10 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstdarg>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <deque>
 #include <filesystem>
 #include <fstream>
@@ -88,12 +93,30 @@ namespace {
         return values;
     }
 
+    // TEMP-DEBUG (the prototype): retroachievements_log.txt beside the login, with everything rcheevos says, the
+    // events, each achievement's state once the game loads, and a check of the memory reads.
+    std::mutex log_mutex;
+    void log_line(const char* format, ...) {
+        static FILE* file = std::fopen((recomp::get_config_path() / "retroachievements_log.txt").string().c_str(), "w");
+        if (file == nullptr) {
+            return;
+        }
+        std::lock_guard lock{log_mutex};
+        va_list args;
+        va_start(args, format);
+        std::vfprintf(file, format, args);
+        va_end(args);
+        std::fputc('\n', file);
+        std::fflush(file);
+    }
+
     // The unlocks to show, from the game thread, for the main thread.
     std::mutex messages_mutex;
     std::deque<std::string> messages;
     void show_message(const std::string& text) {
         std::printf("[achievements] %s\n", text.c_str());
         std::fflush(stdout);
+        log_line("[achievements] %s", text.c_str());
         std::lock_guard lock{messages_mutex};
         messages.push_back(text);
     }
@@ -107,7 +130,7 @@ namespace {
         }
         const uint32_t count = std::min<uint32_t>(num_bytes, rdram_size - address);
         for (uint32_t i = 0; i < count; i++) {
-            buffer[i] = rdram[(address + i) ^ 3];
+            buffer[i] = rdram[address + i];
         }
         return count;
     }
@@ -190,6 +213,17 @@ namespace {
             std::string body;
             rc_api_server_response_t response{};
             response.http_status_code = send_request(url, post_data, content_type, body);
+            // TEMP-DEBUG (the prototype): the game's achievement definitions (the "achievementsets" reply, "patch" in older versions: each achievement's
+            // conditions, the memory it reads) in retroachievements_patch.json beside the log. Only the reply: what's
+            // sent has the login token.
+            auto is_request = [&](const char* name) {
+                const std::string param = std::string("r=") + name;
+                return url.find(param) != std::string::npos || post_data.find(param) != std::string::npos;
+            };
+            if ((is_request("patch") || is_request("achievementsets")) && !body.empty()) {
+                std::ofstream patch(recomp::get_config_path() / "retroachievements_patch.json", std::ios::trunc | std::ios::binary);
+                patch << body;
+            }
             response.body = body.c_str();
             response.body_length = body.size();
             callback(&response, callback_data);
@@ -201,9 +235,11 @@ namespace {
     void RC_CCONV log_message(const char* message, const rc_client_t*) {
         std::printf("[rcheevos] %s\n", message);
         std::fflush(stdout);
+        log_line("[rcheevos] %s", message);
     }
 
     void RC_CCONV handle_event(const rc_client_event_t* event, rc_client_t*) {
+        log_line("[event] type %u%s%s", event->type, event->achievement ? " achievement: " : "", event->achievement ? event->achievement->title : "");
         switch (event->type) {
         case RC_CLIENT_EVENT_ACHIEVEMENT_TRIGGERED:
             show_message(std::string("Achievement unlocked: ") + event->achievement->title + " (" +
@@ -232,6 +268,21 @@ namespace {
         rc_client_get_user_game_summary(client, &summary);
         show_message(std::string("RetroAchievements: ") + (game ? game->title : "the game") + ", " +
             std::to_string(summary.num_unlocked_achievements) + " of " + std::to_string(summary.num_core_achievements) + " unlocked");
+        // Every achievement and its state (0 inactive, 1 active, 2 unlocked, 3 disabled).
+        rc_client_achievement_list_t* list = rc_client_create_achievement_list(client, RC_CLIENT_ACHIEVEMENT_CATEGORY_CORE_AND_UNOFFICIAL,
+            RC_CLIENT_ACHIEVEMENT_LIST_GROUPING_LOCK_STATE);
+        if (list != nullptr) {
+            for (uint32_t b = 0; b < list->num_buckets; b++) {
+                const rc_client_achievement_bucket_t& bucket = list->buckets[b];
+                log_line("[list] %s", bucket.label ? bucket.label : "");
+                for (uint32_t a = 0; a < bucket.num_achievements; a++) {
+                    const rc_client_achievement_t* achievement = bucket.achievements[a];
+                    log_line("  %u state %u unlocked %u: %s (%s)", achievement->id, achievement->state, achievement->unlocked,
+                        achievement->title, achievement->description);
+                }
+            }
+            rc_client_destroy_achievement_list(list);
+        }
     }
 
     void RC_CCONV logged_in_callback(int result, const char* error_message, rc_client_t* client, void*) {
@@ -317,9 +368,58 @@ void conker::achievements::game_frame(uint8_t* rdram) {
     }
     if (!game_load_started.exchange(true)) {
         const std::span<const uint8_t> rom = recomp::get_rom();
+        // The exception vectors, as the N64's osInitialize leaves them: libultra's preamble (lui k0, %hi(handler);
+        // addiu k0, k0, %lo(handler); jr k0; nop) copied to 0x80000000, 0x80000080, 0x80000100 and 0x80000180. The
+        // recompiled game takes no exceptions there and never copies it, so those words were 0; Conker's achievements
+        // tell the game's versions apart by the handler's address in the second word (0x80000004: 0x71E0 in the US
+        // ROM, a 16-bit read of 29152 there) and none of them could trigger. Found in the ROM by its instructions
+        // (big-endian), so each version gets its own; written as the game's words are held.
+        for (size_t at = 0; at + 16 <= std::min<size_t>(rom.size(), 0x20000); at += 4) {
+            const uint8_t* w = rom.data() + at;
+            const bool preamble = (w[0] == 0x3C && w[1] == 0x1A) && (w[4] == 0x27 && w[5] == 0x5A) &&
+                (w[8] == 0x03 && w[9] == 0x40 && w[10] == 0x00 && w[11] == 0x08) && (w[12] == 0 && w[13] == 0 && w[14] == 0 && w[15] == 0);
+            if (!preamble) {
+                continue;
+            }
+            for (uint32_t vector : { 0x000u, 0x080u, 0x100u, 0x180u }) {
+                for (uint32_t k = 0; k < 4; k++) {
+                    const uint8_t* b = w + k * 4;
+                    const uint32_t word = ((uint32_t)b[0] << 24) | ((uint32_t)b[1] << 16) | ((uint32_t)b[2] << 8) | b[3];
+                    std::memcpy(rdram + vector + k * 4, &word, sizeof(word));
+                }
+            }
+            log_line("[memory] exception vectors from ROM offset 0x%zX: second word %02X%02X%02X%02X", at, w[4], w[5], w[6], w[7]);
+            break;
+        }
         rc_client_begin_identify_and_load_game(client, RC_CONSOLE_NINTENDO_64, nullptr, rom.data(), rom.size(), game_loaded, nullptr);
     }
     rc_client_do_frame(client);
+
+    // TEMP-DEBUG: the memory reads checked every 150 game frames: Conker's x (gObjects[0] + 0x14, a float) through
+    // read_memory (a little-endian word, as the emulators' layout reads) against the word as the game holds it, and
+    // the values Birdy's achievement ("Alcohol Is the Best Medicine") goes by.
+    static uint32_t frames = 0;
+    if (++frames % 150 == 0) {
+        constexpr uint32_t conker_x = 0x800CC2D0 + 0x14;
+        uint8_t bytes[4] = {};
+        read_memory(conker_x - 0x80000000, bytes, 4, client);
+        const uint32_t through_reader = ((uint32_t)bytes[3] << 24) | ((uint32_t)bytes[2] << 16) | ((uint32_t)bytes[1] << 8) | bytes[0];
+        uint32_t direct = 0;
+        std::memcpy(&direct, rdram + (conker_x - 0x80000000), sizeof(direct));
+        float x = 0.0f;
+        std::memcpy(&x, &direct, sizeof(x));
+        log_line("[memory] frame %u Conker's x 0x%08X through the reader, 0x%08X direct (%.1f)", frames, through_reader, direct, x);
+        // Birdy's: the version (16-bit at 0x4: 29904, or 29152 for the other alternative), the level byte (0x0BEE14,
+        // or 0x0BE9F4: 41 in Hangover), and bit 3 of the byte 3 past the 24-bit pointer at 0x0D326C (or 0x0D2E4C).
+        auto read_le = [&](uint32_t address, uint32_t size) {
+            uint8_t b[4] = {};
+            read_memory(address, b, size, client);
+            return (uint32_t)b[0] | ((uint32_t)b[1] << 8) | ((uint32_t)b[2] << 16) | ((uint32_t)b[3] << 24);
+        };
+        const uint32_t pointer_a = read_le(0x0D326C, 3), pointer_b = read_le(0x0D2E4C, 3);
+        log_line("[birdy] version %u level %u/%u pointer 0x%06X flag %u / pointer 0x%06X flag %u", read_le(0x4, 2),
+            read_le(0x0BEE14, 1), read_le(0x0BE9F4, 1), pointer_a, (read_le(pointer_a + 3, 1) >> 3) & 1, pointer_b, (read_le(pointer_b + 3, 1) >> 3) & 1);
+    }
 }
 
 void conker::achievements::on_ui_ready() {
