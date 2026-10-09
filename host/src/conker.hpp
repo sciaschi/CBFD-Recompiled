@@ -192,6 +192,19 @@ namespace conker {
         void update();
     }
 
+    // achievements.cpp: RetroAchievements (a prototype; on with a login in retroachievements.txt).
+    namespace achievements {
+        // At start (frontend.cpp, once the config folder is known): logs in, if there's a login.
+        void init();
+        // From the game thread, as the game starts a frame's display list: loads the game's
+        // achievements once logged in, then checks them against the game's memory.
+        void game_frame(uint8_t* rdram);
+        // From the launcher's init (frontend.cpp): recompui's UI exists now, for the unlock messages.
+        void on_ui_ready();
+        // On the main thread (update_gfx): shows the unlock messages, one at a time.
+        void update();
+    }
+
     // fps_counter.cpp: Show FPS, the frame rate counter.
     namespace fps_counter {
         // conker_config.cpp: whether the setting is on.
