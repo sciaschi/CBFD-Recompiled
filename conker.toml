@@ -597,6 +597,15 @@ func = "func_15063A38"
 before_vram = 0x15063A80
 text = "{ extern void conker_aim_lock_on(uint8_t*, recomp_context*); conker_aim_lock_on(rdram, ctx); }"
 
+# The bank's slow motion leaps (host/src/mouse_camera.cpp, issue #85): the view's eye is raised in a leap
+# (conker_leap_view_lift, in the func_1512C490 hook below) and lowered back as func_15122C5C, the follow
+# camera's update, starts, once $s0 is the camera (0x15122C64), before it copies the view's eye back
+# into the eye wanted (conker_leap_view_restore).
+[[patches.hook]]
+func = "func_15122C5C"
+before_vram = 0x15122C6C
+text = "{ extern void conker_leap_view_restore(uint8_t*, recomp_context*); conker_leap_view_restore(rdram, ctx); }"
+
 [[patches.hook]]
 func = "func_15120158"
 before_vram = 0x1512015C
@@ -606,11 +615,11 @@ text = "{ extern void conker_mouse_camera_look_mode(uint8_t*, recomp_context*); 
 # the view's (+0x2E0, +0x2EC; $s0 the camera). Tilted up past where the eye stops, the view's
 # look-at point is raised to aim higher from the same eye (issue #70). While aiming with Aiming: Swap
 # Sticks, the view is turned to the aim's direction, so walking doesn't turn it (issue #84,
-# host/src/look_aim.cpp).
+# host/src/look_aim.cpp). In the bank's slow motion leaps, the view's eye is raised (issue #85).
 [[patches.hook]]
 func = "func_1512C490"
 before_vram = 0x1512C640
-text = "{ extern void conker_mouse_camera_aim(uint8_t*, recomp_context*); conker_mouse_camera_aim(rdram, ctx); extern void conker_look_view(uint8_t*, recomp_context*); conker_look_view(rdram, ctx); }"
+text = "{ extern void conker_mouse_camera_aim(uint8_t*, recomp_context*); conker_mouse_camera_aim(rdram, ctx); extern void conker_look_view(uint8_t*, recomp_context*); conker_look_view(rdram, ctx); extern void conker_leap_view_lift(uint8_t*, recomp_context*); conker_leap_view_lift(rdram, ctx); }"
 
 # Motion blur (func_151D6778, Conker drunk): a frame it's drawn in is drawn without frames between it
 # and the next, so the blur blends with a whole frame's ghost as on the N64 (host/src/widescreen.cpp,
