@@ -581,6 +581,14 @@ func = "func_15120158"
 before_vram = 0x1512015C
 text = "{ extern void conker_mouse_camera_look_mode(uint8_t*, recomp_context*); conker_mouse_camera_look_mode(rdram, ctx); }"
 
+# Mouse camera: func_1512C490 (in func_151284C4) has copied the look-at point and the eye into
+# the view's (+0x2E0, +0x2EC; $s0 the camera). Tilted up past where the eye stops, the view's
+# look-at point is raised to aim higher from the same eye (issue #70).
+[[patches.hook]]
+func = "func_1512C490"
+before_vram = 0x1512C640
+text = "{ extern void conker_mouse_camera_aim(uint8_t*, recomp_context*); conker_mouse_camera_aim(rdram, ctx); }"
+
 # Motion blur (func_151D6778, Conker drunk): a frame it's drawn in is drawn without frames between it
 # and the next, so the blur blends with a whole frame's ghost as on the N64 (host/src/widescreen.cpp,
 # issue #77).
