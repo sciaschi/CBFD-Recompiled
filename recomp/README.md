@@ -299,6 +299,14 @@ to the right, so the game doesn't clamp it, and moved back as an extended
 rectangle. They write no sync to hold the enable, so it's put early in the
 frame, in place of the pipe sync each camera's pass starts with.
 
+`func_15095D34` also draws the tickly bees of Windy's pollination quest (issue
+#101). Whether a piece is drawn at all is decided first by `func_15095B08`, which
+works out its rectangle on screen and flags it visible only where that overlaps
+the camera's 4:3 left and right bounds (+0x2C, +0x30), so the bees vanished
+beside the 4:3 frame. Those bounds are widened by the sprite cull's margin before
+its two compares (`conker_widen_piece_cull_left`, `_right`). The bees over the
+hive are `func_15130A9C`'s sprites, already widened.
+
 A camera's background fill (`func_151103C8`, its colour under everything it
 draws) ends exactly at the scissor's right edge, and RT64 lines such a rectangle
 up with the window's: its last column went out to the window's right side. The
