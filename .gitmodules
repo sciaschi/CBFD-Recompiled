@@ -25,3 +25,6 @@
 [submodule "conker/tools/mips_to_c"]
 	path = conker/tools/mips_to_c
 	url = https://github.com/matt-kempster/mips_to_c.git
+[submodule "tools/rcheevos"]
+	path = tools/rcheevos
+	url = https://github.com/RetroAchievements/rcheevos

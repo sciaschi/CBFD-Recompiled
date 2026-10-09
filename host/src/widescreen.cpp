@@ -207,6 +207,9 @@ extern "C" void conker_frame_dl_begin(uint8_t* rdram, recomp_context* ctx) {
     conker::cutscene_aspect::update(rdram);
     conker::shadows::game_frame();
 #if defined(CONKER_RT64)
+    conker::achievements::game_frame(rdram);
+#endif
+#if defined(CONKER_RT64)
     // Overscan Borders: the game's 3D and its rectangles stop 2 pixels short of each side of the frame
     // (its camera scissor, and func_1501A6CC clamps its fill rectangles the same), a black border the N64
     // left for the TV's overscan. RT64 widens the picture about its middle, so in widescreen too the border

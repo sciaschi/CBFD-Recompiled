@@ -164,7 +164,22 @@ if (CONKER_RT64)
     add_custom_command(TARGET ConkerRecomp POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_CURRENT_SOURCE_DIR}/assets" "$<TARGET_FILE_DIR:ConkerRecomp>/assets")
 
-    target_sources(ConkerRecomp PRIVATE src/frontend.cpp src/conker_config.cpp src/audio_output.cpp src/rumble.cpp src/fps_counter.cpp src/reticle.cpp src/pad_mappings.cpp src/texture_packs.cpp src/gliden64_packs.cpp)
+    target_sources(ConkerRecomp PRIVATE src/frontend.cpp src/conker_config.cpp src/audio_output.cpp src/rumble.cpp src/fps_counter.cpp src/reticle.cpp src/pad_mappings.cpp src/texture_packs.cpp src/gliden64_packs.cpp src/achievements.cpp)
+
+    # RetroAchievements (src/achievements.cpp): rcheevos (tools/rcheevos, MIT), its client, runtime and ROM hashing.
+    # The N64's hash is of the ROM itself: disc, encrypted and zip hashing are left out.
+    set(RCHEEVOS_DIR "${REPO_ROOT}/tools/rcheevos")
+    file(GLOB RCHEEVOS_SOURCES "${RCHEEVOS_DIR}/src/rapi/*.c" "${RCHEEVOS_DIR}/src/rcheevos/*.c")
+    list(APPEND RCHEEVOS_SOURCES
+        "${RCHEEVOS_DIR}/src/rc_client.c" "${RCHEEVOS_DIR}/src/rc_compat.c" "${RCHEEVOS_DIR}/src/rc_util.c" "${RCHEEVOS_DIR}/src/rc_version.c"
+        "${RCHEEVOS_DIR}/src/rhash/hash.c" "${RCHEEVOS_DIR}/src/rhash/hash_rom.c" "${RCHEEVOS_DIR}/src/rhash/md5.c")
+    add_library(rcheevos STATIC ${RCHEEVOS_SOURCES})
+    target_include_directories(rcheevos PUBLIC "${RCHEEVOS_DIR}/include")
+    target_compile_definitions(rcheevos PUBLIC RC_CLIENT_SUPPORTS_HASH RC_HASH_NO_DISC RC_HASH_NO_ENCRYPTED RC_HASH_NO_ZIP)
+    target_link_libraries(ConkerRecomp PRIVATE rcheevos)
+    if (WIN32)
+        target_link_libraries(ConkerRecomp PRIVATE winhttp)
+    endif()
     # CONKER_RT64 selects the window build; the rest are what rt64 compiles its own headers with.
     target_compile_definitions(ConkerRecomp PRIVATE CONKER_RT64 HLSL_CPU)
     if (WIN32)
