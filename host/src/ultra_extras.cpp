@@ -164,9 +164,6 @@ extern "C" void recomp_syscall_handler(uint8_t* rdram, recomp_context* ctx, int3
     std::snprintf(msg, sizeof(msg), "The game halted: syscall at 0x%08X, return address 0x%08X",
         (uint32_t)instruction_vram, (uint32_t)ctx->r31);
     std::fprintf(stderr, "[ultra_extras] %s\n", msg);
-    // TEMP-DEBUG (issue #98): the heap, for a halt from the allocator (its $s0 is the size asked for).
-    std::fprintf(stderr, "[ultra_extras] $s0 0x%08X; %s\n", (uint32_t)ctx->r16, conker::heap::describe(rdram).c_str());
-    std::fflush(stderr);
     ultramodern::error_handling::message_box(msg);
     ULTRAMODERN_QUICK_EXIT();
 }

@@ -213,12 +213,6 @@ namespace conker {
         void update();
     }
 
-    // heap_report.cpp (TEMP-DEBUG, issue #98): Rare's heap, in a line: its size, what's used and
-    // free, and where its blocks' links go wrong, if they do.
-    namespace heap {
-        std::string describe(uint8_t* rdram);
-    }
-
     // fps_counter.cpp: Show FPS, the frame rate counter.
     namespace fps_counter {
         // conker_config.cpp: whether the setting is on.

@@ -3,7 +3,6 @@
 
 #include <algorithm>
 #include <cstdint>
-#include <cstdio>
 
 #include <SDL.h>
 
@@ -20,8 +19,6 @@
 // widescreen.cpp.)
 
 #include "recomp.h"
-
-#include "conker.hpp"
 
 // func_151408A4 at 0x15140DB4, just after it compared the depths: $t3 is the light's depth
 // ($t8) less the sample's ($a2), $a0 the raw sample. Zero passes the test.
@@ -114,8 +111,4 @@ extern "C" void conker_display_list_size_second(uint8_t* rdram, recomp_context* 
 // At 0x15015F28, as it stores the limit (D_800BEBA4) from $t7.
 extern "C" void conker_display_list_limit(uint8_t* rdram, recomp_context* ctx) {
     ctx->r15 = (gpr)(int32_t)(list_commands(rdram) - 2 * display_list_room);
-    // TEMP-DEBUG (issue #98): the lists and the heap, as each level loads.
-    std::printf("[display lists] %u commands each (the game's %u), limit %u; %s\n", list_commands(rdram),
-        game_list_commands(rdram), (uint32_t)ctx->r15, conker::heap::describe(rdram).c_str());
-    std::fflush(stdout);
 }
