@@ -119,6 +119,21 @@ index c6786e6..7db1735 100644
      default:
          return recompinput::unknown_device_input;
      }
+diff --git a/recompui/include/recompui/config.h b/recompui/include/recompui/config.h
+index 38b84f5..6908bea 100644
+--- a/recompui/include/recompui/config.h
++++ b/recompui/include/recompui/config.h
+@@ -145,6 +145,10 @@ namespace recompui {
+ 
+         // Get any added config by ID.
+         recomp::config::Config &get_config(const std::string &id);
++        // The added config that has an option with this ID, whichever tab it's on, or nullptr if none
++        // does (or no configs were made, as with --headless). The General tab's built-in options can be
++        // added to another tab by a game instead (the same ID), and are read from there.
++        recomp::config::Config *find_option_config(const std::string &option_id);
+         recomp::config::Config &get_general_config();
+         recomp::config::Config &get_graphics_config();
+         recomp::config::Config &get_sound_config();
 diff --git a/recompui/include/recompui/recompui.h b/recompui/include/recompui/recompui.h
 index 30c463b..c64bc9e 100644
 --- a/recompui/include/recompui/recompui.h
@@ -230,6 +245,26 @@ index 02455fd..35a9952 100644
          recomp::mods::scan_mods();
      }
      mod_details = recomp::mods::get_all_mod_details(game_mod_id);
+diff --git a/recompui/src/config/ui_config.cpp b/recompui/src/config/ui_config.cpp
+index 6c84c05..5395aee 100644
+--- a/recompui/src/config/ui_config.cpp
++++ b/recompui/src/config/ui_config.cpp
+@@ -29,6 +29,15 @@ namespace recompui {
+         throw std::runtime_error("Could not find config with ID '" + id + "'.");
+     }
+ 
++    recomp::config::Config *config::find_option_config(const std::string &option_id) {
++        for (auto &[config_id, config] : configs) {
++            if (config.has_option(option_id)) {
++                return &config;
++            }
++        }
++        return nullptr;
++    }
++
+     static recomp::config::Config *get_config_ptr(const std::string &id) {
+         for (auto &[config_id, config] : configs) {
+             if (config_id == id) {
 diff --git a/recompui/src/config/ui_config_option.cpp b/recompui/src/config/ui_config_option.cpp
 index 86428c9..39f7d0e 100644
 --- a/recompui/src/config/ui_config_option.cpp
@@ -263,6 +298,61 @@ index 86428c9..39f7d0e 100644
      slider->add_value_changed_callback([this](double v){
          this->set_option_value(this->option_id, v);
      });
+diff --git a/recompui/src/config/ui_config_tab_general.cpp b/recompui/src/config/ui_config_tab_general.cpp
+index 296ce0e..193466d 100644
+--- a/recompui/src/config/ui_config_tab_general.cpp
++++ b/recompui/src/config/ui_config_tab_general.cpp
+@@ -47,20 +47,24 @@ namespace config {
+         return get_general_config_number_value<double>(general::options::rumble_strength);
+     }
+ 
++    // The gyro and mouse sensitivities may be on another tab, added there by the game with the same IDs
++    // (find_option_config), so they're read from whichever config has them.
+     bool general::has_gyro_sensitivity_option() {
+-        return get_general_config().has_option(general::options::gyro_sensitivity);
++        return find_option_config(general::options::gyro_sensitivity) != nullptr;
+     }
+     
+     double general::get_gyro_sensitivity() {
+-        return get_general_config_number_value<double>(general::options::gyro_sensitivity);
++        recomp::config::Config *config = find_option_config(general::options::gyro_sensitivity);
++        return config ? std::get<double>(config->get_option_value(general::options::gyro_sensitivity)) : 0.0;
+     }
+     
+     bool general::has_mouse_sensitivity_option() {
+-        return get_general_config().has_option(general::options::mouse_sensitivity);
++        return find_option_config(general::options::mouse_sensitivity) != nullptr;
+     }
+     
+     double general::get_mouse_sensitivity() {
+-        return get_general_config_number_value<double>(general::options::mouse_sensitivity);
++        recomp::config::Config *config = find_option_config(general::options::mouse_sensitivity);
++        return config ? std::get<double>(config->get_option_value(general::options::mouse_sensitivity)) : 0.0;
+     }
+     
+     double general::get_joystick_deadzone() {
+diff --git a/recompui/src/elements/ui_modal.cpp b/recompui/src/elements/ui_modal.cpp
+index b057f46..cfad7f0 100644
+--- a/recompui/src/elements/ui_modal.cpp
++++ b/recompui/src/elements/ui_modal.cpp
+@@ -404,7 +404,16 @@ void TabbedModal::initialize_tab(TabContext &tab_context) {
+     ContextId context = get_current_context();
+     if (tabs == nullptr) {
+         header->set_padding_left(0.0f); // tabs hug to left side
+-        tabs = context.create_element<TabSet>(header->get_left());
++        // The tabs stay on one line and scroll sideways when there are more than fit (a focused tab
++        // scrolls itself into view), rather than squeezing and wrapping their names; the buttons on the
++        // right keep their size.
++        Element *tabs_side = header->get_left();
++        tabs_side->set_flex(1.0f, 1.0f, 0.0f);
++        tabs_side->set_min_width(0.0f);
++        tabs_side->set_overflow_x(Overflow::Auto);
++        tabs_side->set_overflow_y(Overflow::Hidden);
++        header->get_right()->set_flex_shrink(0.0f);
++        tabs = context.create_element<TabSet>(tabs_side);
+         tabs->set_change_tab_callback([this](int tab_index) {
+             this->on_tab_change(tab_index);
+         });
 diff --git a/recompui/src/elements/ui_slider.cpp b/recompui/src/elements/ui_slider.cpp
 index 7a50da4..c3d736d 100644
 --- a/recompui/src/elements/ui_slider.cpp
@@ -309,3 +399,33 @@ index 4d8c41e..da94d42 100644
          void add_value_changed_callback(std::function<void(double)> callback);
          void do_step(bool increment);
          void set_focus_callback(std::function<void(bool)> callback);
+diff --git a/recompui/src/elements/ui_tab_set.cpp b/recompui/src/elements/ui_tab_set.cpp
+index 2c5dc52..9b175f4 100644
+--- a/recompui/src/elements/ui_tab_set.cpp
++++ b/recompui/src/elements/ui_tab_set.cpp
+@@ -18,6 +18,9 @@ Tab::Tab(ResourceId rid, Element *parent, int tab_index, std::string_view text,
+     set_focusable(true);
+     set_tab_index_auto();
+     set_cursor(Cursor::Pointer);
++    // One line each, at full width: the tab set scrolls instead (TabbedModal::initialize_tab).
++    set_flex_shrink(0.0f);
++    set_white_space(WhiteSpace::Nowrap);
+ 
+     set_color(theme::color::TextInactive);
+     set_background_color(theme::color::Transparent);
+@@ -81,6 +84,7 @@ void Tab::process_event(const Event &e) {
+             bool active = std::get<EventFocus>(e.variant).active;
+             set_style_enabled(focus_state, active);
+             if (active) {
++                scroll_into_view();
+                 queue_update();
+             }
+         }
+@@ -118,6 +122,7 @@ TabSet::TabSet(ResourceId rid, Element *parent) :
+     set_justify_content(JustifyContent::FlexStart);
+     set_align_items(AlignItems::Stretch);
+     set_gap(0.0f);
++    set_flex_shrink(0.0f);
+     set_as_navigation_container(NavigationType::Horizontal);
+ }
+ 

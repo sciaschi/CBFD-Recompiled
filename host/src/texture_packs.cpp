@@ -2,7 +2,8 @@
 // file (a zip) or a folder with a mod.json in the mods folder. RecompFrontend's renderer hands the
 // enabled ones to RT64; the mod menu installs them and turns them on and off, as in the other recomps.
 //
-// The Texture Packs settings tab picks one of them. Its list is the packs in the mods folder when the
+// The Texture Pack setting (at the end of the Graphics tab; it had a tab of its own before, its choice
+// carried over by conker_config.cpp) picks one of them. Its list is the packs in the mods folder when the
 // game starts (the settings are made before the runtime opens the mods), so a pack installed while it
 // runs is listed from the next start. A GLideN64 pack (.htc, gliden64_packs.cpp) is listed as the pack
 // it unpacks into, which is there once the launcher has unpacked it. Choosing one turns it on and every other pack off, through the
@@ -25,7 +26,6 @@
 #include "conker.hpp"
 
 namespace {
-    const std::string tab_id = "texture_packs";
     const std::string option_id = "texture_pack";
     constexpr uint32_t mods_menu = 0;
     constexpr uint32_t none = 1;
@@ -71,7 +71,8 @@ namespace {
     }
 
     uint32_t selected() {
-        return std::get<uint32_t>(recompui::config::get_config(tab_id).get_option_value(option_id));
+        recomp::config::Config* config = recompui::config::find_option_config(option_id);
+        return config ? std::get<uint32_t>(config->get_option_value(option_id)) : mods_menu;
     }
 }
 
@@ -98,7 +99,7 @@ void conker::texture_packs::register_type() {
     recompui::register_mod_scan_callback(unpack_gliden64_packs);
 }
 
-void conker::texture_packs::add_tab() {
+void conker::texture_packs::add_options(recomp::config::Config& config) {
     packs = find_packs(recomp::mods::get_mods_directory());
     static std::vector<recomp::config::ConfigOptionEnumOption> options;
     options.clear();
@@ -108,7 +109,6 @@ void conker::texture_packs::add_tab() {
         options.emplace_back(first_pack + (uint32_t)i, "pack:" + packs[i].id, packs[i].name);
     }
 
-    recomp::config::Config& config = recompui::config::create_config_tab("Texture Packs", tab_id, false);
     config.add_enum_option(option_id, "Texture Pack",
         "Replaces the game's textures with a texture pack's, such as HD textures. Install a pack (a <b>.rtz</b> file, "
         "or a GLideN64 pack's <b>.htc</b> file) by putting it in the <b>mods</b> folder or dropping it onto the Mods menu; "
@@ -119,7 +119,9 @@ void conker::texture_packs::add_tab() {
         options, mods_menu);
     config.add_option_change_callback(option_id,
         [](recomp::config::ConfigValueVariant, recomp::config::ConfigValueVariant, recomp::config::OptionChangeContext context) {
-            if (context != recomp::config::OptionChangeContext::Load) {
+            // Once applied: the Graphics tab keeps a choice as temporary until its Apply button
+            // (Temporary, and Temporary again if it's discarded), and apply() reads the applied value.
+            if (context == recomp::config::OptionChangeContext::Permanent) {
                 apply();
             }
         });
