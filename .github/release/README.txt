@@ -25,7 +25,7 @@ xattr -dr com.apple.quarantine ConkerRecomp.app before opening it.
 
 Texture packs: install a .rtz pack, or a GLideN64 pack's .htc file, with the Mods
 menu's Install Mods button (or drop it onto the Mods menu, or put it in the mods
-folder), and pick it in Settings > Texture Packs. A .htc is unpacked the first
+folder), and pick it in Settings > Graphics > Texture Pack. A .htc is unpacked the first
 time, which takes a minute or so for a large pack.
 
 Licenses: see LICENSES.txt. The program as a whole is under the GNU GPL version 3
