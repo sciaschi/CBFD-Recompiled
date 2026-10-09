@@ -114,7 +114,7 @@ namespace {
     void carry_over_moved_settings() {
         carry_over(recompui::config::general::id, camera_tab_id, {
             "camera_invert_turning", "camera_turn_speed", "stick_free_camera", "camera_field_of_view_degrees",
-            "look_stick_response", "look_stick_invert", "aim_reticle" });
+            "look_stick_response", "look_stick_invert", "aim_reticle", "aim_swap_sticks", "aim_lock_on" });
         carry_over(recompui::config::general::id, mouse_gyro_tab_id, {
             recompui::config::general::options::mouse_sensitivity, "mouse_turns_camera", "look_mouse_response",
             "look_mouse_invert", recompui::config::general::options::gyro_sensitivity, "look_gyro_response",

@@ -529,6 +529,38 @@ states 0x2 and 0xA; plain R-Look is 0x0) or in the second aiming mode
 split screen. Both modes aim the camera itself, but the thrown shots leave
 Conker's hand below it, pitched up: in the distance they land 20% of the screen's
 height above the middle, where the reticle is (closer, a little lower).
+Aiming: Swap Sticks (`look_aim.cpp`, issue #84, off by default) aims like a
+third-person shooter:
+- While either aiming mode ran for a player's camera in the last few frames
+  (R-Look too; each player's, by the camera's +0x23D), `frontend.cpp` reads every
+  binding to one of their controller's sticks from the other: the right stick
+  aims and the left presses the C-buttons, which move Conker while aiming. With
+  the mouse, the keys bound to the stick press the C-buttons instead.
+- In the shotgun's aiming state (0x3B) Z, the laser sight, makes C-Left and
+  C-Right turn the aim, so with Z held they're left out of the left stick's;
+  elsewhere (split screen, where Z fires) they aren't.
+- The view looks where the aim does: walking with the left stick, the aiming
+  camera's eye lagged behind Conker and the view swung, and backing up sideways
+  swung its yaw off the aim (`conker_look_view`, `conker_look_currents`).
+- Where the view's yaw is Conker's facing (+0x7A) less the aiming angle (+0x12
+  of his +0x31C), the aim turns within +-50 degrees before his body does
+  (`func_15063A38`). The mouse's turn goes through the same limit. Left to the
+  game, he turned his body toward the way he walked, which the aim could only
+  make up to that limit: strafing came out as a diagonal and walking back as
+  forward. Instead each frame the whole aiming angle goes into his facing, so he
+  faces the view, and his moving angle (+0x76), which the game walks him along,
+  is set to the way pressed from the view's forward: he strafes and backs up
+  with the aim on the crosshair, his legs playing the forward walk.
+- Single player only (recompinput's single player mode): with a controller per
+  player the sticks aren't swapped.
+- With the shotgun, R alone shows the laser sight and the gun-up walk, as R and
+  Z do: +0x8A of +0x31C |= 0x20, D_800CC2B0 = 1, +0x1B4 |= 4, and the walk 0x224
+  played as 0x31B (`conker_shotgun_laser`, `conker_shotgun_laser_walk`).
+
+Aiming: Lock-On (on by default, as the original) can turn off the game's lock-on:
+`func_15063A38` turns the aim by the stick, or, while an enemy is there to lock on
+to (+0x84 of its +0x31C, the shotgun's zombies), straight toward it with
+`func_150639BC`, and the camera follows the aim; a hook clears that flag.
 Overscan Borders, in the same tab, crops the N64's black border off each side
 of the picture (`widescreen.cpp`, with RT64's changes above).
 Conker's Detail (Always Highest by default) keeps Conker on his most detailed

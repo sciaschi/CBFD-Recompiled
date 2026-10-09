@@ -146,6 +146,14 @@ namespace conker {
         // The Right Stick: Free Camera setting (issue #65), in single player: whether the right stick
         // turns the third-person camera (mouse_camera.cpp) instead of pressing the C-buttons.
         bool stick_free_camera();
+        // Aiming: Swap Sticks (issue #84): whether a player (0 to 3) is aiming now (either aiming mode
+        // ran for their camera in the last few frames) with the setting on, so their controller's sticks
+        // are swapped (frontend.cpp): the right stick aims and the left moves. Not with recompinput's own
+        // multiplayer mode (players assigned in its menus), which maps each controller itself.
+        bool swap_sticks_now(int player = 0);
+        // Whether the player's character is aiming the shotgun (state 0x3B), where Z (the laser sight) makes
+        // C-Left and C-Right turn the aim: the swapped left stick leaves them out while Z is held (frontend.cpp).
+        bool z_turns_aim(int player);
         // Camera: Invert Turning, for the free camera's stick: turning (x) and tilting (y).
         void free_camera_invert(bool& x, bool& y);
         // Camera: Turning Speed, 1 at 100%.
