@@ -30,7 +30,7 @@ index 716d48b..2b15ac1 100644
  if (WIN32)
      add_compile_definitions(NOMINMAX)
 diff --git a/librecomp/include/librecomp/game.hpp b/librecomp/include/librecomp/game.hpp
-index a4cf7e8..8bb9ad2 100644
+index a4cf7e8..a3af6d3 100644
 --- a/librecomp/include/librecomp/game.hpp
 +++ b/librecomp/include/librecomp/game.hpp
 @@ -38,6 +38,10 @@ namespace recomp {
@@ -44,12 +44,38 @@ index a4cf7e8..8bb9ad2 100644
          std::u8string stored_filename() const;
      };
      struct Version {
+@@ -93,6 +97,9 @@ namespace recomp {
+     bool is_rom_loaded();
+     void set_rom_contents(std::vector<uint8_t>&& new_rom);
+     std::span<const uint8_t> get_rom();
++    // The ROM as the recompiled code sees it: the game's decompression routine's, if it has one (its
++    // code uncompressed at the sections' ROM addresses), or the ROM as it is.
++    std::vector<uint8_t> get_code_rom();
+     void do_rom_read(uint8_t* rdram, gpr ram_address, uint32_t physical_addr, size_t num_bytes);
+     void do_rom_pio(uint8_t* rdram, gpr ram_address, uint32_t physical_addr);
+     const Version& get_project_version();
+diff --git a/librecomp/include/librecomp/overlays.hpp b/librecomp/include/librecomp/overlays.hpp
+index 35703bd..3169003 100644
+--- a/librecomp/include/librecomp/overlays.hpp
++++ b/librecomp/include/librecomp/overlays.hpp
+@@ -45,6 +45,11 @@ namespace recomp {
+ 
+         void add_loaded_function(int32_t ram_addr, recomp_func_t* func);
+ 
++        // The loaded function that holds an address: where it's loaded, where it is in the ROM, and its
++        // size. False if no loaded section has a function there. (For save states, which follow a
++        // thread's calls through the game's code.)
++        bool find_loaded_function(uint32_t vram, uint32_t& func_vram, uint32_t& func_rom, uint32_t& func_size);
++
+         struct BasePatchedFunction {
+             size_t patch_section;
+             size_t function_index;
 diff --git a/librecomp/include/librecomp/save_states.hpp b/librecomp/include/librecomp/save_states.hpp
 new file mode 100644
-index 0000000..5eaf881
+index 0000000..419b079
 --- /dev/null
 +++ b/librecomp/include/librecomp/save_states.hpp
-@@ -0,0 +1,50 @@
+@@ -0,0 +1,51 @@
 +#ifndef __RECOMP_SAVE_STATES_HPP__
 +#define __RECOMP_SAVE_STATES_HPP__
 +
@@ -87,9 +113,10 @@ index 0000000..5eaf881
 +// Checks a state, and loads it if it can be loaded now.
 +LoadResult restore(uint8_t* rdram, std::span<const uint8_t> data, std::string& error);
 +
-+// Whether a state was taken by this build of the program. One from another build can't be loaded (its
-+// signatures are of that build's code), but for the rare build whose changes moved none of the code
-+// its threads wait in.
++// Whether a state was taken by this build of the program. In this build, a state loads where each
++// thread waits in the same native calls (its signature) and the same calls through the game's code.
++// From another build, only the game's code is checked (the native calls are that build's), so it
++// loads as long as that build's game code is the same where its threads wait.
 +bool same_build(std::span<const uint8_t> data);
 +
 +// What a state holds about where its threads wait, for a log: one line a thread.
@@ -131,6 +158,38 @@ index 0f7de83..42c9057 100644
      *old_flags = 0;
      (void)result;
  }
+diff --git a/librecomp/src/overlays.cpp b/librecomp/src/overlays.cpp
+index 8c8e5d1..274c56a 100644
+--- a/librecomp/src/overlays.cpp
++++ b/librecomp/src/overlays.cpp
+@@ -185,6 +185,27 @@ void recomp::overlays::read_patch_data(uint8_t* rdram, gpr patch_data_address) {
+     }
+ }
+ 
++bool recomp::overlays::find_loaded_function(uint32_t vram, uint32_t& func_vram, uint32_t& func_rom, uint32_t& func_size) {
++    for (const LoadedSection& loaded : loaded_sections) {
++        const SectionTableEntry& section = sections_info.code_sections[loaded.section_table_index];
++        const uint32_t base = (uint32_t)loaded.loaded_ram_addr;
++        const uint32_t offset = vram - base;
++        if (offset >= section.size) {
++            continue;
++        }
++        for (size_t i = 0; i < section.num_funcs; i++) {
++            const FuncEntry& func = section.funcs[i];
++            if (offset >= func.offset && offset < func.offset + func.rom_size) {
++                func_vram = base + func.offset;
++                func_rom = section.rom_addr + func.offset;
++                func_size = func.rom_size;
++                return true;
++            }
++        }
++    }
++    return false;
++}
++
+ extern "C" void load_overlays(uint32_t rom, int32_t ram_addr, uint32_t size) {
+     // Search for the first section that's included in the loaded rom range
+     // Sections were sorted by `init_overlays` so we can use the bounds functions
 diff --git a/librecomp/src/pi.cpp b/librecomp/src/pi.cpp
 index 43509ba..39b4a99 100644
 --- a/librecomp/src/pi.cpp
@@ -202,7 +261,7 @@ index 43509ba..39b4a99 100644
      ctx->r2 = 0;
  }
 diff --git a/librecomp/src/recomp.cpp b/librecomp/src/recomp.cpp
-index 850689d..5c23fd9 100644
+index 850689d..e061d59 100644
 --- a/librecomp/src/recomp.cpp
 +++ b/librecomp/src/recomp.cpp
 @@ -21,6 +21,7 @@
@@ -265,25 +324,44 @@ index 850689d..5c23fd9 100644
      recomp_func_t* func = get_function(addr);
      func(rdram, &ctx);
  }
+@@ -528,6 +540,16 @@ std::u8string recomp::current_game_id() {
+     return current_game.value();
+ };
+ 
++std::vector<uint8_t> recomp::get_code_rom() {
++    auto find_it = game_roms.find(current_game_id());
++    const recomp::GameEntry& game_entry = find_it->second;
++    if (game_entry.decompression_routine != nullptr) {
++        return game_entry.decompression_routine(recomp::get_rom());
++    }
++    const std::span<const uint8_t> rom = recomp::get_rom();
++    return std::vector<uint8_t>(rom.begin(), rom.end());
++}
++
+ std::string recomp::current_mod_game_id() {
+     auto find_it = game_roms.find(current_game_id());
+     const recomp::GameEntry& game_entry = find_it->second;
 diff --git a/librecomp/src/save_states.cpp b/librecomp/src/save_states.cpp
 new file mode 100644
-index 0000000..67c31f4
+index 0000000..5b25a28
 --- /dev/null
 +++ b/librecomp/src/save_states.cpp
-@@ -0,0 +1,322 @@
+@@ -0,0 +1,431 @@
 +// Save states: a whole state of the game, as bytes (see librecomp/save_states.hpp, and
 +// ultramodern/save_states.hpp for how a save state of a recompiled game works).
 +//
 +// The layout (in the program's byte order, little-endian on every platform it's built for):
 +//   "RCST", the layout's version (u32), the program's fingerprint (u64: which build took it)
 +//   the threads: their count (u32), then for each, its OSThread (i32), its id (i32), where it waits
-+//     (its signature, u64, and its depth, u32), whether it has registers (u32), and if so its
-+//     registers: r0-r31, f0-f31, hi and lo (u64 each), the status register and the float mode (u32)
++//     (its signature, u64, where it is in the game's code, u64, and its depth, u32), whether it has
++//     registers (u32), and if so its registers: r0-r31, f0-f31, hi and lo (u64 each), the status
++//     register and the float mode (u32)
 +//   the clock and the timers: the game's clock (u64), osSetTime's offset (i64), the running timers'
 +//     count (u32) and their OSTimers (i32 each)
 +//   the VI and the events (ultramodern::save_states::EventState, as it's laid out)
 +//   the game's memory: its size (u32), then the memory as the program holds it
 +
++#include <algorithm>
 +#include <cinttypes>
 +#include <cstdio>
 +#include <cstring>
@@ -292,10 +370,12 @@ index 0000000..67c31f4
 +#include "librecomp/save_states.hpp"
 +#include "ultramodern/ultramodern.hpp"
 +#include "ultramodern/save_states.hpp"
++#include "librecomp/game.hpp"
++#include "librecomp/overlays.hpp"
 +
 +namespace {
 +    constexpr char magic[4] = { 'R', 'C', 'S', 'T' };
-+    constexpr uint32_t layout_version = 2;
++    constexpr uint32_t layout_version = 3;
 +
 +    struct Registers {
 +        uint64_t gpr[32];
@@ -375,6 +455,7 @@ index 0000000..67c31f4
 +        int32_t thread;
 +        int32_t id;
 +        uint64_t signature;
++        uint64_t game_signature;
 +        uint32_t depth;
 +        bool has_registers;
 +        Registers registers;
@@ -414,6 +495,7 @@ index 0000000..67c31f4
 +            thread.thread = in.get<int32_t>();
 +            thread.id = in.get<int32_t>();
 +            thread.signature = in.get<uint64_t>();
++            thread.game_signature = in.get<uint64_t>();
 +            thread.depth = in.get<uint32_t>();
 +            thread.has_registers = in.get<uint32_t>() != 0;
 +            if (thread.has_registers) {
@@ -437,10 +519,108 @@ index 0000000..67c31f4
 +        return true;
 +    }
 +
-+    std::string describe(const char* label, int32_t thread, int32_t id, uint64_t signature, uint32_t depth) {
-+        char line[160];
-+        std::snprintf(line, sizeof(line), "%s thread %d (0x%08X): waits at %016" PRIX64 " (%u frames)\n",
-+            label, id, (uint32_t)thread, signature, depth);
++    // --- Where a thread is in the game's code ---
++    //
++    // A thread's native call stack only fits the build of the program it was taken in, but what has to
++    // match for a state to load is where each thread is in the game's own code: after a load, each
++    // thread goes on in the program's code as it is (its native stack is never put back), with the
++    // state's registers and memory. So that's checked too, the same way in every build: the thread's
++    // calls through the game's code, as a MIPS debugger walks them. N64Recomp sets $ra at each call
++    // (as the CPU does), so a waiting thread's $ra is the return address of the call it waits in. The
++    // function that holds it (from the section table) has a prologue that makes its stack frame
++    // (addiu sp, sp, -size) and stores $ra in it (sw or sd ra, offset(sp)): that $ra is its caller's
++    // return address, and its stack frame ends where its caller's starts. The walk goes on to the first
++    // function without such a prologue (a thread's entry, or hand-written code). The instructions are
++    // read from the ROM as the recompiled code sees it (the game's decompression routine's).
++
++    const std::vector<uint8_t>& code_rom() {
++        static const std::vector<uint8_t> rom = recomp::get_code_rom();
++        return rom;
++    }
++
++    bool read_code(uint32_t rom_addr, uint32_t& word) {
++        const std::vector<uint8_t>& rom = code_rom();
++        if ((size_t)rom_addr + 4 > rom.size()) {
++            return false;
++        }
++        word = ((uint32_t)rom[rom_addr] << 24) | ((uint32_t)rom[rom_addr + 1] << 16) | ((uint32_t)rom[rom_addr + 2] << 8) | rom[rom_addr + 3];
++        return true;
++    }
++
++    struct GameHash {
++        uint64_t value = 0xCBF29CE484222325ull;
++        void add(uint32_t word) {
++            for (int i = 0; i < 4; i++) {
++                value ^= word & 0xFF;
++                value *= 0x100000001B3ull;
++                word >>= 8;
++            }
++        }
++    };
++
++    uint64_t game_signature(uint8_t* rdram, const ultramodern::save_states::ThreadInfo& thread) {
++        GameHash hash;
++        // How it waits, and the wait's own values (as in its native signature).
++        hash.add((uint32_t)thread.kind);
++        for (uint32_t arg : thread.args) {
++            hash.add(arg);
++        }
++        if (thread.game_context == nullptr) {
++            return hash.value;
++        }
++        const recomp_context* ctx = static_cast<const recomp_context*>(thread.game_context);
++        uint32_t ra = (uint32_t)ctx->r31;
++        uint32_t sp = (uint32_t)ctx->r29;
++        constexpr uint32_t memory_start = 0x80000000u;
++        constexpr uint32_t memory_end = 0x80000000u + recomp::save_states::game_memory_size;
++        for (int depth = 0; depth < 64; depth++) {
++            hash.add(ra);
++            hash.add(sp);
++            // The call is two instructions before its return address.
++            uint32_t func_vram, func_rom, func_size;
++            if (!recomp::overlays::find_loaded_function(ra - 8, func_vram, func_rom, func_size)) {
++                break;
++            }
++            // The prologue, up to the call.
++            int32_t frame_size = 0;
++            int32_t ra_offset = -1;
++            const uint32_t count = std::min<uint32_t>((ra - 8 - func_vram) / 4, 64);
++            for (uint32_t i = 0; i < count; i++) {
++                uint32_t word;
++                if (!read_code(func_rom + i * 4, word)) {
++                    break;
++                }
++                const int16_t immediate = (int16_t)(word & 0xFFFF);
++                if ((word >> 16) == 0x27BD && immediate < 0 && frame_size == 0) {
++                    frame_size = -immediate; // addiu sp, sp, -size
++                }
++                else if ((word >> 16) == 0xAFBF && ra_offset < 0) {
++                    ra_offset = immediate; // sw ra, offset(sp)
++                }
++                else if ((word >> 16) == 0xFFBF && ra_offset < 0) {
++                    ra_offset = immediate + 4; // sd ra, offset(sp): its low word, the address
++                }
++            }
++            if (frame_size == 0 || ra_offset < 0) {
++                break;
++            }
++            const uint32_t saved_at = sp + (uint32_t)ra_offset;
++            if (saved_at < memory_start || saved_at + 4 > memory_end) {
++                break;
++            }
++            ra = (uint32_t)MEM_W(0, (gpr)(int32_t)saved_at);
++            sp += (uint32_t)frame_size;
++            if (ra == 0) {
++                break;
++            }
++        }
++        return hash.value;
++    }
++
++    std::string describe(const char* label, int32_t thread, int32_t id, uint64_t signature, uint64_t game, uint32_t depth) {
++        char line[200];
++        std::snprintf(line, sizeof(line), "%s thread %d (0x%08X): waits at %016" PRIX64 " (%u frames), in the game's code at %016" PRIX64 "\n",
++            label, id, (uint32_t)thread, signature, depth, game);
 +        return line;
 +    }
 +}
@@ -474,6 +654,7 @@ index 0000000..67c31f4
 +        w.put((int32_t)thread.thread);
 +        w.put((int32_t)thread.id);
 +        w.put(thread.signature);
++        w.put(game_signature(rdram, thread));
 +        w.put(thread.depth);
 +        w.put((uint32_t)(thread.game_context != nullptr ? 1 : 0));
 +        if (thread.game_context != nullptr) {
@@ -512,7 +693,8 @@ index 0000000..67c31f4
 +    }
 +
 +    // Every thread has to wait where it waited in the state: the same threads, each in the same calls
-+    // (its native call stack), and with registers if it had them (it had started running).
++    // through the game's code, and with registers if it had them (it had started running).
++    const bool built_here = state.fingerprint == fingerprint();
 +    const std::vector<ThreadInfo> threads = get_threads(rdram);
 +    if (threads.size() != state.threads.size()) {
 +        error = "the game has " + std::to_string(threads.size()) + " threads, the state " + std::to_string(state.threads.size());
@@ -529,7 +711,10 @@ index 0000000..67c31f4
 +            error = "thread " + std::to_string(saved.id) + " of the state isn't running";
 +            return LoadResult::NotNow;
 +        }
-+        if (current->signature != saved.signature || (current->game_context != nullptr) != saved.has_registers) {
++        // In the same build, the native call stack too (a stricter check of the same thing).
++        if ((current->game_context != nullptr) != saved.has_registers ||
++            game_signature(rdram, *current) != saved.game_signature ||
++            (built_here && current->signature != saved.signature)) {
 +            error = "thread " + std::to_string(saved.id) + " waits somewhere else than in the state";
 +            return LoadResult::NotNow;
 +        }
@@ -581,7 +766,7 @@ index 0000000..67c31f4
 +    }
 +    std::string out;
 +    for (const SavedThread& saved : state.threads) {
-+        out += describe("state's", saved.thread, saved.id, saved.signature, saved.depth);
++        out += describe("state's", saved.thread, saved.id, saved.signature, saved.game_signature, saved.depth);
 +    }
 +    return out;
 +}
@@ -589,7 +774,7 @@ index 0000000..67c31f4
 +std::string recomp::save_states::describe_current_threads(uint8_t* rdram) {
 +    std::string out;
 +    for (const ultramodern::save_states::ThreadInfo& thread : ultramodern::save_states::get_threads(rdram)) {
-+        out += describe("game's", thread.thread, thread.id, thread.signature, thread.depth);
++        out += describe("game's", thread.thread, thread.id, thread.signature, game_signature(rdram, thread), thread.depth);
 +    }
 +    return out;
 +}
@@ -626,10 +811,10 @@ index 5593172..a5c8c38 100644
      add_compile_definitions(NOMINMAX)
 diff --git a/ultramodern/include/ultramodern/save_states.hpp b/ultramodern/include/ultramodern/save_states.hpp
 new file mode 100644
-index 0000000..7d042e2
+index 0000000..0c9078a
 --- /dev/null
 +++ b/ultramodern/include/ultramodern/save_states.hpp
-@@ -0,0 +1,161 @@
+@@ -0,0 +1,180 @@
 +#ifndef __ULTRAMODERN_SAVE_STATES_HPP__
 +#define __ULTRAMODERN_SAVE_STATES_HPP__
 +
@@ -673,6 +858,21 @@ index 0000000..7d042e2
 +
 +// --- Threads ---
 +
++// How a thread waits (each holds different native frames).
++enum class WaitKind : uint32_t {
++    None,
++    // In osRecvMesg for an empty queue, or osSendMesg to a full one.
++    Receive,
++    Send,
++    // Ready to run, but a higher priority thread runs.
++    Preempted,
++    // Created but not started, or stopped (osStopThread).
++    Stopped,
++    // Running at a safe point: the idle thread in pause_self, or a thread in osRecvMesg.
++    Idle,
++    ReceiveRunning,
++};
++
 +struct ThreadInfo {
 +    PTR(OSThread) thread;
 +    OSId id;
@@ -683,6 +883,9 @@ index 0000000..7d042e2
 +    // how many of the stack's frames are in the program. 0 if it hasn't waited yet.
 +    uint64_t signature;
 +    uint32_t depth;
++    // The wait's kind and its own values (the queue, the message or where it goes, the flags).
++    WaitKind kind;
++    uint32_t args[3];
 +};
 +
 +// From the game library, on the thread, before it runs the thread's game code: the thread's context.
@@ -779,9 +982,10 @@ index 0000000..7d042e2
 +// threads.cpp: on the thread, as it starts.
 +void set_current_thread(UltraThreadContext* context);
 +// threads.cpp: on the thread, just before it waits (to be resumed, started, or for the next event).
-+void record_wait(UltraThreadContext* context);
-+// mesgqueue.cpp: on the thread, just before a message queue wait: its values held natively.
-+void note_wait_args(uint32_t a, uint32_t b, uint32_t c = 0);
++void record_wait(UltraThreadContext* context, WaitKind kind);
++// mesgqueue.cpp: on the thread, just before a message queue wait: its kind and the values its native
++// frames hold (taken up by the next record_wait).
++void note_wait(WaitKind kind, uint32_t a, uint32_t b, uint32_t c);
 +// mesgqueue.cpp: the event messages waiting to be handed to the game.
 +size_t external_message_count();
 +// timer.cpp: osSetTimer and osStopTimer calls the timer thread hasn't taken up yet.
@@ -792,10 +996,10 @@ index 0000000..7d042e2
 +
 +#endif
 diff --git a/ultramodern/include/ultramodern/ultramodern.hpp b/ultramodern/include/ultramodern/ultramodern.hpp
-index 46aea61..c385699 100644
+index 46aea61..17be6dd 100644
 --- a/ultramodern/include/ultramodern/ultramodern.hpp
 +++ b/ultramodern/include/ultramodern/ultramodern.hpp
-@@ -25,6 +25,15 @@ struct UltraThreadContext {
+@@ -25,6 +25,19 @@ struct UltraThreadContext {
      std::thread host_thread;
      moodycamel::LightweightSemaphore running;
      moodycamel::LightweightSemaphore initialized;
@@ -805,13 +1009,17 @@ index 46aea61..c385699 100644
 +    void* game_context = nullptr;
 +    uint64_t wait_signature = 0;
 +    uint32_t wait_depth = 0;
-+    // A message queue wait's own values, held in its native frame (the queue, and the message or where
-+    // it goes): part of the signature, set just before the wait.
++    // How it waits (ultramodern::save_states::WaitKind) and the wait's own values, held in its native
++    // frames (the queue, the message or where it goes, the flags): part of the signature. A message
++    // queue wait notes them just before it waits.
++    uint32_t wait_kind = 0;
 +    uint32_t wait_args[3] = {};
++    uint32_t noted_kind = 0;
++    uint32_t noted_args[3] = {};
  };
  
  namespace ultramodern {
-@@ -96,6 +105,9 @@ enum class ThreadPriority {
+@@ -96,6 +109,9 @@ enum class ThreadPriority {
  void set_native_thread_name(const std::string& name);
  void set_native_thread_priority(ThreadPriority pri);
  PTR(OSThread) this_thread();
@@ -937,7 +1145,7 @@ index 17d7a47..d4fb0de 100644
      ultramodern::enqueue_external_message_src(events_context.si.mq, events_context.si.msg, false, ultramodern::EventMessageSource::Si);
  }
 diff --git a/ultramodern/src/mesgqueue.cpp b/ultramodern/src/mesgqueue.cpp
-index 9944a02..f13a0ac 100644
+index 9944a02..dc03182 100644
 --- a/ultramodern/src/mesgqueue.cpp
 +++ b/ultramodern/src/mesgqueue.cpp
 @@ -5,6 +5,7 @@
@@ -969,7 +1177,7 @@ index 9944a02..f13a0ac 100644
          while (MQ_IS_FULL(mq)) {
              debug_printf("[Message Queue] Thread %d is blocked on send\n", TO_PTR(OSThread, ultramodern::this_thread())->id);
              ultramodern::thread_queue_insert(PASS_RDRAM GET_MEMBER(OSMesgQueue, mq_, blocked_on_send), ultramodern::this_thread());
-+            ultramodern::save_states::note_wait_args((uint32_t)mq_, (uint32_t)msg);
++            ultramodern::save_states::note_wait(ultramodern::save_states::WaitKind::Send, (uint32_t)mq_, (uint32_t)msg, 0);
              ultramodern::run_next_thread_and_wait(PASS_RDRAM1);
          }
      }
@@ -977,7 +1185,7 @@ index 9944a02..f13a0ac 100644
          while (MQ_IS_EMPTY(mq)) {
              debug_printf("[Message Queue] Thread %d is blocked on receive\n", TO_PTR(OSThread, ultramodern::this_thread())->id);
              ultramodern::thread_queue_insert(PASS_RDRAM GET_MEMBER(OSMesgQueue, mq_, blocked_on_recv), ultramodern::this_thread());
-+            ultramodern::save_states::note_wait_args((uint32_t)mq_, (uint32_t)msg_, 1);
++            ultramodern::save_states::note_wait(ultramodern::save_states::WaitKind::Receive, (uint32_t)mq_, (uint32_t)msg_, 1);
              ultramodern::run_next_thread_and_wait(PASS_RDRAM1);
          }
      }
@@ -998,10 +1206,10 @@ index 9944a02..f13a0ac 100644
      
 diff --git a/ultramodern/src/save_states.cpp b/ultramodern/src/save_states.cpp
 new file mode 100644
-index 0000000..064020d
+index 0000000..de5a368
 --- /dev/null
 +++ b/ultramodern/src/save_states.cpp
-@@ -0,0 +1,288 @@
+@@ -0,0 +1,299 @@
 +// Save states: the game's threads, where each one waits, and the idle moment (see save_states.hpp for
 +// how a save state of a recompiled game works).
 +
@@ -1187,25 +1395,35 @@ index 0000000..064020d
 +    current_thread_context = context;
 +}
 +
-+void ultramodern::save_states::record_wait(UltraThreadContext* context) {
++void ultramodern::save_states::record_wait(UltraThreadContext* context, WaitKind kind) {
 +    capture_signature(context->wait_signature, context->wait_depth);
-+    // With a message queue wait's own values (the queue, and the message or where it goes), which its
-+    // native frame holds as it waits.
-+    for (uint32_t arg : context->wait_args) {
++    // A message queue wait (note_wait, just before) tells its own kind and values.
++    if (context->noted_kind != 0) {
++        kind = (WaitKind)context->noted_kind;
++    }
++    context->wait_kind = (uint32_t)kind;
++    for (int i = 0; i < 3; i++) {
++        context->wait_args[i] = context->noted_args[i];
++        context->noted_args[i] = 0;
++    }
++    context->noted_kind = 0;
++    // With the kind and the values, which the native frames hold as it waits.
++    uint32_t values[4] = { context->wait_kind, context->wait_args[0], context->wait_args[1], context->wait_args[2] };
++    for (uint32_t value : values) {
 +        for (int i = 0; i < 4; i++) {
-+            context->wait_signature ^= arg & 0xFF;
++            context->wait_signature ^= value & 0xFF;
 +            context->wait_signature *= 0x100000001B3ull;
-+            arg >>= 8;
++            value >>= 8;
 +        }
 +    }
-+    context->wait_args[0] = context->wait_args[1] = context->wait_args[2] = 0;
 +}
 +
-+void ultramodern::save_states::note_wait_args(uint32_t a, uint32_t b, uint32_t c) {
++void ultramodern::save_states::note_wait(WaitKind kind, uint32_t a, uint32_t b, uint32_t c) {
 +    if (current_thread_context != nullptr) {
-+        current_thread_context->wait_args[0] = a;
-+        current_thread_context->wait_args[1] = b;
-+        current_thread_context->wait_args[2] = c;
++        current_thread_context->noted_kind = (uint32_t)kind;
++        current_thread_context->noted_args[0] = a;
++        current_thread_context->noted_args[1] = b;
++        current_thread_context->noted_args[2] = c;
 +    }
 +}
 +
@@ -1224,7 +1442,8 @@ index 0000000..064020d
 +        if (thread->context != context) {
 +            continue;
 +        }
-+        out.push_back({ context->self, thread->id, context->game_context, context->wait_signature, context->wait_depth });
++        out.push_back({ context->self, thread->id, context->game_context, context->wait_signature, context->wait_depth,
++            (WaitKind)context->wait_kind, { context->wait_args[0], context->wait_args[1], context->wait_args[2] } });
 +    }
 +    return out;
 +}
@@ -1257,8 +1476,8 @@ index 0000000..064020d
 +        return;
 +    }
 +    // The running thread is here, in osRecvMesg with these values (held in its native frames).
-+    note_wait_args((uint32_t)mq, (uint32_t)msg, (uint32_t)flags);
-+    record_wait(current_thread_context);
++    note_wait(WaitKind::ReceiveRunning, (uint32_t)mq, (uint32_t)msg, (uint32_t)flags);
++    record_wait(current_thread_context, WaitKind::ReceiveRunning);
 +    callback(PASS_RDRAM1);
 +}
 +
@@ -1269,7 +1488,7 @@ index 0000000..064020d
 +    }
 +    // The idle thread "waits" here, in pause_self.
 +    if (current_thread_context != nullptr) {
-+        record_wait(current_thread_context);
++        record_wait(current_thread_context, WaitKind::Idle);
 +    }
 +    callback(PASS_RDRAM1);
 +}
@@ -1311,7 +1530,7 @@ index a22f747..4a21bbd 100644
          ultramodern::wait_for_external_message(PASS_RDRAM1);
          ultramodern::check_running_queue(PASS_RDRAM1);
 diff --git a/ultramodern/src/threads.cpp b/ultramodern/src/threads.cpp
-index 6e3ed18..e3de0ac 100644
+index 6e3ed18..221ad3d 100644
 --- a/ultramodern/src/threads.cpp
 +++ b/ultramodern/src/threads.cpp
 @@ -8,6 +8,7 @@
@@ -1341,23 +1560,24 @@ index 6e3ed18..e3de0ac 100644
      // If this thread's context was replaced by another thread or deleted, destroy it again from its own context.
      // This will trigger thread cleanup instead.
      if (TO_PTR(OSThread, ultramodern::this_thread())->context != thread_context) {
-@@ -176,12 +187,15 @@ void run_next_thread(RDRAM_ARG1) {
+@@ -176,12 +187,16 @@ void run_next_thread(RDRAM_ARG1) {
  
  void ultramodern::run_next_thread_and_wait(RDRAM_ARG1) {
      UltraThreadContext* cur_context = TO_PTR(OSThread, thread_self)->context;
-+    // Where this thread waits, for save states (save_states.hpp): before the next thread runs.
-+    ultramodern::save_states::record_wait(cur_context);
++    // Where this thread waits, for save states (save_states.hpp): before the next thread runs. A message
++    // queue wait has noted its own kind; otherwise the thread stops itself.
++    ultramodern::save_states::record_wait(cur_context, ultramodern::save_states::WaitKind::Stopped);
      run_next_thread(PASS_RDRAM1);
      wait_for_resumed(PASS_RDRAM cur_context);
  }
  
  void ultramodern::resume_thread_and_wait(RDRAM_ARG OSThread *t) {
      UltraThreadContext* cur_context = TO_PTR(OSThread, thread_self)->context;
-+    ultramodern::save_states::record_wait(cur_context);
++    ultramodern::save_states::record_wait(cur_context, ultramodern::save_states::WaitKind::Preempted);
      resume_thread(t);
      wait_for_resumed(PASS_RDRAM cur_context);
  }
-@@ -191,12 +205,14 @@ static void _thread_func(RDRAM_ARG PTR(OSThread) self_, PTR(thread_func_t) entry
+@@ -191,12 +206,14 @@ static void _thread_func(RDRAM_ARG PTR(OSThread) self_, PTR(thread_func_t) entry
      debug_printf("[Thread] Thread created: %d\n", self->id);
      thread_self = self_;
      is_game_thread = true;
@@ -1368,11 +1588,11 @@ index 6e3ed18..e3de0ac 100644
      ultramodern::set_native_thread_priority(ultramodern::ThreadPriority::High);
  
      // Signal the initialized semaphore to indicate that this thread can be started.
-+    ultramodern::save_states::record_wait(thread_context);
++    ultramodern::save_states::record_wait(thread_context, ultramodern::save_states::WaitKind::Stopped);
      thread_context->initialized.signal();
  
      debug_printf("[Thread] Thread waiting to be started: %d\n", self->id);
-@@ -263,6 +279,7 @@ extern "C" void osCreateThread(RDRAM_ARG PTR(OSThread) t_, OSId id, PTR(thread_f
+@@ -263,6 +280,7 @@ extern "C" void osCreateThread(RDRAM_ARG PTR(OSThread) t_, OSId id, PTR(thread_f
      // Pass the context as an argument to the thread function to ensure that it can't get cleared before the thread captures its value.
      UltraThreadContext* context = new UltraThreadContext{};
      t->context = context;
@@ -1380,7 +1600,7 @@ index 6e3ed18..e3de0ac 100644
      context->host_thread = std::thread{_thread_func, PASS_RDRAM t_, entrypoint, arg, t->context};
  
      // Wait until the thread is initialized to indicate that it's ready to be started.
-@@ -363,6 +380,7 @@ void ultramodern::init_thread_cleanup() {
+@@ -363,6 +381,7 @@ void ultramodern::init_thread_cleanup() {
  }
  
  void ultramodern::cleanup_thread(UltraThreadContext *cur_context) {

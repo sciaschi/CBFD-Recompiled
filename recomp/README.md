@@ -207,6 +207,10 @@ N64Recomp (`n64recomp.patch`):
 - `N64RECOMP_KEEP_GOING=1` reports every failing function.
 - division by zero gives the VR4300's results instead of trapping on the host
   (the hand-written `func_150A3CBC` divides by zero during the attract mode).
+- calls (`jal`, `jalr`, branch-and-link) set `$ra` to their return address, as
+  the CPU does (`emit_set_link_register`, in the C and live generators). Save
+  states walk a waiting thread's calls through the game's code by it, so a
+  state loads in another build ([docs/save-states.md](../docs/save-states.md)).
 
 N64ModernRuntime (`n64modernruntime.patch`):
 - PI DMA completion posts the request's `OSIoMesg` pointer, as libultra does,
@@ -228,7 +232,9 @@ N64ModernRuntime (`n64modernruntime.patch`):
   other ready to run. `librecomp/src/save_states.cpp` takes and loads a state
   (the 8MB of game memory, each thread's `recomp_context`, the clock and
   timers, the VI and event state), loading only where every thread waits as it
-  did in the state. For it: `run_thread_function` registers each thread's
+  did in the state: in the same calls through the game's code (walked from
+  `$ra` by the functions' prologues, `find_loaded_function` and `get_code_rom`)
+  and, in the same build, the same native calls. For it: `run_thread_function` registers each thread's
   context; RSP tasks count as in flight until their last message is sent; the
   game's clock can be moved (an offset), so it goes on from a state's time; and
   the timer thread keeps its running timers in a list under a lock (it kept a

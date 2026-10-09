@@ -8,8 +8,10 @@
 // and the result is shown in the messages' corner, top left.
 //
 // A load can only be done where the game's threads wait as they did when the state was taken (the
-// runtime checks it). Should they not (somewhere else in the game, or a menu), it keeps trying for a
-// few seconds, then says it couldn't.
+// runtime checks it: where each is in the game's code, so a state from an earlier version loads too,
+// unless that version's game code differs where its threads wait). The game's threads wait at the same
+// few places all through the game, so that's within a frame or so almost always; should they not, it
+// keeps trying for a few seconds, then says it couldn't.
 //
 // Each state holds, besides the runtime's (the game's memory, each thread's registers, the clock and
 // the timers, the VI's state), the RetroAchievements progress (how far each achievement is toward
@@ -48,10 +50,8 @@ namespace {
     constexpr char file_magic[8] = { 'C', 'B', 'F', 'D', 'S', 'T', 'A', 'T' };
     constexpr uint32_t file_version = 1;
     constexpr int slot_count = 9;
-    // How long a save or a load keeps trying for a moment it can be done at. A state from another build
-    // of the program almost never fits (its signatures are of that build's code), so it's tried briefly.
+    // How long a save or a load keeps trying for a moment it can be done at.
     constexpr auto give_up_after = std::chrono::seconds(5);
-    constexpr auto give_up_other_build_after = std::chrono::seconds(1);
 
     enum class Request { None, Save, Load };
 
@@ -198,8 +198,7 @@ namespace {
 
     // Whether the request has waited too long for a moment it can be done at.
     bool gave_up(const char* what) {
-        const auto limit = (request.load() == Request::Load && !load_same_build) ? give_up_other_build_after : give_up_after;
-        if (clock::now() - requested_at < limit) {
+        if (clock::now() - requested_at < give_up_after) {
             return false;
         }
         log_line("[%s] slot %d: gave up after %u tries: %s", what, request_slot, attempts, last_failure.c_str());
@@ -262,11 +261,12 @@ namespace {
                 }
                 last_failure = error;
                 if (gave_up("load")) {
-                    // A state from another version never fits (the program's code moved); one from this
-                    // version is most likely asked for in the middle of something (a loading screen...).
+                    // A state from another version loads as long as the game's code its threads wait in
+                    // is the same; one that never fits most likely comes from a version that changed it.
+                    // One from this build was most likely asked for in the middle of something.
                     if (!load_same_build) {
                         conker::achievements::show_notice("Couldn't load slot " + std::to_string(request_slot) +
-                            ": it was saved by another version or build of the program (" + load_version + ")");
+                            ": it was saved by another version of the program (" + load_version + "), which changed the game's code");
                     }
                     else {
                         conker::achievements::show_notice("Couldn't load slot " + std::to_string(request_slot) +
@@ -337,7 +337,7 @@ namespace {
                 break;
             case SDLK_F6:
                 current_slot = current_slot % slot_count + 1;
-                conker::achievements::show_notice("Save state slot " + std::to_string(current_slot.load()));
+                conker::achievements::show_notice("Save state slot " + std::to_string(current_slot.load()), true);
                 break;
             default:
                 break;

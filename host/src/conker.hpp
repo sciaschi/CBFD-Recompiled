@@ -217,8 +217,9 @@ namespace conker {
         void load_progress(std::span<const uint8_t> progress);
         // Whether RetroAchievements' Hardcore mode is on (it forbids loading states).
         bool hardcore();
-        // A line in the messages' corner, as the unlocks are shown (save states' "State saved"...).
-        void show_notice(const std::string& text);
+        // A line in the messages' corner, as the unlocks are shown (save states' "State saved"...). With
+        // replace, it's shown at once in place of what's shown (and of an earlier one to replace).
+        void show_notice(const std::string& text, bool replace = false);
     }
 
     // save_states.cpp: save states (issue #94), F5 to save, F7 to load, F6 for the next slot.

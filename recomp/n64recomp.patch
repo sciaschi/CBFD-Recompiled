@@ -1,3 +1,53 @@
+diff --git a/LiveRecomp/live_generator.cpp b/LiveRecomp/live_generator.cpp
+index 61e1ff5..96857f4 100644
+--- a/LiveRecomp/live_generator.cpp
++++ b/LiveRecomp/live_generator.cpp
+@@ -1948,6 +1948,11 @@ void N64Recomp::LiveGenerator::emit_comment(const std::string& comment) const {
+     // Nothing to do here.
+ }
+ 
++void N64Recomp::LiveGenerator::emit_set_link_register(uint32_t return_vram) const {
++    // Sign-extended, as the CPU's 64-bit registers hold a 32-bit address.
++    sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_MEM1(Registers::ctx), get_gpr_context_offset(31), SLJIT_IMM, (sljit_sw)(int32_t)return_vram);
++}
++
+ bool N64Recomp::recompile_function_live(LiveGenerator& generator, const Context& context, size_t function_index, std::ostream& output_file, std::span<std::vector<uint32_t>> static_funcs_out, bool tag_reference_relocs) {
+     return recompile_function_custom(generator, context, function_index, output_file, static_funcs_out, tag_reference_relocs);
+ }
+diff --git a/include/recompiler/generator.h b/include/recompiler/generator.h
+index 145bcd0..ef60f5c 100644
+--- a/include/recompiler/generator.h
++++ b/include/recompiler/generator.h
+@@ -61,6 +61,9 @@ namespace N64Recomp {
+         virtual void emit_pause_self() const = 0;
+         virtual void emit_trigger_event(uint32_t event_index) const = 0;
+         virtual void emit_comment(const std::string& comment) const = 0;
++        // A call (jal, jalr, bal...) sets $ra to its return address, as the CPU does, so a thread's
++        // calls can be told by their return addresses (save states tell where a thread waits by them).
++        virtual void emit_set_link_register(uint32_t return_vram) const = 0;
+     };
+ 
+     class CGenerator final : Generator {
+@@ -98,6 +101,7 @@ namespace N64Recomp {
+         void emit_pause_self() const final;
+         void emit_trigger_event(uint32_t event_index) const final;
+         void emit_comment(const std::string& comment) const final;
++        void emit_set_link_register(uint32_t return_vram) const final;
+     private:
+         void get_operand_string(Operand operand, UnaryOpType operation, const InstructionContext& context, std::string& operand_string) const;
+         void get_binary_expr_string(BinaryOpType type, const BinaryOperands& operands, const InstructionContext& ctx, const std::string& output, std::string& expr_string) const;
+diff --git a/include/recompiler/live_recompiler.h b/include/recompiler/live_recompiler.h
+index d155b83..00de35d 100644
+--- a/include/recompiler/live_recompiler.h
++++ b/include/recompiler/live_recompiler.h
+@@ -130,6 +130,7 @@ namespace N64Recomp {
+         void emit_pause_self() const final;
+         void emit_trigger_event(uint32_t event_index) const final;
+         void emit_comment(const std::string& comment) const final;
++        void emit_set_link_register(uint32_t return_vram) const final;
+     private:
+         void get_operand_string(Operand operand, UnaryOpType operation, const InstructionContext& context, std::string& operand_string) const;
+         void get_binary_expr_string(BinaryOpType type, const BinaryOperands& operands, const InstructionContext& ctx, const std::string& output, std::string& expr_string) const;
 diff --git a/src/analysis.cpp b/src/analysis.cpp
 index 9eaaa30..145d4ea 100644
 --- a/src/analysis.cpp
@@ -82,7 +132,7 @@ index 9eaaa30..145d4ea 100644
  
          //fmt::print("Jtbl at 0x{:08X} (rom 0x{:08X}) with {} entries used by instr at 0x{:08X}\n", cur_jtbl.vram, cur_jtbl.rom, cur_jtbl.entries.size(), cur_jtbl.jr_vram);
 diff --git a/src/cgenerator.cpp b/src/cgenerator.cpp
-index 94f85c5..9e4d1e5 100644
+index 94f85c5..e92cf68 100644
 --- a/src/cgenerator.cpp
 +++ b/src/cgenerator.cpp
 @@ -523,18 +523,21 @@ void N64Recomp::CGenerator::emit_muldiv(InstrId instr_id, int reg1, int reg2) co
@@ -111,6 +161,18 @@ index 94f85c5..9e4d1e5 100644
              break;
          default:
              assert(false);
+@@ -562,6 +565,11 @@ void N64Recomp::CGenerator::emit_comment(const std::string& comment) const {
+     fmt::print(output_file, "// {}\n", comment);
+ }
+ 
++void N64Recomp::CGenerator::emit_set_link_register(uint32_t return_vram) const {
++    // Sign-extended, as the CPU's 64-bit registers hold a 32-bit address.
++    fmt::print(output_file, "ctx->r31 = 0x{:016X}ULL;\n", (uint64_t)(int64_t)(int32_t)return_vram);
++}
++
+ void N64Recomp::CGenerator::process_binary_op(const BinaryOp& op, const InstructionContext& ctx) const {
+     // Thread local variables to prevent allocations when possible.
+     // TODO these thread locals probably don't actually help right now, so figure out a better way to prevent allocations.
 diff --git a/src/config.cpp b/src/config.cpp
 index 1066aff..5183454 100644
 --- a/src/config.cpp
@@ -172,10 +234,58 @@ index 669c4a1..adbcb9f 100644
          if (config.single_file_output || config.functions_per_output_file > 1) {
              current_output_file.close();
 diff --git a/src/recompilation.cpp b/src/recompilation.cpp
-index c228433..57fbab7 100644
+index c228433..3ed82d4 100644
 --- a/src/recompilation.cpp
 +++ b/src/recompilation.cpp
-@@ -791,7 +791,13 @@ bool recompile_function_impl(GeneratorType& generator, const N64Recomp::Context&
+@@ -259,17 +259,26 @@ bool process_instruction(GeneratorType& generator, const N64Recomp::Context& con
+         return true;
+     };
+ 
+-    auto print_func_call_by_address = [&generator, reloc_target_section_offset, has_reloc, reloc_section, reloc_reference_symbol, reloc_type, &context, &func, &static_funcs_out, &needs_link_branch, &print_indent, &process_delay_slot, &print_link_branch]
++    auto print_func_call_by_address = [&generator, reloc_target_section_offset, has_reloc, reloc_section, reloc_reference_symbol, reloc_type, &context, &func, &static_funcs_out, &needs_link_branch, &print_indent, &process_delay_slot, &print_link_branch, instr_vram]
+         (uint32_t target_func_vram, bool tail_call = false, bool indent = false)
+     {
+         bool call_by_lookup = false;
+         bool call_by_name = false;
++        // A call (not a tail call) sets $ra to the instruction after its delay slot, before the delay
++        // slot runs, as the CPU does.
++        auto set_link = [&]() {
++            if (!tail_call) {
++                generator.emit_set_link_register(instr_vram + 8);
++                print_indent();
++            }
++        };
+         // Event symbol, emit a call to the runtime to trigger this event.
+         if (reloc_section == N64Recomp::SectionEvent) {
+             needs_link_branch = !tail_call;
+             if (indent) {
+                 print_indent();
+             }
++            set_link();
+             if (!process_delay_slot(false)) {
+                 return false;
+             }
+@@ -335,6 +344,7 @@ bool process_instruction(GeneratorType& generator, const N64Recomp::Context& con
+             if (indent) {
+                 print_indent();
+             }
++            set_link();
+             if (!process_delay_slot(false)) {
+                 return false;
+             }
+@@ -484,6 +494,11 @@ bool process_instruction(GeneratorType& generator, const N64Recomp::Context& con
+             return false;
+         }
+         needs_link_branch = true;
++        // $ra is set to the return address (as by jal), unless it's the register called through.
++        if (rs != (int)rabbitizer::Registers::Cpu::GprO32::GPR_O32_ra) {
++            generator.emit_set_link_register(instr_vram + 8);
++            print_indent();
++        }
+         print_func_call_by_register(rs);
+         break;
+     case InstrId::cpu_j:
+@@ -791,7 +806,13 @@ bool recompile_function_impl(GeneratorType& generator, const N64Recomp::Context&
  
              // If this is a branch or a direct jump, add it to the local label list
              if (instr.isBranch() || instr.getUniqueId() == rabbitizer::InstrId::UniqueId::cpu_j) {

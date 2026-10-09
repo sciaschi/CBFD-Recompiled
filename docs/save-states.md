@@ -39,11 +39,11 @@ A message in the top-left corner confirms each one: "State saved to slot 1",
 
 ### Things to know
 
-- **States belong to the version of the program that made them.** After you
-  update Conker's Bad Fur Day: Recompiled (or switch to a test build), states
-  made with the other one can't be loaded. You'll see "it was saved by another
-  version or build of the program". Keep a normal save for anything you care
-  about.
+- **Updates.** States keep working after you update Conker's Bad Fur Day:
+  Recompiled, unless the update changes the part of the game's code a state was
+  saved in. That should be rare. If it happens, you'll see "it was saved by
+  another version of the program, which changed the game's code". Keep a
+  normal save for anything you care about.
 - **RetroAchievements.** States work with RetroAchievements in casual mode,
   and the achievements' progress is saved and restored with them. Loading is
   turned off in Hardcore mode, as RetroAchievements' rules require.
@@ -103,10 +103,13 @@ state was taken. In practice games wait at a few fixed places in their main
 loops, so Conker's threads match within a frame, even across levels, menus
 and restarts of the program. That's why a state can be loaded anywhere.
 
-### Telling where a thread is: its signature
+### Telling where a thread is: its signatures
 
-Each time a thread is about to wait, the runtime records its **signature**: a
-hash of its native call stack. The stack is walked with
+Each thread's place is checked two ways: in the program's code (its native
+call stack) and in the game's own code (its MIPS calls).
+
+**In the program's code.** Each time a thread is about to wait, the runtime
+records its **signature**: a hash of its native call stack. The stack is walked with
 `RtlCaptureStackBackTrace` on Windows and `backtrace()` on Linux and macOS.
 Only the frames inside the program itself count, as offsets from where it's
 loaded. That way the signature is the same every time the same build runs,
@@ -114,20 +117,45 @@ whatever address the system loads the program at. Frames in system libraries
 (the start of a thread) are left out, since their addresses change from run
 to run.
 
-The values a message queue wait holds in its own native frame (the queue, the
-message or where it goes, and the flags) are hashed in too, because they
-aren't in the registers.
+The kind of wait (receiving, sending, preempted, stopped, or running at a safe
+point) and the values a message queue wait holds in its own native frames (the
+queue, the message or where it goes, and the flags) are hashed in too, because
+they aren't in the registers.
+
+These offsets change with every rebuild of the program, so this signature
+only fits the build that took the state.
+
+**In the game's code.** What actually has to match for a load is where each
+thread is in the *game's* code. The native stack is never written back: after
+a load, each thread carries on in the current program's own code, with the
+state's registers and memory. So the runtime also walks each thread's MIPS
+calls, the way a MIPS debugger does:
+
+- A real `jal` sets `$ra` to its return address. N64Recomp's generated code
+  didn't, so our N64Recomp patch makes every call set `$ra`. Now a waiting
+  thread's `$ra` is the return address of the call it waits in.
+- The function holding that address (found in the recompiler's section table)
+  starts with a prologue that makes its stack frame (`addiu sp, sp, -size`) and
+  saves `$ra` in it (`sw ra, offset(sp)`). That saved `$ra` is its caller's
+  return address, and the caller's frame starts where this one ends.
+- The walk repeats up the stack until a function has no such prologue (the
+  thread's entry, or hand-written code). The instructions are read from the ROM
+  as the recompiled code sees it, never from memory, so a bad address can't
+  crash it.
+
+The hash of the return addresses and stack pointers, with the wait's kind and
+values, is the thread's **game signature**. It only depends on the game's code,
+so it stays the same across builds of the program.
 
 A load only goes ahead if the program has the same set of threads as the
-state, and each one has the same signature. Otherwise it waits for the next
-safe point and checks again, for up to five seconds.
+state, and each one has the same game signature. If the state comes from the
+same build, its native signature has to match too. Otherwise the load waits
+for the next safe point and checks again, for up to five seconds.
 
-Because signatures are offsets into the program's code, a state only fits the
-build that took it: any rebuild that changes the code moves them. So each
-state also records a **build fingerprint** (where a few of the runtime's
-functions are in the program, and the program's size). A state from another
-build is only tried for a second, and the message says why it can't be
-loaded.
+Each state records a **build fingerprint** (where a few of the runtime's
+functions are in the program, and the program's size), so the program knows
+which build a state came from. That decides whether to check the native
+signatures and what to say if a load can't be done.
 
 For Conker, the threads wait 7 to 12 native frames deep, at the same places
 every frame.
@@ -138,7 +166,7 @@ every frame.
 |---|---|---|
 | The game's memory | librecomp | The N64's 8 MB, including every MIPS stack, `OSThread`, message queue and timer |
 | Each thread's registers | librecomp | `r0`-`r31`, `f0`-`f31`, `hi`, `lo`, the status register and the float mode. `f_odd` (a pointer into the context) is recomputed on load |
-| Each thread's signature | ultramodern | Checked before loading, never written back |
+| Each thread's signatures | ultramodern, librecomp | Native and in the game's code. Checked before loading, never written back |
 | The clock and the timers | ultramodern | The game's clock (`osGetCount`/`osGetTime`) and the list of running timers |
 | The VI and event state | ultramodern | The video mode, framebuffers, retrace message and rate, and the SP/DP/AI/SI event queues |
 | RetroAchievements progress | the host | `rc_client_serialize_progress` |
@@ -173,7 +201,9 @@ The game's EEPROM (its real save) is left out on purpose.
 | `ultramodern/src/timer.cpp` | The clock offset, and the timer thread's list under a lock |
 | `ultramodern/src/events.cpp` | The VI and event state; RSP tasks in flight |
 | `librecomp/include/librecomp/save_states.hpp`, `librecomp/src/save_states.cpp` | `capture` and `restore`, and the state's layout |
-| `librecomp/src/recomp.cpp` | Registers each thread's `recomp_context` |
+| `librecomp/src/recomp.cpp` | Registers each thread's `recomp_context`; `get_code_rom` |
+| `librecomp/src/overlays.cpp` | `find_loaded_function`, for the frame walk |
+| N64Recomp (`recomp/n64recomp.patch`) | Calls set `$ra` (`emit_set_link_register`) |
 | `host/src/save_states.cpp` | Conker's keys, slots, files and messages |
 
 The N64ModernRuntime changes are in
@@ -185,13 +215,19 @@ build applies.
 The runtime part (the two `save_states` libraries and the small hooks above)
 doesn't depend on Conker. Another recomp built on N64ModernRuntime needs:
 
-1. The runtime changes from the patch.
-2. A safe point callback (`ultramodern::save_states::set_safe_point_callback`)
+1. The runtime changes from the N64ModernRuntime patch, and the N64Recomp change
+   that makes calls set `$ra` (`emit_set_link_register` in
+   [`recomp/n64recomp.patch`](../recomp/n64recomp.patch)), then a recompile.
+   Without the N64Recomp change, states still work, but only in the build that
+   made them.
+2. If the game's code is compressed in the ROM, a `decompression_routine` in
+   its `GameEntry`, so the frame walk can read the instructions.
+3. A safe point callback (`ultramodern::save_states::set_safe_point_callback`)
    that calls `recomp::save_states::capture` or `restore` while a request is
    pending. Turn the safe points on with `set_safe_points_wanted(true)` only
    while one is pending: each one walks a stack, and a game can check a queue
    thousands of times a second.
-3. Its own files, keys and messages (Conker's are in `host/src/save_states.cpp`).
+4. Its own files, keys and messages (Conker's are in `host/src/save_states.cpp`).
 
 What to check for a new game:
 
@@ -204,6 +240,12 @@ What to check for a new game:
   ensure. A game whose patches keep values in static native variables needs to
   save those too.
 - **Memory past the N64's 8 MB** (the mods' heap) isn't saved.
+- **Testing loads across builds.** Save some states, change the code, rebuild
+  and load them. Make sure the second build is a full link: MSVC's incremental
+  linker keeps unchanged functions at the same addresses, so a quick rebuild
+  can look like the same build, native signatures and all. (Delete the `.exe`
+  and `.ilk` first.) The log says whether a state is from "this build" or
+  "another build".
 - **Host code with its own state** (Conker's camera and music fixes, for
   example) carries on as it was. That has been harmless so far.
 

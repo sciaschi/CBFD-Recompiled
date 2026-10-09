@@ -164,6 +164,8 @@ namespace {
     // The unlocks to show, from the game thread, for the main thread.
     std::mutex messages_mutex;
     std::deque<std::string> messages;
+    // One to show at once in place of what's shown (save states' slot, as F6 is pressed again and again).
+    std::string replacing_message;
     void show_message(const std::string& text) {
         std::printf("[achievements] %s\n", text.c_str());
         std::fflush(stdout);
@@ -753,11 +755,16 @@ bool conker::achievements::hardcore() {
     return client != nullptr && rc_client_get_hardcore_enabled(client);
 }
 
-void conker::achievements::show_notice(const std::string& text) {
+void conker::achievements::show_notice(const std::string& text, bool replace) {
     std::printf("[notice] %s\n", text.c_str());
     std::fflush(stdout);
     std::lock_guard lock{messages_mutex};
-    messages.push_back(text);
+    if (replace) {
+        replacing_message = text;
+    }
+    else {
+        messages.push_back(text);
+    }
 }
 
 void conker::achievements::on_ui_ready() {
@@ -774,9 +781,15 @@ void conker::achievements::update() {
         return;
     }
     const clock::time_point now = clock::now();
-    if (shown_text.empty() || now >= shown_until) {
-        std::string next;
-        {
+    // A notice that replaces what's shown (show_notice's replace) is shown at once.
+    std::string replacement;
+    {
+        std::lock_guard lock{messages_mutex};
+        replacement.swap(replacing_message);
+    }
+    if (shown_text.empty() || now >= shown_until || !replacement.empty()) {
+        std::string next = replacement;
+        if (next.empty()) {
             std::lock_guard lock{messages_mutex};
             if (!messages.empty()) {
                 next = messages.front();

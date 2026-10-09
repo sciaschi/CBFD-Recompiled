@@ -24,9 +24,8 @@ Settings > Privacy & Security choose Open Anyway. Or, in Terminal, run
 xattr -dr com.apple.quarantine ConkerRecomp.app before opening it.
 
 Save states: F5 saves the game as it is, anywhere, F7 loads it back, and F6
-switches between the nine slots. The game's own saves are never touched. States
-only load in the version of the program that made them. More in
-docs/save-states.md on the GitHub page.
+switches between the nine slots. The game's own saves are never touched. More
+in docs/save-states.md on the GitHub page.
 
 Texture packs: install a .rtz pack, or a GLideN64 pack's .htc file, with the Mods
 menu's Install Mods button (or drop it onto the Mods menu, or put it in the mods
