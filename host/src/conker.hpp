@@ -203,7 +203,10 @@ namespace conker {
         void update();
     }
 
-    // achievements.cpp: RetroAchievements (a prototype; on with a login in retroachievements.txt).
+    // achievements.cpp: RetroAchievements (a prototype; on with a login in retroachievements.txt). Built in only
+    // with CONKER_RETROACHIEVEMENTS (host/CMakeLists.txt says why it's off); without it, these do nothing and
+    // there's no RetroAchievements tab.
+#if defined(CONKER_RETROACHIEVEMENTS)
     namespace achievements {
         // At start (frontend.cpp, once the config folder is known): logs in, if there's a login.
         void init();
@@ -213,9 +216,24 @@ namespace conker {
         // From the game thread, as the game starts a frame's display list: loads the game's
         // achievements once logged in, then checks them against the game's memory.
         void game_frame(uint8_t* rdram);
-        // From the launcher's init (frontend.cpp): recompui's UI exists now, for the unlock messages.
+    }
+#else
+    namespace achievements {
+        inline void init() {}
+        inline void add_tab() {}
+        inline void game_frame(uint8_t*) {}
+    }
+#endif
+
+    // notices.cpp: a line in the top-left corner for a few seconds, one at a time (an unlock, a save state's
+    // "State saved"...).
+    namespace notices {
+        // From any thread. With replace, it's shown at once in place of what's shown (and of an earlier one to
+        // replace), as a save state's slot is as F6 is pressed again and again.
+        void show(const std::string& text, bool replace = false);
+        // From the launcher's init (frontend.cpp): recompui's UI exists now, so the line's context can be made.
         void on_ui_ready();
-        // On the main thread (update_gfx): shows the unlock messages, one at a time.
+        // On the main thread (update_gfx): shows the waiting lines, one at a time, once the game has started.
         void update();
     }
 

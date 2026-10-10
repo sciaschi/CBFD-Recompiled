@@ -24,6 +24,14 @@ set(CMAKE_C_STANDARD 11)
 
 # OFF builds a headless host (null renderer, no input or sound), for tests.
 option(CONKER_RT64 "Render with RT64 in an SDL window" ON)
+# RetroAchievements (src/achievements.cpp, with rcheevos): off, and so left out of the release builds, until
+# it's clear RetroAchievements allows a recompilation to earn the game's achievements. Its documentation says
+# recompilations aren't eligible for sets of their own (docs.retroachievements.org/general/standalone-support),
+# and its forums' replies say they can't use the emulators' sets either; its server takes casual unlocks from
+# an unknown program all the same, so working isn't being allowed. -DCONKER_RETROACHIEVEMENTS=ON builds it in
+# (for development); a release with it on ships rcheevos's license again (.github/release/LICENSES.txt and the
+# release workflow's LICENSE-rcheevos.txt).
+option(CONKER_RETROACHIEVEMENTS "Build in RetroAchievements (casual mode)" OFF)
 
 set(REPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/..")
 set(RT64_DIR "${REPO_ROOT}/tools/rt64")
@@ -165,21 +173,25 @@ if (CONKER_RT64)
     add_custom_command(TARGET ConkerRecomp POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_CURRENT_SOURCE_DIR}/assets" "$<TARGET_FILE_DIR:ConkerRecomp>/assets")
 
-    target_sources(ConkerRecomp PRIVATE src/frontend.cpp src/conker_config.cpp src/audio_output.cpp src/rumble.cpp src/fps_counter.cpp src/reticle.cpp src/pad_mappings.cpp src/texture_packs.cpp src/gliden64_packs.cpp src/achievements.cpp)
+    target_sources(ConkerRecomp PRIVATE src/frontend.cpp src/conker_config.cpp src/audio_output.cpp src/rumble.cpp src/fps_counter.cpp src/reticle.cpp src/pad_mappings.cpp src/texture_packs.cpp src/gliden64_packs.cpp src/notices.cpp)
 
-    # RetroAchievements (src/achievements.cpp): rcheevos (tools/rcheevos, MIT), its client, runtime and ROM hashing.
-    # The N64's hash is of the ROM itself: disc, encrypted and zip hashing are left out.
-    set(RCHEEVOS_DIR "${REPO_ROOT}/tools/rcheevos")
-    file(GLOB RCHEEVOS_SOURCES "${RCHEEVOS_DIR}/src/rapi/*.c" "${RCHEEVOS_DIR}/src/rcheevos/*.c")
-    list(APPEND RCHEEVOS_SOURCES
-        "${RCHEEVOS_DIR}/src/rc_client.c" "${RCHEEVOS_DIR}/src/rc_compat.c" "${RCHEEVOS_DIR}/src/rc_util.c" "${RCHEEVOS_DIR}/src/rc_version.c"
-        "${RCHEEVOS_DIR}/src/rhash/hash.c" "${RCHEEVOS_DIR}/src/rhash/hash_rom.c" "${RCHEEVOS_DIR}/src/rhash/md5.c")
-    add_library(rcheevos STATIC ${RCHEEVOS_SOURCES})
-    target_include_directories(rcheevos PUBLIC "${RCHEEVOS_DIR}/include")
-    target_compile_definitions(rcheevos PUBLIC RC_CLIENT_SUPPORTS_HASH RC_HASH_NO_DISC RC_HASH_NO_ENCRYPTED RC_HASH_NO_ZIP)
-    target_link_libraries(ConkerRecomp PRIVATE rcheevos)
-    if (WIN32)
-        target_link_libraries(ConkerRecomp PRIVATE winhttp)
+    if (CONKER_RETROACHIEVEMENTS)
+        # RetroAchievements (src/achievements.cpp): rcheevos (tools/rcheevos, MIT), its client, runtime and ROM hashing.
+        # The N64's hash is of the ROM itself: disc, encrypted and zip hashing are left out.
+        target_sources(ConkerRecomp PRIVATE src/achievements.cpp)
+        target_compile_definitions(ConkerRecomp PRIVATE CONKER_RETROACHIEVEMENTS)
+        set(RCHEEVOS_DIR "${REPO_ROOT}/tools/rcheevos")
+        file(GLOB RCHEEVOS_SOURCES "${RCHEEVOS_DIR}/src/rapi/*.c" "${RCHEEVOS_DIR}/src/rcheevos/*.c")
+        list(APPEND RCHEEVOS_SOURCES
+            "${RCHEEVOS_DIR}/src/rc_client.c" "${RCHEEVOS_DIR}/src/rc_compat.c" "${RCHEEVOS_DIR}/src/rc_util.c" "${RCHEEVOS_DIR}/src/rc_version.c"
+            "${RCHEEVOS_DIR}/src/rhash/hash.c" "${RCHEEVOS_DIR}/src/rhash/hash_rom.c" "${RCHEEVOS_DIR}/src/rhash/md5.c")
+        add_library(rcheevos STATIC ${RCHEEVOS_SOURCES})
+        target_include_directories(rcheevos PUBLIC "${RCHEEVOS_DIR}/include")
+        target_compile_definitions(rcheevos PUBLIC RC_CLIENT_SUPPORTS_HASH RC_HASH_NO_DISC RC_HASH_NO_ENCRYPTED RC_HASH_NO_ZIP)
+        target_link_libraries(ConkerRecomp PRIVATE rcheevos)
+        if (WIN32)
+            target_link_libraries(ConkerRecomp PRIVATE winhttp)
+        endif()
     endif()
     # CONKER_RT64 selects the window build; the rest are what rt64 compiles its own headers with.
     target_compile_definitions(ConkerRecomp PRIVATE CONKER_RT64 HLSL_CPU)
