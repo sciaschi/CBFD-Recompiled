@@ -220,8 +220,8 @@ Run `host/build/ConkerRecomp` (Linux and macOS) or `host\build-win\ConkerRecomp.
 - **Achievements** are the program's own, for reaching the game's scenes (the
   ones its Chapters menu lists), from the first death to the end credits. They're
   kept on this computer, in `achievements.txt` with the settings, and the
-  Achievements tab lists them. A save that's already further along unlocks what
-  it has reached when you play it.
+  Achievements tab lists them. Only what you do in play counts: scenes a save
+  had already reached unlock when a new game reaches them.
 - Saves, settings and the stored ROM live in `~/.config/ConkerRecompiled` on
   Linux, `~/Library/Application Support/ConkerRecompiled` on macOS and
   `%LOCALAPPDATA%\ConkerRecompiled` on Windows. Put an empty `portable.txt` next

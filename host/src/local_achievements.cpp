@@ -13,9 +13,12 @@
 // Each game frame (conker_frame_dl_begin, widescreen.cpp) the bits are read, and an achievement whose scene's
 // bit is set is unlocked: a line in the corner (notices.cpp) and achievements.txt in the config folder
 //   <id> <unix time>
-// a line per unlock. A save that already has scenes reached (loading one from before, a slot from another
-// copy) sets many bits at once: more than a few in one frame unlock quietly, with one line saying how many.
-// The bits are of the save in play, so unlocks are kept whichever slot they came from.
+// a line per unlock. Only what's done in play counts: what a save had already reached earns nothing (its
+// bits are a baseline), so a finished save unlocks nothing until a new game reaches the scenes again. The
+// game reads the save in while its menus are up, a few frames at a time (measured: 4, then 56, then 165 of a
+// finished save's bits, at the menu), so the bits count for nothing while a menu's scene is in play (the
+// logos, the opening, the bar), nor when many turn on in one frame (data read in, not reached), when some
+// turn off (a new game), or when the pointer moves (another save's).
 //
 // The Achievements settings tab (add_tab) lists them all, unlocked or not, with the date.
 
@@ -45,7 +48,7 @@ namespace {
     // The pointer to the save's bitfield of scenes reached (D_800D2E4C), and how many scenes there are.
     constexpr uint32_t scenes_reached_pointer = 0x800D2E4C;
     constexpr uint32_t scene_count = 0xCC;
-    // More new bits than this in one frame: a save loaded, not scenes reached as you play.
+    // More new bits than this in one frame: a save's data read in, not scenes reached as you play.
     constexpr int quiet_threshold = 3;
 
     // The scene for each achievement, by its index in the game's table, with the table's name for it.
@@ -145,9 +148,37 @@ namespace {
         return true;
     }
 
-    // The scenes' bits as last read, to tell the new ones.
+    // The scenes' bits as last read, to tell the new ones, and where they were.
     std::vector<bool> last_bits(scene_count, false);
     bool have_bits = false;
+    uint32_t last_pointer = 0;
+    // What the save had before it was played (read at the menus, or loaded at once): reaching those again
+    // earns nothing. Only a bit set in play, past this, unlocks.
+    std::vector<bool> baseline(scene_count, false);
+
+    // The scene in play (D_800BE9F0), and the ones before play: the logos, the chainsaw opening and the bar,
+    // where the menu is (mods/skip_intro has them too).
+    constexpr uint32_t scene_in_play_address = 0x800BE9F0;
+    constexpr int32_t scene_logos = 0x25;
+    constexpr int32_t scene_opening = 0x21;
+    constexpr int32_t scene_bar_menu = 0x1D;
+
+    std::vector<bool> merged(const std::vector<bool>& a, const std::vector<bool>& b) {
+        std::vector<bool> both(scene_count, false);
+        for (uint32_t scene = 0; scene < scene_count; scene++) {
+            both[scene] = a[scene] || b[scene];
+        }
+        return both;
+    }
+
+    bool every_scene_reached(const std::vector<bool>& bits) {
+        for (uint32_t scene = 0; scene < scene_count; scene++) {
+            if (counts_for_every_scene(scene) && !bits[scene]) {
+                return false;
+            }
+        }
+        return true;
+    }
 
     std::string date_of(int64_t when) {
         const std::time_t time = (std::time_t)when;
@@ -203,7 +234,7 @@ namespace {
                 recompui::theme::Typography::Body, recompui::theme::color::Text);
             add_text(left, "Earned as you reach the game's scenes, the ones its Chapters menu lists. They're kept on this "
                 "computer, in achievements.txt with the other settings.", recompui::theme::Typography::Body, recompui::theme::color::TextDim);
-            add_text(left, "A save that's already further along unlocks what it has reached when you play it.",
+            add_text(left, "Only what you do in play counts: scenes a save had already reached unlock when a new game reaches them.",
                 recompui::theme::Typography::Body, recompui::theme::color::TextDim);
 
             recompui::Element* right = body->get_right();
@@ -295,43 +326,47 @@ void conker::local_achievements::game_frame(uint8_t* rdram) {
         return;
     }
     int new_bits = 0;
+    bool cleared = false;
     for (uint32_t scene = 0; scene < scene_count; scene++) {
-        if (bits[scene] && !(have_bits && last_bits[scene])) {
-            new_bits++;
-        }
+        const bool before = have_bits && last_bits[scene];
+        new_bits += (bits[scene] && !before) ? 1 : 0;
+        cleared = cleared || (before && !bits[scene]);
     }
-    const bool quiet = new_bits > quiet_threshold;
+    int32_t scene_in_play = 0;
+    std::memcpy(&scene_in_play, rdram + (scene_in_play_address - 0x80000000), sizeof(scene_in_play));
+    const bool at_menu = scene_in_play == scene_logos || scene_in_play == scene_opening || scene_in_play == scene_bar_menu;
+    // Not something done in play: at the menus, the save's data read in (many bits at once), or another save's
+    // (bits cleared, a new game; or the bits elsewhere).
+    const bool loaded = at_menu || new_bits > quiet_threshold || cleared || pointer != last_pointer;
+
     int reached_count = 0;
     for (uint32_t scene = 0; scene < scene_count; scene++) {
         reached_count += bits[scene] ? 1 : 0;
     }
-    std::printf("[achievements] scenes reached: %d (%d new), from 0x%08X\n", reached_count, new_bits, pointer);
-    std::fflush(stdout);
-    last_bits = bits;
-    have_bits = true;
-
-    bool every = true;
-    for (uint32_t scene = 0; scene < scene_count; scene++) {
-        if (counts_for_every_scene(scene) && !bits[scene]) {
-            every = false;
-        }
+    std::printf("[achievements] scenes reached: %d (%d new%s), from 0x%08X, scene 0x%02X: ", reached_count, new_bits,
+        loaded ? ", not in play" : "", pointer, scene_in_play);
+    for (uint32_t i = 0; i < scene_count / 8 + 1; i++) {
+        std::printf("%02X", rdram[(pointer + i - 0x80000000) ^ 3]);
     }
-    int quiet_unlocks = 0;
+    std::printf("\n");
+    std::fflush(stdout);
+
+    const bool was_every = have_bits && every_scene_reached(last_bits);
+    last_bits = bits;
+    last_pointer = pointer;
+    have_bits = true;
+    if (loaded) {
+        // What the save already had: it counts for nothing. A new game (bits cleared) starts it over.
+        baseline = cleared ? bits : merged(baseline, bits);
+        return;
+    }
+
     for (size_t i = 0; i < achievement_count; i++) {
         const int scene = achievement_list[i].scene;
-        const bool reached = scene == every_scene ? every : bits[scene];
-        if (!reached || !unlock(i)) {
-            continue;
-        }
-        if (quiet) {
-            quiet_unlocks++;
-        }
-        else {
+        const bool earned = scene == every_scene ? (!was_every && every_scene_reached(bits)) : (bits[scene] && !baseline[scene]);
+        if (earned && unlock(i)) {
             conker::notices::show(std::string("Achievement unlocked: ") + achievement_list[i].title);
         }
     }
-    if (quiet_unlocks > 0) {
-        conker::notices::show(std::to_string(quiet_unlocks) + (quiet_unlocks == 1 ? " achievement" : " achievements") +
-            " unlocked from this save");
-    }
+    baseline = merged(baseline, bits);
 }
