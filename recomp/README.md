@@ -307,6 +307,13 @@ beside the 4:3 frame. Those bounds are widened by the sprite cull's margin befor
 its two compares (`conker_widen_piece_cull_left`, `_right`). The bees over the
 hive are `func_15130A9C`'s sprites, already widened.
 
+The same bees were drawn behind the sunflower they circle, also on the N64.
+`func_15168118` draws each with `func_15095760`, which gives the rectangle a
+depth (`G_SETPRIMDEPTH`) and a render mode that's depth-tested but doesn't write
+depth, and the flower is drawn after them. A bee now writes its depth: its render
+mode gets `Z_UPD` and the alpha compare's threshold, so its rectangle's
+transparent pixels write nothing (`render_fixes.cpp`, `conker_bee_depth`).
+
 A camera's background fill (`func_151103C8`, its colour under everything it
 draws) ends exactly at the scissor's right edge, and RT64 lines such a rectangle
 up with the window's: its last column went out to the window's right side. The

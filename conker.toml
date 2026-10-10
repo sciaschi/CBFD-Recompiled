@@ -350,6 +350,24 @@ func = "func_15130A9C"
 before_vram = 0x15130D08
 text = "{ extern void conker_widen_sprite_cull_right(uint8_t*, recomp_context*); conker_widen_sprite_cull_right(rdram, ctx); }"
 
+# The tickly bees write their depth, so the sunflower drawn after them is hidden behind a bee nearer the camera
+# (host/src/render_fixes.cpp, issue #101): func_15168118 draws a bee with func_15095760 (0x15168640, back at
+# 0x15168648), which stores its G_SETPRIMDEPTH at 0x15095878.
+[[patches.hook]]
+func = "func_15168118"
+before_vram = 0x15168640
+text = "{ extern void conker_bee_begin(uint8_t*, recomp_context*); conker_bee_begin(rdram, ctx); }"
+
+[[patches.hook]]
+func = "func_15168118"
+before_vram = 0x15168648
+text = "{ extern void conker_bee_end(uint8_t*, recomp_context*); conker_bee_end(rdram, ctx); }"
+
+[[patches.hook]]
+func = "func_15095760"
+before_vram = 0x15095878
+text = "{ extern void conker_bee_depth(uint8_t*, recomp_context*); conker_bee_depth(rdram, ctx); }"
+
 # The same for the pieces func_15095D34 draws (the tickly bees, speech bubbles; issue #101): func_15095B08
 # sets a piece's "on screen" flag only where its rectangle overlaps the camera's 4:3 bounds. At 0x15095C70
 # $f8 is the left bound, at 0x15095C84 $f10 the right one (host/src/widescreen.cpp).

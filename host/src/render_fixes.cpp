@@ -23,6 +23,44 @@ extern "C" void conker_light_glow_depth(uint8_t* rdram, recomp_context* ctx) {
     ctx->r11 = 0;
 }
 
+// The tickly bees in front of the sunflower (issue #101; Windy's pollination quest).
+//
+// func_15168118 draws each bee by calling func_15095760 (0x15168640), which gives the bee a depth from its place in
+// the scene (G_SETPRIMDEPTH) and draws it as a rectangle (func_15095D34), with a render mode (func_15142C10's) that
+// blends it over what's there, depth-tested against that depth but not writing it. The sunflower the bees circle is
+// drawn after them, so nothing stopped it from being drawn over a bee nearer the camera than it (measured: with the
+// bees' depth made the nearest, the flower was still drawn over them). The N64 drew it so too; here a bee writes its
+// depth, so what's drawn after it, the flower among it, is hidden behind it where the bee is nearer and drawn over it
+// where it's further. Only the pixels the bee draws: the alpha compare's threshold (the blend colour's alpha, 0) drops
+// its rectangle's transparent ones, which would otherwise hide what's behind the bee as a rectangle.
+namespace {
+    bool drawing_bee = false;
+}
+
+// func_15168118 at 0x15168640, about to call func_15095760 for a bee, and at 0x15168648, back from it.
+extern "C" void conker_bee_begin(uint8_t* rdram, recomp_context* ctx) {
+    drawing_bee = true;
+}
+
+extern "C" void conker_bee_end(uint8_t* rdram, recomp_context* ctx) {
+    drawing_bee = false;
+}
+
+// func_15095760 at 0x15095878, about to store the depth of a G_SETPRIMDEPTH at $v1: for a bee, its render mode
+// (the G_RDPSETOTHERMODE, 0xEF, written a few commands before) gets Z_UPD (0x20) and the alpha compare's threshold (0x1).
+extern "C" void conker_bee_depth(uint8_t* rdram, recomp_context* ctx) {
+    if (!drawing_bee) {
+        return;
+    }
+    for (int i = 1; i <= 8; i++) {
+        const gpr command = ctx->r3 - i * 8;
+        if (((uint32_t)MEM_W(0, command) >> 24) == 0xEF) {
+            MEM_W(4, command) = (int32_t)((uint32_t)MEM_W(4, command) | 0x21);
+            break;
+        }
+    }
+}
+
 // func_1510FEA0 at 0x1510FFA4 (it starts each frame's display list): $t8 is D_800BE635, which
 // decides whether the frame is cleared to black before it is drawn. Level setup clears the
 // flag, since the level and sky are meant to cover the screen; where they don't (such as with
