@@ -216,20 +216,26 @@ namespace conker {
         // From the game thread, as the game starts a frame's display list: loads the game's
         // achievements once logged in, then checks them against the game's memory.
         void game_frame(uint8_t* rdram);
-        // From the launcher's init (frontend.cpp): recompui's UI exists now, for the unlock messages.
-        void on_ui_ready();
-        // On the main thread (update_gfx): shows the unlock messages, one at a time.
-        void update();
     }
 #else
     namespace achievements {
         inline void init() {}
         inline void add_tab() {}
         inline void game_frame(uint8_t*) {}
-        inline void on_ui_ready() {}
-        inline void update() {}
     }
 #endif
+
+    // notices.cpp: a line in the top-left corner for a few seconds, one at a time (an unlock, a save state's
+    // "State saved"...).
+    namespace notices {
+        // From any thread. With replace, it's shown at once in place of what's shown (and of an earlier one to
+        // replace), as a save state's slot is as F6 is pressed again and again.
+        void show(const std::string& text, bool replace = false);
+        // From the launcher's init (frontend.cpp): recompui's UI exists now, so the line's context can be made.
+        void on_ui_ready();
+        // On the main thread (update_gfx): shows the waiting lines, one at a time, once the game has started.
+        void update();
+    }
 
     // heap_report.cpp (TEMP-DEBUG, issue #98): Rare's heap, in a line: its size, what's used and
     // free, and where its blocks' links go wrong, if they do.

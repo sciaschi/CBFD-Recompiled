@@ -12,11 +12,8 @@
 // - HTTP: each request rc_client makes (a URL, with POST data or not) is sent on a thread of its own, and
 //   the reply handed back. On Windows with WinHTTP (the system's, nothing to ship); elsewhere not yet: those
 //   builds report the request failed, so they run as without achievements.
-// - The UI: an unlock shows as a line in the top-left corner for a few seconds (a recompui context of its
-//   own that takes no input, as the FPS counter's), and everything rc_client says goes to the console.
-//   The line waits for the game to start: recompui shows the launcher only while no context is shown, so
-//   shown at the launcher ("logged in as ...", a second after it opens) it kept the screen black until it
-//   went.
+// - The UI: an unlock shows as a line in the top-left corner for a few seconds (notices.cpp), and everything
+//   rc_client says goes to the console.
 //
 // The RetroAchievements settings tab (add_tab, made with the other tabs in conker_config.cpp) logs in and
 // out and lists the game's achievements, unlocked and not, once the game has started and been recognized
@@ -44,7 +41,6 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
-#include <deque>
 #include <filesystem>
 #include <fstream>
 #include <map>
@@ -160,15 +156,10 @@ namespace {
         std::fflush(file);
     }
 
-    // The unlocks to show, from the game thread, for the main thread.
-    std::mutex messages_mutex;
-    std::deque<std::string> messages;
+    // A line in the corner (notices.cpp), and in the log.
     void show_message(const std::string& text) {
-        std::printf("[achievements] %s\n", text.c_str());
-        std::fflush(stdout);
         log_line("[achievements] %s", text.c_str());
-        std::lock_guard lock{messages_mutex};
-        messages.push_back(text);
+        conker::notices::show(text);
     }
 
     // --- Memory ---
@@ -387,36 +378,6 @@ namespace {
         std::filesystem::remove(login_path(), error);
         set_game_state(GameState::None);
         set_login_state(LoginState::Off);
-    }
-
-    // --- The overlay ---
-
-    std::atomic<bool> ui_ready = false;
-    bool overlay_created = false;
-    recompui::ContextId overlay = recompui::ContextId::null();
-    recompui::Label* overlay_label = nullptr;
-    std::string shown_text;
-    clock::time_point shown_until;
-    constexpr auto message_time = std::chrono::seconds(5);
-
-    void create_overlay() {
-        overlay = recompui::create_context();
-        overlay.open();
-        overlay.set_captures_input(false);
-        overlay.set_captures_mouse(false);
-        recompui::Element* box = overlay.create_element<recompui::Element>(overlay.get_root_element());
-        box->set_position(recompui::Position::Absolute);
-        box->set_top(8.0f);
-        box->set_left(8.0f);
-        box->set_padding_left(10.0f);
-        box->set_padding_right(10.0f);
-        box->set_padding_top(4.0f);
-        box->set_padding_bottom(4.0f);
-        box->set_border_radius(6.0f);
-        box->set_background_color(recompui::theme::color::BGOverlay);
-        overlay_label = overlay.create_element<recompui::Label>(box, "", recompui::LabelStyle::Normal);
-        overlay.close();
-        overlay_created = true;
     }
 
     // --- The settings tab ---
@@ -725,51 +686,5 @@ void conker::achievements::game_frame(uint8_t* rdram) {
         const uint32_t pointer_a = read_le(0x0D326C, 3), pointer_b = read_le(0x0D2E4C, 3);
         log_line("[birdy] version %u level %u/%u pointer 0x%06X flag %u / pointer 0x%06X flag %u", read_le(0x4, 2),
             read_le(0x0BEE14, 1), read_le(0x0BE9F4, 1), pointer_a, (read_le(pointer_a + 3, 1) >> 3) & 1, pointer_b, (read_le(pointer_b + 3, 1) >> 3) & 1);
-    }
-}
-
-void conker::achievements::on_ui_ready() {
-    ui_ready = true;
-}
-
-void conker::achievements::update() {
-    if (!ui_ready || client == nullptr) {
-        return;
-    }
-    // Not before the game has started: shown at the launcher, the line kept it from being shown (recompui
-    // brings the launcher back only while no context is shown) and the screen stayed black. The lines wait.
-    if (!ultramodern::is_game_started()) {
-        return;
-    }
-    const clock::time_point now = clock::now();
-    if (shown_text.empty() || now >= shown_until) {
-        std::string next;
-        {
-            std::lock_guard lock{messages_mutex};
-            if (!messages.empty()) {
-                next = messages.front();
-                messages.pop_front();
-            }
-        }
-        if (!overlay_created && !next.empty()) {
-            create_overlay();
-        }
-        if (overlay_created) {
-            if (next.empty()) {
-                if (!shown_text.empty()) {
-                    recompui::hide_context(overlay);
-                    shown_text.clear();
-                }
-                return;
-            }
-            shown_text = next;
-            shown_until = now + message_time;
-            overlay.open();
-            overlay_label->set_text(shown_text);
-            overlay.close();
-            if (!recompui::is_context_shown(overlay)) {
-                recompui::show_context(overlay, "");
-            }
-        }
     }
 }
