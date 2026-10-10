@@ -225,6 +225,16 @@ namespace conker {
     }
 #endif
 
+    // local_achievements.cpp: the program's own achievements, for reaching the game's scenes, kept on this computer.
+    namespace local_achievements {
+        // At start (frontend.cpp, once the config folder is known): reads the unlocks so far.
+        void init();
+        // With the other settings tabs (conker_config.cpp): the Achievements tab.
+        void add_tab();
+        // From the game thread, as the game starts a frame's display list: unlocks what the save has reached.
+        void game_frame(uint8_t* rdram);
+    }
+
     // notices.cpp: a line in the top-left corner for a few seconds, one at a time (an unlock, a save state's
     // "State saved"...).
     namespace notices {
