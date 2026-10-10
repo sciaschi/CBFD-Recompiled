@@ -23,10 +23,6 @@ recomp/*.patch.
 
 - N64Recomp: the MIT License. https://github.com/N64Recomp/N64Recomp
 
-- rcheevos (RetroAchievements' client library, for the achievements): the MIT
-  License, Copyright (c) 2018 RetroAchievements.org (LICENSE-rcheevos.txt).
-  https://github.com/RetroAchievements/rcheevos
-
 - RecompFrontend (the launcher and menus) and the other libraries included
   (such as SDL2) keep their own licenses; see their repositories.
 

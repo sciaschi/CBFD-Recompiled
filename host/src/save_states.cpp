@@ -132,14 +132,14 @@ namespace {
                 file.write(reinterpret_cast<const char*>(out.data()), (std::streamsize)out.size());
                 if (!file.good()) {
                     log_line("[save] slot %d: couldn't write %s", slot, temporary.string().c_str());
-                    conker::achievements::show_notice("Couldn't write the state to slot " + std::to_string(slot));
+                    conker::notices::show("Couldn't write the state to slot " + std::to_string(slot));
                     return;
                 }
             }
             std::filesystem::rename(temporary, path, ec);
             if (ec) {
                 log_line("[save] slot %d: couldn't replace %s (%s)", slot, path.string().c_str(), ec.message().c_str());
-                conker::achievements::show_notice("Couldn't write the state to slot " + std::to_string(slot));
+                conker::notices::show("Couldn't write the state to slot " + std::to_string(slot));
                 return;
             }
             log_line("[save] slot %d written (%zu bytes)", slot, out.size());
@@ -216,7 +216,7 @@ namespace {
         if (!ultramodern::save_states::is_quiet()) {
             last_failure = "the game was busy";
             if (gave_up(pending == Request::Save ? "save" : "load")) {
-                conker::achievements::show_notice("Couldn't save now: the game stayed busy. Try again");
+                conker::notices::show("Couldn't save now: the game stayed busy. Try again");
                 finish();
             }
             return;
@@ -228,7 +228,7 @@ namespace {
             if (!recomp::save_states::capture(rdram, state, error)) {
                 last_failure = error;
                 if (gave_up("save")) {
-                    conker::achievements::show_notice("Couldn't save now (" + error + "). Try again");
+                    conker::notices::show("Couldn't save now (" + error + "). Try again");
                     finish();
                 }
                 return;
@@ -237,7 +237,7 @@ namespace {
                 (int)osGetThreadId(rdram, NULLPTR),
                 recomp::save_states::describe_current_threads(rdram).c_str());
             write_state(request_slot, std::move(state), conker::achievements::save_progress());
-            conker::achievements::show_notice("State saved to slot " + std::to_string(request_slot));
+            conker::notices::show("State saved to slot " + std::to_string(request_slot));
             finish();
             return;
         }
@@ -248,7 +248,7 @@ namespace {
             case recomp::save_states::LoadResult::Loaded:
                 log_line("[load] slot %d loaded after %u tries", request_slot, attempts);
                 conker::achievements::load_progress(load_progress);
-                conker::achievements::show_notice("Loaded the state in slot " + std::to_string(request_slot));
+                conker::notices::show("Loaded the state in slot " + std::to_string(request_slot));
                 finish();
                 break;
             case recomp::save_states::LoadResult::NotNow:
@@ -265,11 +265,11 @@ namespace {
                     // is the same; one that never fits most likely comes from a version that changed it.
                     // One from this build was most likely asked for in the middle of something.
                     if (!load_same_build) {
-                        conker::achievements::show_notice("Couldn't load slot " + std::to_string(request_slot) +
+                        conker::notices::show("Couldn't load slot " + std::to_string(request_slot) +
                             ": it was saved by another version of the program (" + load_version + "), which changed the game's code");
                     }
                     else {
-                        conker::achievements::show_notice("Couldn't load slot " + std::to_string(request_slot) +
+                        conker::notices::show("Couldn't load slot " + std::to_string(request_slot) +
                             " right now. Try again in a moment");
                     }
                     finish();
@@ -277,7 +277,7 @@ namespace {
                 break;
             case recomp::save_states::LoadResult::Invalid:
                 log_line("[load] slot %d: %s", request_slot, error.c_str());
-                conker::achievements::show_notice("Couldn't load slot " + std::to_string(request_slot) + ": " + error);
+                conker::notices::show("Couldn't load slot " + std::to_string(request_slot) + ": " + error);
                 finish();
                 break;
         }
@@ -307,7 +307,7 @@ namespace {
             return;
         }
         if (conker::achievements::hardcore()) {
-            conker::achievements::show_notice("States can't be loaded in RetroAchievements' Hardcore mode");
+            conker::notices::show("States can't be loaded in RetroAchievements' Hardcore mode");
             return;
         }
         // The file is read here (once the safe point callback is done with any request, nothing else touches
@@ -315,7 +315,7 @@ namespace {
         const int slot = current_slot;
         std::string error;
         if (!read_state(slot, load_state, load_progress, load_version, error)) {
-            conker::achievements::show_notice(error);
+            conker::notices::show(error);
             return;
         }
         load_same_build = recomp::save_states::same_build(load_state);
@@ -337,7 +337,7 @@ namespace {
                 break;
             case SDLK_F6:
                 current_slot = current_slot % slot_count + 1;
-                conker::achievements::show_notice("Save state slot " + std::to_string(current_slot.load()), true);
+                conker::notices::show("Save state slot " + std::to_string(current_slot.load()), true);
                 break;
             default:
                 break;

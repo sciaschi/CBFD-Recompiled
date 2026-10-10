@@ -24,7 +24,8 @@
 //
 // The orbit only runs where the C-buttons turn the camera (func_1512D390 ran this
 // frame) and not in the look mode (func_15120158: hold R, aiming), so cutscenes, special
-// cameras and aiming are the game's. Turning with C-left or C-right (or the stick) alone
+// cameras and aiming are the game's. Nor in the bank's slow motion leaps from a B pad, which
+// keep this camera but where the mouse moves the crosshair instead (issue #85, look_aim.cpp). Turning with C-left or C-right (or the stick) alone
 // hands the camera back to the game until the mouse moves again. Turning with both, the
 // orbit takes the C-buttons' turn too (issue #60: the stick stopped turning the camera while
 // the mouse, or gyro sent as the mouse, moved). The Mouse: Turn the Camera setting
@@ -304,6 +305,28 @@ bool conker::mouse_camera::normal_camera() {
     return was_normal_camera;
 }
 
+namespace {
+    // The bank's slow motion leaps (issue #85, look_aim.cpp): the camera follows from behind Conker and
+    // 115 units above him (logged: about 295 behind, 21 degrees down), so seen straight from behind he
+    // stands in the middle of the view, over what he's aiming at. In a leap the eye the camera wants is
+    // raised by leap_lift_height, eased in as the leap starts and out as it ends (leap_lift_ease of the
+    // way a camera update), so the view looks down past him.
+    //
+    // Only the view is raised: its eye (+0x2EC) as it's copied from the eye the camera wants
+    // (conker_leap_view_lift, in func_1512C490), and lowered back as the next update starts
+    // (conker_leap_view_restore, func_15122C5C), before that copies the view's eye back into the eye wanted
+    // (+0x2F8) for the update to start from. The game's camera never sees it. Tried first: the eye wanted
+    // raised, whole every frame, stacked up from frame to frame (logged: the camera climbed to the ceiling,
+    // 70 degrees down); its change alone, the game eased it back within half a second; the height the
+    // camera keeps above his feet (+0x344) raised, in a leap the game doesn't go by it (no higher at all).
+    constexpr float leap_lift_height = 110.0f;
+    constexpr float leap_lift_ease = 0.08f;
+    float leap_lift = 0.0f;
+    // What the view was raised by, and which camera's, to lower it back.
+    float leap_lift_applied = 0.0f;
+    gpr leap_lift_camera = 0;
+}
+
 // func_1512D390 (the C-buttons' turning), before its last restore: $s0 is the camera.
 // Marks that the follow camera is running this frame, and whether C-left or C-right is held
 // (+0x36C points at the buttons held).
@@ -336,7 +359,8 @@ extern "C" void conker_mouse_camera_collide(uint8_t* rdram, recomp_context* ctx)
     }
     const bool use_mouse = mouse_turns_camera();
     const bool use_stick = stick_turns_camera_setting();
-    if (!orbit.follow_camera_ran || orbit.look_mode_ran || (!use_mouse && !use_stick)) {
+    // Nor in the bank's slow motion leaps, where the mouse moves the crosshair instead (issue #85, look_aim.cpp).
+    if (!orbit.follow_camera_ran || orbit.look_mode_ran || conker::look_aim::leaping_now() || (!use_mouse && !use_stick)) {
         orbit.engaged = false;
         orbit.aim = 0.0f;
         orbit.resting = false;
@@ -605,6 +629,37 @@ extern "C" void conker_mouse_camera_aim(uint8_t* rdram, recomp_context* ctx) {
     write_float(rdram, camera, 0x2E0, ex + lx * scale);
     write_float(rdram, camera, 0x2E4, ey + distance * std::sin(view));
     write_float(rdram, camera, 0x2E8, ez + lz * scale);
+}
+
+// func_15122C5C (the follow camera's update), after it keeps $a0 in $s0 (0x15122C6C): the view's eye raised
+// for a leap last frame (conker_leap_view_lift) is lowered back before it's copied into the eye wanted, and
+// the lift eases toward this frame's (issue #85, see leap_lift_height).
+extern "C" void conker_leap_view_restore(uint8_t* rdram, recomp_context* ctx) {
+    const gpr camera = ctx->r16;
+    if ((uint32_t)camera != (uint32_t)MEM_W(0, (gpr)(int32_t)current_camera)) {
+        return;
+    }
+    if (leap_lift_applied != 0.0f && camera == leap_lift_camera) {
+        write_float(rdram, camera, 0x2F0, read_float(rdram, camera, 0x2F0) - leap_lift_applied);
+    }
+    leap_lift_applied = 0.0f;
+    const float target = conker::look_aim::leaping_now() ? leap_lift_height : 0.0f;
+    leap_lift += (target - leap_lift) * leap_lift_ease;
+    if (std::fabs(leap_lift - target) < 0.5f) {
+        leap_lift = target;
+    }
+}
+
+// func_1512C490 ($s0 the camera), before 0x1512C640: the view's eye has been copied from the eye
+// wanted, its y (+0x2F0) stored. In a leap it's raised (issue #85), and lowered back as the next update starts.
+extern "C" void conker_leap_view_lift(uint8_t* rdram, recomp_context* ctx) {
+    const gpr camera = ctx->r16;
+    if (leap_lift == 0.0f || (uint32_t)camera != (uint32_t)MEM_W(0, (gpr)(int32_t)current_camera)) {
+        return;
+    }
+    write_float(rdram, camera, 0x2F0, read_float(rdram, camera, 0x2F0) + leap_lift);
+    leap_lift_applied += leap_lift;
+    leap_lift_camera = camera;
 }
 
 // frontend.cpp, once SDL is up: listen for the scroll wheel.

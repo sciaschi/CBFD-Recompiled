@@ -44,9 +44,10 @@ A message in the top-left corner confirms each one: "State saved to slot 1",
   saved in. That should be rare. If it happens, you'll see "it was saved by
   another version of the program, which changed the game's code". Keep a
   normal save for anything you care about.
-- **RetroAchievements.** States work with RetroAchievements in casual mode,
-  and the achievements' progress is saved and restored with them. Loading is
-  turned off in Hardcore mode, as RetroAchievements' rules require.
+- **RetroAchievements** isn't in the release builds for now. In a build made
+  with it (`-DCONKER_RETROACHIEVEMENTS=ON`), states work with it in casual
+  mode, and the achievements' progress is saved and restored with them. Loading
+  is turned off in Hardcore mode, as RetroAchievements' rules require.
 - **A state is taken between frames**, at a moment when the game isn't in the
   middle of something. That's almost always within a frame of pressing the key.
   If the game stays busy (rarely), you'll see "Couldn't save now" or "Couldn't
@@ -169,7 +170,7 @@ every frame.
 | Each thread's signatures | ultramodern, librecomp | Native and in the game's code. Checked before loading, never written back |
 | The clock and the timers | ultramodern | The game's clock (`osGetCount`/`osGetTime`) and the list of running timers |
 | The VI and event state | ultramodern | The video mode, framebuffers, retrace message and rate, and the SP/DP/AI/SI event queues |
-| RetroAchievements progress | the host | `rc_client_serialize_progress` |
+| RetroAchievements progress | the host | `rc_client_serialize_progress`, when built with RetroAchievements (empty otherwise) |
 
 A few details make loading work:
 

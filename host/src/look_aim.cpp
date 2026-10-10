@@ -447,6 +447,66 @@ bool conker::look_aim::stick_free_camera() {
     return option<Toggle>(options::stick_camera) == Toggle::On && recompinput::players::is_single_player_mode();
 }
 
+// The bank robbery's slow motion leaps (issue #85): standing on a B pad, B leaps (func_15065A5C, 0x15066FC4: the bank,
+// 0x36 in D_800BE9F0, B pressed and +0x2EC of Conker's object 1), and Conker flies across the room in slow motion
+// while the stick aims a crosshair. The leap has no aiming mode or camera of its own: Conker stays in the bank's state
+// (0x96, +0x4 of his object) with the leap's animation (+0x84: 0x20F, or 0x20E one way round), the follow camera stays
+// as it is when walking (its +0x84 0xC0001006, logged through two leaps), and the stick turns into his movement as
+// ever (a direction and a speed: +0x4C of his +0x31C, +0x44), which turns him in the air and his guns with him: the
+// crosshair is where they point. It moves with the stick, comes back to the middle once it's let go, and the camera
+// barely moves (logged: the camera's yaw 5 degrees in a second of the stick, as it eased back behind him anyway).
+// The C-buttons turn the camera, as they do when walking: the original game's (logged: 22 degrees in a second of
+// C-Right), so with Right Stick: Free Camera off the right stick turns it too.
+//
+// The mouse turned the camera instead (the orbit, mouse_camera.cpp, runs where the C-buttons turn it) and never moved
+// the crosshair. Now, in a leap, the mouse is the stick: its movement moves a tilt, which stays where the mouse leaves
+// it (so the crosshair does), added to the stick's own for player 1 (frontend.cpp, leap_stick), and the orbit doesn't
+// run (mouse_camera.cpp). The tilt goes back to the middle when the leap ends.
+namespace {
+    constexpr uint32_t conker_object = 0x800CC2D0;  // gObjects[0]
+    constexpr uint8_t bank_state = 0x96;
+    constexpr uint16_t leap_animation = 0x20F, leap_animation_other_way = 0x20E;
+    // Mouse movement (with Mouse: Sensitivity) for the stick's full tilt: at 100%, 300 pixels of mouse.
+    constexpr float leap_full_tilt = 300.0f;
+
+    // From the game thread (leap_frame), for the input thread.
+    std::atomic<bool> leaping = false;
+    // The mouse's tilt, x and y (-1 to 1, up positive), from the input thread only.
+    float leap_x = 0.0f, leap_y = 0.0f;
+}
+
+void conker::look_aim::leap_frame(uint8_t* rdram) {
+    const gpr conker = (gpr)(int32_t)conker_object;
+    const uint16_t animation = (uint16_t)MEM_HU(0x84, conker);
+    leaping = MEM_BU(0x4, conker) == bank_state && (animation == leap_animation || animation == leap_animation_other_way)
+        && recompinput::players::is_single_player_mode();
+}
+
+bool conker::look_aim::leaping_now() {
+    return leaping;
+}
+
+void conker::look_aim::leap_stick(float& x, float& y) {
+    if (!leaping) {
+        leap_x = leap_y = 0.0f;
+        return;
+    }
+    float mouse_x = 0.0f, mouse_y = 0.0f;
+    recompinput::get_mouse_deltas(&mouse_x, &mouse_y);
+    // The mouse's y grows downward and the stick's upward: without inverting, the mouse up is the stick up.
+    apply_invert(option<Invert>(options::mouse_invert), mouse_x, mouse_y);
+    leap_x += mouse_x / leap_full_tilt;
+    leap_y -= mouse_y / leap_full_tilt;
+    // Kept within the stick's circle, so moving the mouse back brings the crosshair back at once.
+    const float length = std::sqrt(leap_x * leap_x + leap_y * leap_y);
+    if (length > 1.0f) {
+        leap_x /= length;
+        leap_y /= length;
+    }
+    x += leap_x;
+    y += leap_y;
+}
+
 float conker::look_aim::camera_field_of_view() {
     // None without the settings: the game's own field of view (field_of_view.cpp).
     return (float)number_option(options::camera_fov, 0.0);

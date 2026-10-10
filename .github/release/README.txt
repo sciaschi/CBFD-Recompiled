@@ -11,9 +11,9 @@ Playing
      It's checked, and remembered for later runs.
   3. Start Game.
 
-ROM hacks that only change the game's assets, such as the uncensored one, work
-too: load one with the launcher's Add ROM option. Version shows the ROM in
-play and switches between the ROMs you've loaded.
+ROM hacks that only change the game's assets, such as the uncensored one or the
+Russian translation, work too: load one with the launcher's Add ROM option.
+Version shows the ROM in play and switches between the ROMs you've loaded.
 
 Windows: Windows 10 or 11, 64-bit, with a Direct3D 12 or Vulkan graphics card.
 Linux: x86-64 with Vulkan, and SDL2, GTK 3 and FreeType installed
