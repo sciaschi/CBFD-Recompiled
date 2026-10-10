@@ -1,0 +1,103 @@
+# Hollywood Subtitles: a mod for Conker's Bad Fur Day: Recompiled.
+
+[manifest]
+id = "conker_hollywood_subtitles"
+version = "0.1.0"
+display_name = "Hollywood Subtitles"
+description = """
+Shows movie-style subtitles along the screen while characters speak, like a film. Conker's Bad Fur \
+Day is fully voice acted and draws no dialogue text, so the lines come from a transcript shipped \
+with the mod. This first version covers the intro (the chainsaw opening and Conker's throne-room \
+monologue) and the start of the campaign; more of the script follows. You can turn the intro and \
+the rest of the game on separately, hide the in-game speech bubbles so only the subtitles show, \
+and change where the text sits, its size, its color and its background."""
+short_description = "Movie-style subtitles for the voice acting."
+authors = [ "Conker Recomp" ]
+game_id = "conker"
+minimum_recomp_version = "0.1.0"
+dependencies = []
+optional_dependencies = []
+native_libraries = []
+
+[inputs]
+elf_path = "build/mod.elf"
+mod_filename = "conker_hollywood_subtitles"
+func_reference_syms_file = "../syms/conker.us.syms.toml"
+data_reference_syms_files = [ "../syms/conker.us.datasyms.toml" ]
+additional_files = [ "thumb.png" ]
+
+# --- The three main toggles ---------------------------------------------------------------------
+
+[[manifest.config_options]]
+id = "enabled"
+name = "Enable Subtitles"
+description = "The master switch. With this off, no subtitles show and the speech bubbles are left alone, whatever the options below say."
+type = "Enum"
+options = [ "Off", "On" ]
+default = "On"
+
+[[manifest.config_options]]
+id = "intro_subtitles"
+name = "Intro Cutscene Subtitles"
+description = "Subtitles during the intro: the chainsaw opening and Conker's throne-room monologue (\"Well, here I am. King...\")."
+type = "Enum"
+options = [ "Off", "On" ]
+default = "On"
+
+[[manifest.config_options]]
+id = "general_subtitles"
+name = "General Game Subtitles"
+description = "Subtitles during the rest of the game's cutscenes and conversations (as much of the script as the mod covers so far)."
+type = "Enum"
+options = [ "Off", "On" ]
+default = "On"
+
+# --- Customization ------------------------------------------------------------------------------
+
+[[manifest.config_options]]
+id = "hide_bubbles"
+name = "Hide Speech Bubbles"
+description = "Hides the game's cutscene speech bubbles so only the subtitles show. Conker's thought-bubble tips are kept. (See the mod's README: which bubbles count is still being pinned down, so this is conservative by default.)"
+type = "Enum"
+options = [ "Off", "On" ]
+default = "On"
+
+[[manifest.config_options]]
+id = "position"
+name = "Position"
+description = "Where the subtitles sit on the screen."
+type = "Enum"
+options = [ "Bottom", "Top", "Middle" ]
+default = "Bottom"
+
+[[manifest.config_options]]
+id = "size"
+name = "Text Size"
+description = "How large the subtitle text is."
+type = "Enum"
+options = [ "Small", "Normal", "Large" ]
+default = "Normal"
+
+[[manifest.config_options]]
+id = "background"
+name = "Background Box"
+description = "A dark box behind the text, to keep it readable over a bright scene. Higher is more opaque; None draws the text alone."
+type = "Enum"
+options = [ "None", "Light", "Medium", "Dark" ]
+default = "Medium"
+
+[[manifest.config_options]]
+id = "color"
+name = "Text Color"
+description = "The subtitle text color."
+type = "Enum"
+options = [ "White", "Yellow", "Cyan", "Green" ]
+default = "White"
+
+[[manifest.config_options]]
+id = "debug_segments"
+name = "Debug: Voice Segments"
+description = "For tuning the subtitles: during the throne-room monologue, shows the number of the voice segment playing next to each line ([seg N]). The terminal logs every segment and line change either way."
+type = "Enum"
+options = [ "Off", "On" ]
+default = "Off"
