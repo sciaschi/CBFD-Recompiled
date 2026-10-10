@@ -123,6 +123,22 @@ extern "C" void conker_widen_sprite_cull_right(uint8_t* rdram, recomp_context* c
     ctx->f10.fl += sprite_cull_margin(rdram);
 }
 
+// Screen-space pieces drawn with func_15095D34 (issue #101): the tickly bees of Windy's pollination quest, and the
+// speech bubbles' pieces. func_15095B08 works out a piece's rectangle on screen (D_800D2C78 and on, which
+// func_15095D34 draws) and sets its "on screen" flag (its 6th argument) only where the rectangle overlaps the
+// camera's 4:3 bounds, so in widescreen the bees vanished beside the 4:3 frame (the bees over the hive are
+// func_15130A9C's sprites, widened above). func_15095D34 already draws a piece past either edge of the 4:3 frame
+// (speech bubbles, issue #59, below), so its bounds are widened as the sprites' are. At 0x15095C70 $f8 holds the
+// left bound (camera + 0x2C), compared with the rectangle's right edge; at 0x15095C84 $f10 the right one (camera +
+// 0x30), compared with its left edge.
+extern "C" void conker_widen_piece_cull_left(uint8_t* rdram, recomp_context* ctx) {
+    ctx->f8.fl -= sprite_cull_margin(rdram);
+}
+
+extern "C" void conker_widen_piece_cull_right(uint8_t* rdram, recomp_context* ctx) {
+    ctx->f10.fl += sprite_cull_margin(rdram);
+}
+
 // Light glows: func_151408A4 keeps a glow only while its light's projected point
 // (func_15144CEC) is inside the same camera bounds, so in widescreen glows vanished
 // toward the left and right edges. The glow is a 3D billboard, which RT64 draws
