@@ -370,3 +370,33 @@ void conker::local_achievements::game_frame(uint8_t* rdram) {
     }
     baseline = merged(baseline, bits);
 }
+
+// TEMP-DEBUG (cash): every change to player 1's cash in the story, to learn what a pile gives and how many there
+// are. func_15085710 (player, what, amount) changes the players' stats (0x800D2138 on, 0x1C bytes a player): 9 sets
+// the cash, 10 adds to it, 11 takes from it. In multiplayer the same field is the score (it adds nothing then).
+// A hook at its first instruction (conker.toml), where its arguments are as called.
+#include "recomp.h"
+#include "librecomp/mods.hpp"
+
+extern "C" void conker_stat_change(uint8_t* rdram, recomp_context* ctx) {
+    const int32_t player = (int16_t)ctx->r4;
+    const int32_t what = (int16_t)ctx->r5;
+    const int32_t amount = (int32_t)ctx->r6;
+    if (player != 0 || what < 9 || what > 11 || rdram[(0x800BE616 - 0x80000000) ^ 3] != 0) {
+        return;
+    }
+    static int64_t added = 0, taken = 0;
+    if (what == 10) {
+        added += amount;
+    }
+    else if (what == 11) {
+        taken += amount;
+    }
+    int32_t scene = 0, cash = 0;
+    std::memcpy(&scene, rdram + (0x800BE9F0 - 0x80000000), sizeof(scene));
+    std::memcpy(&cash, rdram + (0x800D2148 - 0x80000000), sizeof(cash));
+    std::printf("[cash] %s %d in scene 0x%02X (cash was %d; this run: %lld added, %lld spent)%s\n",
+        what == 9 ? "set to" : what == 10 ? "add" : "spend", amount, scene, cash, (long long)added, (long long)taken,
+        recomp::mods::is_mod_enabled("conker_cheats") ? " [cheats mod on]" : "");
+    std::fflush(stdout);
+}

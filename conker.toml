@@ -726,3 +726,10 @@ text = "{ extern void conker_bubble_begin(uint8_t*, recomp_context*); conker_bub
 func = "func_15095D34"
 before_vram = 0x15096294
 text = "{ extern void conker_bubble_end(uint8_t*, recomp_context*); conker_bubble_end(rdram, ctx); }"
+
+# TEMP-DEBUG (cash): every change to player 1's cash, logged (host/src/local_achievements.cpp), to learn what the
+# game's money piles give and how many there are.
+[[patches.hook]]
+func = "func_15085710"
+before_vram = 0x15085710
+text = "{ extern void conker_stat_change(uint8_t*, recomp_context*); conker_stat_change(rdram, ctx); }"
