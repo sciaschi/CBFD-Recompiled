@@ -4,7 +4,7 @@ Ready-to-play builds for Windows, Linux and macOS. **You need your own US ROM of
 2. Run `ConkerRecomp` (`ConkerRecomp.exe` on Windows, `ConkerRecomp.app` on macOS).
 3. The first time, the launcher asks for your ROM: pick your US `.z64`. Then Start Game.
 
-ROM hacks that only change the game's assets, such as the uncensored one, work too: load one with the launcher's **Add ROM** option. **Version** shows the ROM in play and switches between the ROMs you've loaded.
+ROM hacks that only change the game's assets, such as the uncensored one or the Russian translation, work too: load one with the launcher's **Add ROM** option. **Version** shows the ROM in play and switches between the ROMs you've loaded.
 
 Linux needs SDL2, GTK 3 and FreeType (Ubuntu/Debian: `sudo apt install libsdl2-2.0-0 libgtk-3-0 libfreetype6`) and a Vulkan driver.
 

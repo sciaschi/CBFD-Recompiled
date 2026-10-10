@@ -5,6 +5,15 @@
 // the game's assets, such as one that restores the words the original bleeps. The runtime
 // keeps the ROM in play in the data folder (<game id>.z64). Each ROM loaded is also kept
 // in rom_versions/ there, so the launcher can switch between them by copying one over it.
+//
+// The code is compared as it runs, not as the ROM stores it. .game is compressed in the
+// ROM (Rare's "rzip", see recomp/unpack_rom.py): a hack that changes .game's data has to
+// recompress the segment, and its code then reads differently in the ROM though it's the
+// same once unpacked. The Russian translation does so: its .game code is the US code word
+// for word, and only 155 words of .game's data (which the game unpacks from the ROM as it
+// runs) and its assets differ. So a ROM whose code region isn't the US ROM's byte for byte
+// has .init compared as it is, and .game's code unpacked and compared with the US code the
+// recompiled game was made from, embedded in the executable (as is .debugger's).
 
 #include <algorithm>
 #include <atomic>
@@ -18,7 +27,18 @@
 #define XXH_INLINE_ALL
 #include "xxHash/xxhash.h"
 
+// miniz, from librecomp (its raw inflate, for .game's compressed blocks).
+#include "miniz.h"
+
 #include "conker.hpp"
+
+extern "C" {
+    // RecompiledFuncs/tlb_pages.c: the US ROM's .game code and .debugger, unpacked, as words.
+    extern const size_t conker_game_segment_size;
+    extern const uint32_t conker_game_segment[];
+    extern const size_t conker_debugger_segment_size;
+    extern const uint32_t conker_debugger_segment[];
+}
 
 namespace {
     constexpr size_t code_start = 0x40;    // after the header, which a hack may rename
@@ -36,7 +56,70 @@ namespace {
     constexpr KnownVersion known_versions[] = {
         { conker::roms::us_rom_hash, "original", "US Original" },
         { 0xAC445026C8F77A94ULL, "uncensored", "US Uncensored" }, // the bleeped words restored
+        { 0xB97E9AFFEA6ED925ULL, "russian", "US Russian" },       // the fan translation into Russian
     };
+
+    // Where the code is in the ROM (recomp/unpack_rom.py): .init as it is from code_start to
+    // init_end (its CRC-32 in the US ROM below), .game compressed at game_rzip, a table of the
+    // offsets of its blocks (from its second word, XORed with game_xor, a 0 ends it), each a
+    // 4-byte length and a raw deflate stream of the code, and .debugger as it is.
+    constexpr size_t init_end = 0x2D4B0;
+    constexpr uint32_t us_init_crc = 0x35984403;
+    constexpr size_t game_rzip = 0x42450;
+    constexpr uint32_t game_xor = 0x8039CCCA;
+    constexpr size_t debugger_start = 0x19EA88;
+
+    uint32_t read_word(std::span<const uint8_t> rom, size_t offset) {
+        return (uint32_t(rom[offset]) << 24) | (uint32_t(rom[offset + 1]) << 16) | (uint32_t(rom[offset + 2]) << 8) | rom[offset + 3];
+    }
+
+    // Whether the ROM's code, unpacked, is the US code: .init, .game's code and .debugger.
+    bool same_code_unpacked(std::span<const uint8_t> rom) {
+        if (rom.size() < code_end) {
+            return false;
+        }
+        if (mz_crc32(MZ_CRC32_INIT, rom.data() + code_start, init_end - code_start) != us_init_crc) {
+            return false;
+        }
+        for (size_t i = 0; i < conker_debugger_segment_size / 4; i++) {
+            if (read_word(rom, debugger_start + i * 4) != conker_debugger_segment[i]) {
+                return false;
+            }
+        }
+
+        // .game's blocks, unpacked one after the other.
+        std::vector<size_t> starts;
+        for (size_t entry = game_rzip + 4; entry + 4 <= code_end; entry += 4) {
+            const uint32_t word = read_word(rom, entry);
+            if (word == 0) {
+                break;
+            }
+            starts.push_back(game_rzip + (word ^ game_xor));
+        }
+        std::vector<uint8_t> code(conker_game_segment_size);
+        size_t unpacked = 0;
+        for (size_t i = 0; i + 1 < starts.size(); i++) {
+            const size_t start = starts[i] + 4, end = starts[i + 1];
+            if (end <= start || end > rom.size() || unpacked >= code.size()) {
+                return false;
+            }
+            const size_t size = tinfl_decompress_mem_to_mem(code.data() + unpacked, code.size() - unpacked,
+                rom.data() + start, end - start, 0);
+            if (size == TINFL_DECOMPRESS_MEM_TO_MEM_FAILED) {
+                return false;
+            }
+            unpacked += size;
+        }
+        if (unpacked != code.size()) {
+            return false;
+        }
+        for (size_t i = 0; i < code.size() / 4; i++) {
+            if (read_word(code, i * 4) != conker_game_segment[i]) {
+                return false;
+            }
+        }
+        return true;
+    }
 
     std::filesystem::path stored_path;   // the runtime's ROM in play
     std::filesystem::path versions_dir;  // every version loaded, as <slug>.z64
@@ -98,7 +181,8 @@ bool conker::roms::accept(std::span<const uint8_t> rom) {
     if (XXH3_64bits(rom.data(), rom.size()) == us_rom_hash) {
         return true;
     }
-    if (rom.size() < code_end || XXH3_64bits(rom.data() + code_start, code_end - code_start) != us_code_hash) {
+    const bool same_code = rom.size() >= code_end && XXH3_64bits(rom.data() + code_start, code_end - code_start) == us_code_hash;
+    if (!same_code && !same_code_unpacked(rom)) {
         return false;
     }
     static std::atomic<bool> reported{ false };

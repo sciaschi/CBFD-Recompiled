@@ -236,7 +236,9 @@ Run `host/build/ConkerRecomp` (Linux and macOS) or `host\build-win\ConkerRecomp.
 A ROM hack that only changes the game's assets (its audio, textures, models or
 text), such as an uncensored patch that restores the bleeped words, plays like the
 US ROM. The recompiled code only comes from the ROM's code, which has to be the US
-ROM's, so hacks that change the game's code are refused.
+ROM's, so hacks that change the game's code are refused. A hack that repacks the
+game's compressed code without changing it, as the Russian fan translation does, is
+checked unpacked and plays too (**Version: US Russian**).
 
 The launcher's **Version** option says which ROM is in play, with its region (for
 example **Version: US Original** or **Version: US Uncensored**), and so does the
