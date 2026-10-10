@@ -55,6 +55,9 @@ namespace conker {
         bool switch_to_next();
         // The region a ROM file's header names ("US", "European"...); empty if it can't tell.
         std::string region_of(const std::filesystem::path& rom_path);
+        // As the game starts (on_init, the ROM loaded): puts back the US ROM's data where ROM hacks are
+        // known to have broken it (issue #79), in the ROM the game reads, not its file.
+        void fix_data();
     }
 
     // main.cpp: why a ROM was refused.

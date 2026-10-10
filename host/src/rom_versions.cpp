@@ -19,6 +19,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <cstring>
 #include <fstream>
 #include <iterator>
 #include <string>
@@ -29,6 +30,8 @@
 
 // miniz, from librecomp (its raw inflate, for .game's compressed blocks).
 #include "miniz.h"
+
+#include "librecomp/game.hpp"
 
 #include "conker.hpp"
 
@@ -175,6 +178,45 @@ namespace {
         std::ifstream file(path, std::ios::binary);
         return std::vector<uint8_t>(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
     }
+}
+
+// ROM hacks made with tools that rebuild the ROM's data have been seen to break entries the game
+// needs. Each fix is the US ROM's bytes at a ROM offset, put back if the ROM in play differs there.
+//
+// 0x11E3850: four words of a table (offsets and sizes) the Rock Solid sliding rock's cutscene is
+// played from. A ROM with modded audio had other values there, and the cutscene ran another one's
+// steps (from Total War's ending, as huguitocloud found): Conker's animation broke and stayed stuck
+// at the second rock (issue #79). Writing the US bytes back by hand in a hex editor fixed it, so
+// it's done here instead, on the ROM the game reads; the file is left as it is.
+namespace {
+    struct DataFix {
+        size_t offset;
+        uint8_t bytes[16];
+        const char* what;
+    };
+    constexpr DataFix data_fixes[] = {
+        { 0x11E3850, { 0x00, 0x00, 0x0A, 0x98, 0x10, 0x00, 0x03, 0x20, 0x00, 0x00, 0x0D, 0xB8, 0x10, 0x00, 0x01, 0xC0 },
+          "Rock Solid's sliding rock cutscene (issue #79)" },
+    };
+}
+
+void conker::roms::fix_data() {
+    const std::span<const uint8_t> rom = recomp::get_rom();
+    std::vector<const DataFix*> needed;
+    for (const DataFix& fix : data_fixes) {
+        if (rom.size() >= fix.offset + sizeof(fix.bytes) && std::memcmp(rom.data() + fix.offset, fix.bytes, sizeof(fix.bytes)) != 0) {
+            needed.push_back(&fix);
+        }
+    }
+    if (needed.empty()) {
+        return;
+    }
+    std::vector<uint8_t> fixed(rom.begin(), rom.end());
+    for (const DataFix* fix : needed) {
+        std::memcpy(fixed.data() + fix->offset, fix->bytes, sizeof(fix->bytes));
+        std::printf("[host] The ROM's data for %s differs from the US ROM's: playing with the US data there.\n", fix->what);
+    }
+    recomp::set_rom_contents(std::move(fixed));
 }
 
 bool conker::roms::accept(std::span<const uint8_t> rom) {

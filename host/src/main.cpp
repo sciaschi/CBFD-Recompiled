@@ -235,6 +235,8 @@ namespace {
 
     void on_init(uint8_t* rdram, recomp_context* ctx) {
         crash_rdram = rdram;
+        // The ROM is loaded by now and the game hasn't read it yet.
+        conker::roms::fix_data();
         set_fr_mode(ctx);
         conker::register_tlb_mapped_code();
         conker::map_tlb_code_pages(rdram);
