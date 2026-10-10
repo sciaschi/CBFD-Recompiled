@@ -24,7 +24,7 @@ elf_path = "build/mod.elf"
 mod_filename = "conker_hollywood_subtitles"
 func_reference_syms_file = "../syms/conker.us.syms.toml"
 data_reference_syms_files = [ "../syms/conker.us.datasyms.toml" ]
-additional_files = []
+additional_files = [ "thumb.png" ]
 
 # --- The three main toggles ---------------------------------------------------------------------
 
