@@ -203,7 +203,10 @@ namespace conker {
         void update();
     }
 
-    // achievements.cpp: RetroAchievements (a prototype; on with a login in retroachievements.txt).
+    // achievements.cpp: RetroAchievements (a prototype; on with a login in retroachievements.txt). Built in only
+    // with CONKER_RETROACHIEVEMENTS (host/CMakeLists.txt says why it's off); without it, these do nothing and
+    // there's no RetroAchievements tab.
+#if defined(CONKER_RETROACHIEVEMENTS)
     namespace achievements {
         // At start (frontend.cpp, once the config folder is known): logs in, if there's a login.
         void init();
@@ -218,6 +221,15 @@ namespace conker {
         // On the main thread (update_gfx): shows the unlock messages, one at a time.
         void update();
     }
+#else
+    namespace achievements {
+        inline void init() {}
+        inline void add_tab() {}
+        inline void game_frame(uint8_t*) {}
+        inline void on_ui_ready() {}
+        inline void update() {}
+    }
+#endif
 
     // heap_report.cpp (TEMP-DEBUG, issue #98): Rare's heap, in a line: its size, what's used and
     // free, and where its blocks' links go wrong, if they do.

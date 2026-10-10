@@ -108,7 +108,6 @@ jobs:
           # The licenses (LICENSES.txt): the runtime's GPL version 3 covers the program as a whole.
           Copy-Item .github\release\LICENSES.txt $out
           Copy-Item tools\N64ModernRuntime\COPYING "$out\LICENSE-GPL-3.0.txt"
-          Copy-Item tools\rcheevos\LICENSE "$out\LICENSE-rcheevos.txt"
           Compress-Archive -Path "$out\*" -DestinationPath "package\ConkerRecompiled-${{ needs.prepare.outputs.tag }}-Windows.zip"
 
       - name: Upload to the release
@@ -162,7 +161,6 @@ jobs:
           # The licenses (LICENSES.txt): the runtime's GPL version 3 covers the program as a whole.
           cp .github/release/LICENSES.txt "$out/"
           cp tools/N64ModernRuntime/COPYING "$out/LICENSE-GPL-3.0.txt"
-          cp tools/rcheevos/LICENSE "$out/LICENSE-rcheevos.txt"
           tar -czf "package/ConkerRecompiled-${{ needs.prepare.outputs.tag }}-Linux.tar.gz" -C package ConkerRecompiled
 
       - name: Upload to the release
@@ -204,7 +202,6 @@ jobs:
           # The licenses (LICENSES.txt): the runtime's GPL version 3 covers the program as a whole.
           cp .github/release/LICENSES.txt "$out/"
           cp tools/N64ModernRuntime/COPYING "$out/LICENSE-GPL-3.0.txt"
-          cp tools/rcheevos/LICENSE "$out/LICENSE-rcheevos.txt"
           # Plain files only (no ._ extended-attribute entries); the signature is in the app itself.
           ditto -c -k --norsrc --noextattr --noacl --keepParent "$out" "package/ConkerRecompiled-${{ needs.prepare.outputs.tag }}-macOS.zip"
 
