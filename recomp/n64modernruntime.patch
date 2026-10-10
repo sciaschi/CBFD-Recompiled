@@ -68,10 +68,27 @@ index 0f7de83..42c9057 100644
      (void)result;
  }
 diff --git a/librecomp/src/pi.cpp b/librecomp/src/pi.cpp
-index 43509ba..39b4a99 100644
+index 43509ba..76d14e4 100644
 --- a/librecomp/src/pi.cpp
 +++ b/librecomp/src/pi.cpp
-@@ -266,7 +266,9 @@ void ultramodern::join_saving_thread() {
+@@ -61,7 +61,16 @@ extern "C" void osCreatePiManager_recomp(uint8_t* rdram, recomp_context* ctx) {
+     ;
+ }
+ 
++// Optional ROM-read observer. The host application may define this (weak) symbol to be notified of
++// every ROM->RAM DMA (physical ROM address and size), e.g. to detect when a streamed MP3 voice clip
++// starts for subtitles. Left undefined, it's a no-op. Kept generic: no game-specific logic here.
++extern "C" __attribute__((weak)) void conker_on_rom_read(uint32_t physical_addr, size_t num_bytes);
++
+ void recomp::do_rom_read(uint8_t* rdram, gpr ram_address, uint32_t physical_addr, size_t num_bytes) {
++    if (conker_on_rom_read != nullptr) {
++        conker_on_rom_read(physical_addr, num_bytes);
++    }
++
+     // TODO use word copies when possible
+ 
+     // TODO handle misaligned DMA
+@@ -266,7 +275,9 @@ void ultramodern::join_saving_thread() {
      }
  }
  
@@ -82,7 +99,7 @@ index 43509ba..39b4a99 100644
      // TODO asynchronous transfer
      // TODO implement unaligned DMA correctly
      if (direction == 0) {
-@@ -275,7 +277,7 @@ void do_dma(RDRAM_ARG PTR(OSMesgQueue) mq, gpr rdram_address, uint32_t physical_
+@@ -275,7 +286,7 @@ void do_dma(RDRAM_ARG PTR(OSMesgQueue) mq, gpr rdram_address, uint32_t physical_
              recomp::do_rom_read(rdram, rdram_address, physical_addr, size);
  
              // Send a message to the mq to indicate that the transfer completed
@@ -91,7 +108,7 @@ index 43509ba..39b4a99 100644
          } else if (physical_addr >= recomp::sram_base) {
              if (!recomp::sram_allowed()) {
                  ultramodern::error_handling::message_box("Attempted to use SRAM saving with other save type");
-@@ -285,7 +287,7 @@ void do_dma(RDRAM_ARG PTR(OSMesgQueue) mq, gpr rdram_address, uint32_t physical_
+@@ -285,7 +296,7 @@ void do_dma(RDRAM_ARG PTR(OSMesgQueue) mq, gpr rdram_address, uint32_t physical_
              save_read(rdram, rdram_address, physical_addr - recomp::sram_base, size);
  
              // Send a message to the mq to indicate that the transfer completed
@@ -100,7 +117,7 @@ index 43509ba..39b4a99 100644
          } else {
              fprintf(stderr, "[WARN] PI DMA read from unknown region, phys address 0x%08X\n", physical_addr);
          }
-@@ -302,7 +304,7 @@ void do_dma(RDRAM_ARG PTR(OSMesgQueue) mq, gpr rdram_address, uint32_t physical_
+@@ -302,7 +313,7 @@ void do_dma(RDRAM_ARG PTR(OSMesgQueue) mq, gpr rdram_address, uint32_t physical_
              save_write(rdram, rdram_address, physical_addr - recomp::sram_base, size);
  
              // Send a message to the mq to indicate that the transfer completed
@@ -109,7 +126,7 @@ index 43509ba..39b4a99 100644
          } else {
              fprintf(stderr, "[WARN] PI DMA write to unknown region, phys address 0x%08X\n", physical_addr);
          }
-@@ -321,7 +323,17 @@ extern "C" void osPiStartDma_recomp(RDRAM_ARG recomp_context* ctx) {
+@@ -321,7 +332,17 @@ extern "C" void osPiStartDma_recomp(RDRAM_ARG recomp_context* ctx) {
  
      debug_printf("[pi] DMA from 0x%08X into 0x%08X of size 0x%08X\n", devAddr, dramAddr, size);
  
@@ -128,7 +145,7 @@ index 43509ba..39b4a99 100644
  
      ctx->r2 = 0;
  }
-@@ -338,7 +350,7 @@ extern "C" void osEPiStartDma_recomp(RDRAM_ARG recomp_context* ctx) {
+@@ -338,7 +359,7 @@ extern "C" void osEPiStartDma_recomp(RDRAM_ARG recomp_context* ctx) {
  
      debug_printf("[pi] DMA from 0x%08X into 0x%08X of size 0x%08X\n", devAddr, dramAddr, size);
  

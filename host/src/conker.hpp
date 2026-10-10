@@ -38,6 +38,17 @@ namespace conker {
         bool in_4x3();
     }
 
+    // subtitles.cpp: a generic subtitle overlay for mods. The host only renders what a mod asks for
+    // through the recomp_subtitle_* exports (mod_api.cpp); it holds no game logic. A mod
+    // (mods/hollywood_subtitles) decides when, what and how.
+    namespace subtitles {
+        // mod_api.cpp registers the exports a mod calls (recomp_subtitle_show / recomp_subtitle_hide).
+        // On the main thread (update_gfx): renders whatever a mod last asked for.
+        void update();
+        // From the launcher's init (frontend.cpp): recompui's UI exists now.
+        void on_ui_ready();
+    }
+
     // rom_versions.cpp: the ROMs the game accepts, and the versions of them kept for the
     // launcher to switch between.
     namespace roms {

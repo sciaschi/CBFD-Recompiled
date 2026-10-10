@@ -236,6 +236,7 @@ namespace {
         conker::texture_packs::update_unpacking();
         conker::fps_counter::update();
         conker::reticle::update();
+        conker::subtitles::update();
         std::string title;
         {
             std::lock_guard lock(title_mutex);
@@ -325,6 +326,7 @@ namespace {
         // recompui's UI exists now: the FPS counter and the aiming reticle can make their own.
         conker::fps_counter::on_ui_ready();
         conker::reticle::on_ui_ready();
+        conker::subtitles::on_ui_ready();
         options->add_start_game_or_load_rom_option();
         version_option = options->add_option("Version", on_version_selected);
         add_rom_option = options->add_option("Add ROM", on_add_rom_selected);

@@ -82,6 +82,23 @@ extern "C" void recomp_printf(uint8_t* rdram, recomp_context* ctx) {
     ctx->r2 = (int32_t)out.size();
 }
 
+// The subtitle overlay's exports (defined in host/src/subtitles.cpp, extern "C").
+extern "C" void recomp_subtitle_show(uint8_t* rdram, recomp_context* ctx);
+extern "C" void recomp_subtitle_hide(uint8_t* rdram, recomp_context* ctx);
+extern "C" void recomp_subtitle_voice_event(uint8_t* rdram, recomp_context* ctx);
+extern "C" void recomp_subtitle_voice_clip(uint8_t* rdram, recomp_context* ctx);
+extern "C" void recomp_subtitle_voice_activity(uint8_t* rdram, recomp_context* ctx);
+
 void conker::register_mod_exports() {
     recomp::overlays::register_base_export("recomp_printf", recomp_printf);
+
+    // The subtitle overlay (host/src/subtitles.cpp): a mod shows and hides a line of text, with a
+    // style it chooses. The host holds no subtitle logic; it only renders what the mod asks for.
+    recomp::overlays::register_base_export("recomp_subtitle_show", recomp_subtitle_show);
+    recomp::overlays::register_base_export("recomp_subtitle_hide", recomp_subtitle_hide);
+    // How many MP3 voice-clip starts the host has detected (host/src/subtitles.cpp): a mod reads
+    // this to drive event-driven subtitles synced to the voice.
+    recomp::overlays::register_base_export("recomp_subtitle_voice_event", recomp_subtitle_voice_event);
+    recomp::overlays::register_base_export("recomp_subtitle_voice_clip", recomp_subtitle_voice_clip);
+    recomp::overlays::register_base_export("recomp_subtitle_voice_activity", recomp_subtitle_voice_activity);
 }
