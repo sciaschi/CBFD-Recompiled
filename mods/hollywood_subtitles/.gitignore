@@ -1,0 +1,8 @@
+# Rare's text, extracted from your own ROM: never commit or attach to a release.
+# (extract_bubble_text.py's own warning.) These are local working files only.
+bubble_text/
+extract_bubble_text.py
+
+# Generated capture/transcript working files (see the automation tooling).
+voice_segments.txt
+clips_generated.*

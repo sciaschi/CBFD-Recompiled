@@ -207,6 +207,10 @@ N64Recomp (`n64recomp.patch`):
 - `N64RECOMP_KEEP_GOING=1` reports every failing function.
 - division by zero gives the VR4300's results instead of trapping on the host
   (the hand-written `func_150A3CBC` divides by zero during the attract mode).
+- calls (`jal`, `jalr`, branch-and-link) set `$ra` to their return address, as
+  the CPU does (`emit_set_link_register`, in the C and live generators). Save
+  states walk a waiting thread's calls through the game's code by it, so a
+  state loads in another build ([docs/save-states.md](../docs/save-states.md)).
 
 N64ModernRuntime (`n64modernruntime.patch`):
 - PI DMA completion posts the request's `OSIoMesg` pointer, as libultra does,
@@ -220,6 +224,22 @@ N64ModernRuntime (`n64modernruntime.patch`):
   `__osRunningThread` pointing at the running thread (Conker reads it
   directly).
 - GCC-only warning flags are skipped under MSVC.
+- Save states (issue #94; [docs/save-states.md](../docs/save-states.md) tells
+  how they work). `ultramodern/src/save_states.cpp` keeps the game's threads,
+  each with where it last waited (a hash of its native call stack, as offsets
+  into the program, and of the wait's own values), and calls the host at safe
+  points: the idle thread in `pause_self`, or a thread in `osRecvMesg` with no
+  other ready to run. `librecomp/src/save_states.cpp` takes and loads a state
+  (the 8MB of game memory, each thread's `recomp_context`, the clock and
+  timers, the VI and event state), loading only where every thread waits as it
+  did in the state: in the same calls through the game's code (walked from
+  `$ra` by the functions' prologues, `find_loaded_function` and `get_code_rom`)
+  and, in the same build, the same native calls. For it: `run_thread_function` registers each thread's
+  context; RSP tasks count as in flight until their last message is sent; the
+  game's clock can be moved (an offset), so it goes on from a state's time; and
+  the timer thread keeps its running timers in a list under a lock (it kept a
+  set ordered by deadlines in game memory, which a load overwrites), held while
+  a state is taken or loaded.
 - A mod's patch keeps the patched page executable while it's written. It was
   made read-write only, and another thread running code on the same page (RT64's
   idle thread, every millisecond) crashed as the game started with mods on.
@@ -282,11 +302,37 @@ the same three commands as the game's `G_TEXRECT`. The enable goes where the
 sprite's pipe sync was, so the display lists don't grow; they're allocated to
 fit what the game writes.
 
+Light glows (`func_151408A4`, such as the two over the Feral Reserve's doors) are
+3D billboards, which RT64 draws anywhere in the widened view, but the game keeps
+one only while its light's projected point is inside the camera's 4:3 left and
+right bounds (+0x2C, +0x30), so they vanished toward the sides. Those bounds are
+widened by the sprite cull's margin before the two compares (`widescreen.cpp`).
+The same function's depth test, which RT64's depth samples fail, is skipped
+(`render_fixes.cpp`). Still open: in widescreen the door glows can vanish inside
+the 4:3 area too, seen straight on; nothing after the bounds in the game's code
+depends on screen x, so it's most likely RT64's own depth test of the glow
+against the wall just behind the light.
+
 Cutscene speech bubbles (`func_15095D34`, issue #59) are clamped at the screen's
 left edge the same way. A piece near or past it is drawn that many whole pixels
 to the right, so the game doesn't clamp it, and moved back as an extended
 rectangle. They write no sync to hold the enable, so it's put early in the
 frame, in place of the pipe sync each camera's pass starts with.
+
+`func_15095D34` also draws the tickly bees of Windy's pollination quest (issue
+#101). Whether a piece is drawn at all is decided first by `func_15095B08`, which
+works out its rectangle on screen and flags it visible only where that overlaps
+the camera's 4:3 left and right bounds (+0x2C, +0x30), so the bees vanished
+beside the 4:3 frame. Those bounds are widened by the sprite cull's margin before
+its two compares (`conker_widen_piece_cull_left`, `_right`). The bees over the
+hive are `func_15130A9C`'s sprites, already widened.
+
+The same bees were drawn behind the sunflower they circle, also on the N64.
+`func_15168118` draws each with `func_15095760`, which gives the rectangle a
+depth (`G_SETPRIMDEPTH`) and a render mode that's depth-tested but doesn't write
+depth, and the flower is drawn after them. A bee now writes its depth: its render
+mode gets `Z_UPD` and the alpha compare's threshold, so its rectangle's
+transparent pixels write nothing (`render_fixes.cpp`, `conker_bee_depth`).
 
 A camera's background fill (`func_151103C8`, its colour under everything it
 draws) ends exactly at the scissor's right edge, and RT64 lines such a rectangle
@@ -304,6 +350,40 @@ is now clipped to the framebuffer first. A clear outside it is undefined in Vulk
 drivers clipped it as wanted, but on the Steam Deck (RADV) the left bar, which
 starts left of the window, wasn't drawn: the picture showed widescreen on that
 side, and old frames stayed in the strip (issue #82).
+
+The clear is also clipped to the fill's scissor, as the RDP clips a fill rectangle
+(RT64 didn't). In split screen the game fills each player's view with its
+background colour from a rectangle across the whole frame, the scissor set to
+that view, so each view's fill covered the whole frame and every view before it:
+only the last player's level showed, and players 1 to 3 saw just the characters
+and doors, which are drawn after all the fills (issue #78; RT64's inspector
+showed player 1's level drawn, then covered by player 2's background fill). Top
+and bottom are always clipped; left and right only when the scissor is narrower
+than the frame, as a split-screen view's is, so a fill across the frame is still
+stretched to the widened window and the pillarbox bars stay.
+
+With three or four players the views sit side by side, and in widescreen they
+weren't all widened alike (issue #78). RT64 widens a 3D view that covers its
+framebuffer pair's scissor:
+- Player 1's view shares its pair with the frame's clear, a fill across the
+  whole frame, so it wasn't widened. A pair's widening scissor
+  (`FramebufferPair::wideningScissor`) now leaves out projections of fill rects
+  only, when what's left is a split-screen view (reaching one side of the
+  frame, at least 40% of its width).
+- Each player's level is drawn in a pair of its own, but every player's
+  characters, doors and HUD in one pair across the frame, where no view covers
+  the pair: the characters were drawn at 4:3, off the middle of their widened
+  view. A view widened in any pair of the frame is widened in all of them
+  (`Workload::widensView`), in `FramebufferRenderer` and `ProjectionProcessor`
+  alike.
+- The HUD is drawn with a scissor across the frame, each player's inside their
+  view's 4:3 area. A rect wholly inside a widened split-screen view is scaled
+  about that view's middle (an origin there) instead of the frame's, so each HUD
+  keeps its 4:3 layout on its own view; the match timer, between the views,
+  stays put.
+- `ProjectionProcessor` squeezes a widened split-screen view's projection about
+  the view's own middle (`adjustProjectionMatrix` with a centre), in case its
+  projection is moved sideways rather than its viewport.
 
 The game's 3D and its fill rectangles stop 2 pixels short of each side of its
 292-pixel frame (its camera scissor, and `func_1501A6CC` clamps its fills the
@@ -360,6 +440,30 @@ last frame's projection (a perspective map from world position to texture
 coordinates, by least squares) and takes each vertex's coordinates last frame
 from it, if the fit is close, covers the texture and moves no vertex more than
 a quarter of the texture.
+
+The shadow's texture is a silhouette the game draws first, into a 64 by 64
+8-bit image (0x800DE080), with a camera it aims at the character from the light
+anew every frame, moving it nearer or further and zooming to match (standing
+still, its distance and zoom both doubled between two frames, the silhouette the
+same size in each). Its view matrix is scaled and skewed, not a rotation: RT64
+interpolated it as a camera, taken apart into position, rotation and scale and
+put together halfway, and the shadow was drawn larger on the frames between
+(issue #76; only at more than 30 fps). A scene drawn into a 64 pixel wide 8-bit
+image has its camera interpolated whole instead (`ProjectionProcessor`): each
+frame's view and projection together, scaled so the place it's aimed at
+(halfway between its near and far planes) is at w = 1, then blended. The
+silhouette's points on the texture then move as the texture coordinates on the
+ground do. Drawing the silhouettes uninterpolated stopped the expanding but
+didn't match the interpolated coordinates, and the shadow shook.
+
+A shadow isn't drawn on the first game frame it's back after frames without it
+(`interpolation.cpp`, issue #75): walking into a room, the game draws no shadow
+while the room loads, then for one frame lays the shadow from where Conker was
+before the room switched over onto the new room's ground, a dark patch (at 30
+fps too). And the shadow's texture coordinates are pulled in 2 texels from each
+edge (`rt64_rsp.cpp`): on an AMD GPU under Linux, at high resolutions, the
+texture's outermost texels came out dark and drew a thin line along the patch's
+edge next to Conker (issue #73).
 
 Texture packs named for Rice (issue #63): GLideN64 and Rice Video name each
 replacement by its texture's Rice hash (`<name>#<crc>#<format>#<size>[#<palette
@@ -444,7 +548,10 @@ fullscreen at 4K (issue #21). `texture_packs.cpp` registers RT64 texture packs (
 files and folders with an `rt64.json`) with the mod loader and adds the Texture
 Packs settings tab, and `gliden64_packs.cpp` unpacks GLideN64 texture caches
 (`.htc`) in the mods folder into packs RT64 matches by their Rice names (see RT64's
-changes above). `mouse_camera.cpp`
+changes above). `save_states.cpp` is save states' keys (F5, F7 and F6 for
+the slot), slots and files, done at the runtime's safe points (see the
+N64ModernRuntime changes above and [docs/save-states.md](../docs/save-states.md)).
+`mouse_camera.cpp`
 is a free orbit camera around Conker, turned by the mouse and, with Right Stick:
 Free Camera, the right stick, which then presses no C-buttons while it turns it
 (`frontend.cpp`); its settings, with Camera: Field of View, are in
@@ -452,7 +559,7 @@ Free Camera, the right stick, which then presses no C-buttons while it turns it
 func_1510B128 sets it, and works the level's cull scales out for the wider view.
 `fps_counter.cpp` is the Graphics tab's Show FPS: a corner counter of the frames
 RT64 presented and the game's own, a context of its own that takes no input.
-`reticle.cpp` is the General tab's Aiming: Reticle (issue #74, off by default): a
+`reticle.cpp` is the Camera tab's Aiming: Reticle (issue #74, off by default): a
 green ring like Conker: Live & Reloaded's, drawn the same way, while Conker aims
 the slingshot or the throwing knives (the look mode, `func_15120158`, in its
 states 0x2 and 0xA; plain R-Look is 0x0) or in the second aiming mode
@@ -460,6 +567,38 @@ states 0x2 and 0xA; plain R-Look is 0x0) or in the second aiming mode
 split screen. Both modes aim the camera itself, but the thrown shots leave
 Conker's hand below it, pitched up: in the distance they land 20% of the screen's
 height above the middle, where the reticle is (closer, a little lower).
+Aiming: Swap Sticks (`look_aim.cpp`, issue #84, off by default) aims like a
+third-person shooter:
+- While either aiming mode ran for a player's camera in the last few frames
+  (R-Look too; each player's, by the camera's +0x23D), `frontend.cpp` reads every
+  binding to one of their controller's sticks from the other: the right stick
+  aims and the left presses the C-buttons, which move Conker while aiming. With
+  the mouse, the keys bound to the stick press the C-buttons instead.
+- In the shotgun's aiming state (0x3B) Z, the laser sight, makes C-Left and
+  C-Right turn the aim, so with Z held they're left out of the left stick's;
+  elsewhere (split screen, where Z fires) they aren't.
+- The view looks where the aim does: walking with the left stick, the aiming
+  camera's eye lagged behind Conker and the view swung, and backing up sideways
+  swung its yaw off the aim (`conker_look_view`, `conker_look_currents`).
+- Where the view's yaw is Conker's facing (+0x7A) less the aiming angle (+0x12
+  of his +0x31C), the aim turns within +-50 degrees before his body does
+  (`func_15063A38`). The mouse's turn goes through the same limit. Left to the
+  game, he turned his body toward the way he walked, which the aim could only
+  make up to that limit: strafing came out as a diagonal and walking back as
+  forward. Instead each frame the whole aiming angle goes into his facing, so he
+  faces the view, and his moving angle (+0x76), which the game walks him along,
+  is set to the way pressed from the view's forward: he strafes and backs up
+  with the aim on the crosshair, his legs playing the forward walk.
+- Single player only (recompinput's single player mode): with a controller per
+  player the sticks aren't swapped.
+- With the shotgun, R alone shows the laser sight and the gun-up walk, as R and
+  Z do: +0x8A of +0x31C |= 0x20, D_800CC2B0 = 1, +0x1B4 |= 4, and the walk 0x224
+  played as 0x31B (`conker_shotgun_laser`, `conker_shotgun_laser_walk`).
+
+Aiming: Lock-On (on by default, as the original) can turn off the game's lock-on:
+`func_15063A38` turns the aim by the stick, or, while an enemy is there to lock on
+to (+0x84 of its +0x31C, the shotgun's zombies), straight toward it with
+`func_150639BC`, and the camera follows the aim; a hook clears that flag.
 Overscan Borders, in the same tab, crops the N64's black border off each side
 of the picture (`widescreen.cpp`, with RT64's changes above).
 Conker's Detail (Always Highest by default) keeps Conker on his most detailed
@@ -477,6 +616,22 @@ or sound). On Linux the window build creates the SDL window with
 and the recompiled audio microcode is compiled with `-msse4.1`. A crash prints a backtrace (SIGSEGV on Linux; on
 Windows an unhandled-exception filter with DbgHelp, which also writes
 `crash.log` next to the exe and shows a message box).
+
+The bank robbery's slow motion leaps from a B pad (issue #85): the leap keeps
+the follow camera as it is when walking, and the stick turns into Conker's
+movement as ever, turning him in the air and his guns with him; the crosshair is
+where they point. The C-buttons turn the camera, as in the original game, so with
+Right Stick: Free Camera off the right stick does too. The mouse orbit turned the
+camera there and never moved the crosshair. In a leap (`look_aim.cpp`: Conker in
+the bank's state 0x96, +0x4 of his object, with the leap's animation 0x20F or
+0x20E) the mouse is the stick: its movement moves a tilt, kept where the mouse
+leaves it, added to player 1's (`frontend.cpp`), and the orbit doesn't run. The
+view is raised 110 units (`mouse_camera.cpp`), so it looks down past Conker
+instead of through him: only the view's eye, raised as it's copied from the eye
+the camera wants (func_1512C490) and lowered back before the next update copies
+it back (func_15122C5C). Raising the eye wanted stacked up from frame to frame, or
+the game eased it back; the height it keeps above Conker (+0x344) isn't used in
+a leap.
 
 ## Mods
 

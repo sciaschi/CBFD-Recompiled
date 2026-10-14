@@ -293,5 +293,13 @@ if [ ! -f host/build/build.ninja ]; then
 fi
 cmake --build host/build
 
+# macOS: the linker's ad-hoc signature on the fresh binary is sometimes rejected by AMFI
+# ("invalid, or not a simple adhoc signature"), which kills the app at launch (zsh: killed).
+# Re-sign it ad-hoc so it runs. Harmless if already valid.
+if [ "$(uname -s)" = Darwin ] && [ -f host/build/ConkerRecomp ]; then
+    codesign --force --sign - host/build/ConkerRecomp >/dev/null 2>&1 && \
+        printf 'Re-signed host/build/ConkerRecomp (ad-hoc) for macOS.\n'
+fi
+
 printf '\nDone. Run the game with:\n  %s/host/build/ConkerRecomp\n' "$ROOT"
 printf 'The first time, pick Load ROM in the launcher and select your ROM (%s works).\n' "$BASEROM"

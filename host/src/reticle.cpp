@@ -1,4 +1,4 @@
-// Aiming: Reticle (General tab, issue #74): a green ring with a dot in the middle of the screen while
+// Aiming: Reticle (Camera tab, issue #74): a green ring with a dot in the middle of the screen while
 // Conker aims, like the one Conker: Live & Reloaded shows. The original game shows nothing, so
 // throwing is aimed by eye; the setting is Off by default, as the original.
 //

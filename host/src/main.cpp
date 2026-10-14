@@ -488,7 +488,7 @@ int main(int argc, char** argv) {
     recomp::Configuration cfg{};
     cfg.argc = (int)runtime_argv.size();
     cfg.argv = runtime_argv.data();
-    cfg.project_version = recomp::Version{ 0, 1, 5 };
+    cfg.project_version = recomp::Version{ 0, 1, 6 };
     cfg.rsp_callbacks.get_rsp_microcode = get_rsp_microcode;
     cfg.audio_callbacks = { queue_samples, get_frames_remaining, set_frequency };
     cfg.renderer_callbacks.create_render_context = conker::create_null_renderer;

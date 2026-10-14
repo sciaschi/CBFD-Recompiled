@@ -13,7 +13,7 @@ body:
     attributes:
       label: Version
       description: Shown in the launcher, or the release you downloaded. If you built it yourself, the commit.
-      placeholder: V0.1.5
+      placeholder: V0.1.6
     validations:
       required: true
   - type: dropdown

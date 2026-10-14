@@ -11,9 +11,9 @@ Playing
      It's checked, and remembered for later runs.
   3. Start Game.
 
-ROM hacks that only change the game's assets, such as the uncensored one, work
-too: load one with the launcher's Add ROM option. Version shows the ROM in
-play and switches between the ROMs you've loaded.
+ROM hacks that only change the game's assets, such as the uncensored one or the
+Russian translation, work too: load one with the launcher's Add ROM option.
+Version shows the ROM in play and switches between the ROMs you've loaded.
 
 Windows: Windows 10 or 11, 64-bit, with a Direct3D 12 or Vulkan graphics card.
 Linux: x86-64 with Vulkan, and SDL2, GTK 3 and FreeType installed
@@ -23,9 +23,13 @@ developer ID, so macOS blocks it the first time: open it once, then in System
 Settings > Privacy & Security choose Open Anyway. Or, in Terminal, run
 xattr -dr com.apple.quarantine ConkerRecomp.app before opening it.
 
+Save states: F5 saves the game as it is, anywhere, F7 loads it back, and F6
+switches between the nine slots. The game's own saves are never touched. More
+in docs/save-states.md on the GitHub page.
+
 Texture packs: install a .rtz pack, or a GLideN64 pack's .htc file, with the Mods
 menu's Install Mods button (or drop it onto the Mods menu, or put it in the mods
-folder), and pick it in Settings > Texture Packs. A .htc is unpacked the first
+folder), and pick it in Settings > Graphics > Texture Pack. A .htc is unpacked the first
 time, which takes a minute or so for a large pack.
 
 Licenses: see LICENSES.txt. The program as a whole is under the GNU GPL version 3

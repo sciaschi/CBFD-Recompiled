@@ -123,6 +123,35 @@ extern "C" void conker_widen_sprite_cull_right(uint8_t* rdram, recomp_context* c
     ctx->f10.fl += sprite_cull_margin(rdram);
 }
 
+// Screen-space pieces drawn with func_15095D34 (issue #101): the tickly bees of Windy's pollination quest, and the
+// speech bubbles' pieces. func_15095B08 works out a piece's rectangle on screen (D_800D2C78 and on, which
+// func_15095D34 draws) and sets its "on screen" flag (its 6th argument) only where the rectangle overlaps the
+// camera's 4:3 bounds, so in widescreen the bees vanished beside the 4:3 frame (the bees over the hive are
+// func_15130A9C's sprites, widened above). func_15095D34 already draws a piece past either edge of the 4:3 frame
+// (speech bubbles, issue #59, below), so its bounds are widened as the sprites' are. At 0x15095C70 $f8 holds the
+// left bound (camera + 0x2C), compared with the rectangle's right edge; at 0x15095C84 $f10 the right one (camera +
+// 0x30), compared with its left edge.
+extern "C" void conker_widen_piece_cull_left(uint8_t* rdram, recomp_context* ctx) {
+    ctx->f8.fl -= sprite_cull_margin(rdram);
+}
+
+extern "C" void conker_widen_piece_cull_right(uint8_t* rdram, recomp_context* ctx) {
+    ctx->f10.fl += sprite_cull_margin(rdram);
+}
+
+// Light glows: func_151408A4 keeps a glow only while its light's projected point
+// (func_15144CEC) is inside the same camera bounds, so in widescreen glows vanished
+// toward the left and right edges. The glow is a 3D billboard, which RT64 draws
+// anywhere in the widened view; only this check is 4:3. At 0x15140988 $f10 holds the
+// left bound (camera + 0x2C), at 0x151409A0 $f4 the right one (camera + 0x30).
+extern "C" void conker_widen_light_glow_left(uint8_t* rdram, recomp_context* ctx) {
+    ctx->f10.fl -= sprite_cull_margin(rdram);
+}
+
+extern "C" void conker_widen_light_glow_right(uint8_t* rdram, recomp_context* ctx) {
+    ctx->f4.fl += sprite_cull_margin(rdram);
+}
+
 // func_15130A9C at 0x15130DA0: the game has just written a G_RDPPIPESYNC at $v0,
 // the first command of the sprite. RT64 doesn't need syncs; put the enable of its
 // extended GBI there instead (RT64 turns it off at the start of every display
@@ -192,6 +221,11 @@ namespace {
 extern "C" void conker_frame_dl_begin(uint8_t* rdram, recomp_context* ctx) {
     extended_enabled = false;
     conker::cutscene_aspect::update(rdram);
+    conker::shadows::game_frame();
+    conker::look_aim::leap_frame(rdram);
+#if defined(CONKER_RT64)
+    conker::local_achievements::game_frame(rdram);
+#endif
 #if defined(CONKER_RT64)
     // Overscan Borders: the game's 3D and its rectangles stop 2 pixels short of each side of the frame
     // (its camera scissor, and func_1501A6CC clamps its fill rectangles the same), a black border the N64

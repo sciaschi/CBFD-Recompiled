@@ -1,4 +1,4 @@
-// Camera: Field of View (General tab, issue #65): widens or narrows the normal third-person
+// Camera: Field of View (Camera tab, issue #65): widens or narrows the normal third-person
 // camera's view, since with Right Stick: Free Camera the stick no longer zooms.
 //
 // func_1510B128 sets a camera's field of view each frame (D_800BE628, 0x180-byte cameras): the

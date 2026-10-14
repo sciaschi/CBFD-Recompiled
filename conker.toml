@@ -350,6 +350,37 @@ func = "func_15130A9C"
 before_vram = 0x15130D08
 text = "{ extern void conker_widen_sprite_cull_right(uint8_t*, recomp_context*); conker_widen_sprite_cull_right(rdram, ctx); }"
 
+# The tickly bees write their depth, so the sunflower drawn after them is hidden behind a bee nearer the camera
+# (host/src/render_fixes.cpp, issue #101): func_15168118 draws a bee with func_15095760 (0x15168640, back at
+# 0x15168648), which stores its G_SETPRIMDEPTH at 0x15095878.
+[[patches.hook]]
+func = "func_15168118"
+before_vram = 0x15168640
+text = "{ extern void conker_bee_begin(uint8_t*, recomp_context*); conker_bee_begin(rdram, ctx); }"
+
+[[patches.hook]]
+func = "func_15168118"
+before_vram = 0x15168648
+text = "{ extern void conker_bee_end(uint8_t*, recomp_context*); conker_bee_end(rdram, ctx); }"
+
+[[patches.hook]]
+func = "func_15095760"
+before_vram = 0x15095878
+text = "{ extern void conker_bee_depth(uint8_t*, recomp_context*); conker_bee_depth(rdram, ctx); }"
+
+# The same for the pieces func_15095D34 draws (the tickly bees, speech bubbles; issue #101): func_15095B08
+# sets a piece's "on screen" flag only where its rectangle overlaps the camera's 4:3 bounds. At 0x15095C70
+# $f8 is the left bound, at 0x15095C84 $f10 the right one (host/src/widescreen.cpp).
+[[patches.hook]]
+func = "func_15095B08"
+before_vram = 0x15095C70
+text = "{ extern void conker_widen_piece_cull_left(uint8_t*, recomp_context*); conker_widen_piece_cull_left(rdram, ctx); }"
+
+[[patches.hook]]
+func = "func_15095B08"
+before_vram = 0x15095C84
+text = "{ extern void conker_widen_piece_cull_right(uint8_t*, recomp_context*); conker_widen_piece_cull_right(rdram, ctx); }"
+
 [[patches.hook]]
 func = "func_15130A9C"
 before_vram = 0x15131168
@@ -576,10 +607,50 @@ func = "func_151284C4"
 before_vram = 0x151284C8
 text = "{ extern void conker_mouse_camera(uint8_t*, recomp_context*); conker_mouse_camera(rdram, ctx); }"
 
+# Aiming: Swap Sticks with the shotgun (host/src/look_aim.cpp, issue #84): after R alone's movement in Conker's
+# state 0x3B (func_15063E84 returned, $s0 Conker), R alone shows the laser sight as R and Z do.
+[[patches.hook]]
+func = "func_15065A5C"
+before_vram = 0x15069028
+text = "{ extern void conker_shotgun_laser(uint8_t*, recomp_context*); conker_shotgun_laser(rdram, ctx); }"
+
+# And R alone's walk in state 0x3B (func_15064B94 picked 0x224 in $v1) is R and Z's (0x31B), with the gun up.
+[[patches.hook]]
+func = "func_15064B94"
+before_vram = 0x150651FC
+text = "{ extern void conker_shotgun_laser_walk(uint8_t*, recomp_context*); conker_shotgun_laser_walk(rdram, ctx); }"
+
+# Aiming: Lock-On (host/src/look_aim.cpp): func_15063A38 turns the aim by the stick, or toward an enemy
+# with func_150639BC while +0x84 of $a0's +0x31C is set ($t1, tested at 0x15063A80). With the setting
+# Off the flag reads as clear.
+[[patches.hook]]
+func = "func_15063A38"
+before_vram = 0x15063A80
+text = "{ extern void conker_aim_lock_on(uint8_t*, recomp_context*); conker_aim_lock_on(rdram, ctx); }"
+
+# The bank's slow motion leaps (host/src/mouse_camera.cpp, issue #85): the view's eye is raised in a leap
+# (conker_leap_view_lift, in the func_1512C490 hook below) and lowered back as func_15122C5C, the follow
+# camera's update, starts, once $s0 is the camera (0x15122C64), before it copies the view's eye back
+# into the eye wanted (conker_leap_view_restore).
+[[patches.hook]]
+func = "func_15122C5C"
+before_vram = 0x15122C6C
+text = "{ extern void conker_leap_view_restore(uint8_t*, recomp_context*); conker_leap_view_restore(rdram, ctx); }"
+
 [[patches.hook]]
 func = "func_15120158"
 before_vram = 0x1512015C
 text = "{ extern void conker_mouse_camera_look_mode(uint8_t*, recomp_context*); conker_mouse_camera_look_mode(rdram, ctx); }"
+
+# Mouse camera: func_1512C490 (in func_151284C4) has copied the look-at point and the eye into
+# the view's (+0x2E0, +0x2EC; $s0 the camera). Tilted up past where the eye stops, the view's
+# look-at point is raised to aim higher from the same eye (issue #70). While aiming with Aiming: Swap
+# Sticks, the view is turned to the aim's direction, so walking doesn't turn it (issue #84,
+# host/src/look_aim.cpp). In the bank's slow motion leaps, the view's eye is raised (issue #85).
+[[patches.hook]]
+func = "func_1512C490"
+before_vram = 0x1512C640
+text = "{ extern void conker_mouse_camera_aim(uint8_t*, recomp_context*); conker_mouse_camera_aim(rdram, ctx); extern void conker_look_view(uint8_t*, recomp_context*); conker_look_view(rdram, ctx); extern void conker_leap_view_lift(uint8_t*, recomp_context*); conker_leap_view_lift(rdram, ctx); }"
 
 # Motion blur (func_151D6778, Conker drunk): a frame it's drawn in is drawn without frames between it
 # and the next, so the blur blends with a whole frame's ghost as on the N64 (host/src/widescreen.cpp,
@@ -607,6 +678,19 @@ func = "func_151408A4"
 before_vram = 0x15140DB4
 text = "{ extern void conker_light_glow_depth(uint8_t*, recomp_context*); conker_light_glow_depth(rdram, ctx); }"
 
+# Light glows at the widescreen edges: func_151408A4 also hides a glow whose light is
+# outside the camera's 4:3 left and right bounds. Widen them like the sprite cull
+# (host/src/widescreen.cpp).
+[[patches.hook]]
+func = "func_151408A4"
+before_vram = 0x15140988
+text = "{ extern void conker_widen_light_glow_left(uint8_t*, recomp_context*); conker_widen_light_glow_left(rdram, ctx); }"
+
+[[patches.hook]]
+func = "func_151408A4"
+before_vram = 0x151409A0
+text = "{ extern void conker_widen_light_glow_right(uint8_t*, recomp_context*); conker_widen_light_glow_right(rdram, ctx); }"
+
 # TEMP-DEBUG: switches for the game's mid-frame depth-buffer copies (host/src/render_fixes.cpp).
 [[patches.hook]]
 func = "func_1510B9D0"
@@ -629,6 +713,26 @@ func = "func_1501878C"
 before_vram = 0x15018920
 text = "{ extern void conker_frame_dl_begin(uint8_t*, recomp_context*); conker_frame_dl_begin(rdram, ctx); }"
 
+# Room in the frame's display lists (host/src/render_fixes.cpp, issue #98): func_15015E80 allocates
+# the two lists with half their budget again, for the frame interpolation's matrix groups and the
+# objects widescreen draws beside the 4:3 frame, and sets the limit the game stops drawing objects
+# at from the lists' own size (it took the distance between them, which can be far more). A list
+# run past its end overwrote the next heap block, and the game crashed freeing the level's blocks.
+[[patches.hook]]
+func = "func_15015E80"
+before_vram = 0x15015ED0
+text = "{ extern void conker_display_list_size_first(uint8_t*, recomp_context*); conker_display_list_size_first(rdram, ctx); }"
+
+[[patches.hook]]
+func = "func_15015E80"
+before_vram = 0x15015F00
+text = "{ extern void conker_display_list_size_second(uint8_t*, recomp_context*); conker_display_list_size_second(rdram, ctx); }"
+
+[[patches.hook]]
+func = "func_15015E80"
+before_vram = 0x15015F28
+text = "{ extern void conker_display_list_limit(uint8_t*, recomp_context*); conker_display_list_limit(rdram, ctx); }"
+
 # Cutscene Aspect Ratio at 4:3 (host/src/cutscene_aspect.cpp): at the end of the frame's display
 # list, just before func_1501878C writes its full sync ($s1 points to the list's pointer), a call to
 # a list of our own that draws black bars over the picture beyond the 4:3 frame.
@@ -642,6 +746,13 @@ func = "func_15019464"
 before_vram = 0x150194F8
 text = "{ extern void conker_camera_pass_sync(uint8_t*, recomp_context*); conker_camera_pass_sync(rdram, ctx); }"
 
+# A sprite piece under a pixel across (host/src/render_fixes.cpp): its width ($f0) and height ($f2) are
+# loaded, and are made a pixel before func_15095D34 divides by them, as a crash was.
+[[patches.hook]]
+func = "func_15095D34"
+before_vram = 0x15095D58
+text = "{ extern void conker_sprite_piece_size(uint8_t*, recomp_context*); conker_sprite_piece_size(rdram, ctx); }"
+
 # After the piece's left edge is loaded ($f12, D_800D2C78; its right edge is that plus a width),
 # and where both of its returns meet ($v0 the end of what it wrote).
 [[patches.hook]]
@@ -653,3 +764,10 @@ text = "{ extern void conker_bubble_begin(uint8_t*, recomp_context*); conker_bub
 func = "func_15095D34"
 before_vram = 0x15096294
 text = "{ extern void conker_bubble_end(uint8_t*, recomp_context*); conker_bubble_end(rdram, ctx); }"
+
+# Player 1's cash (host/src/local_achievements.cpp): the end's million unlocks What a Day, and each change is
+# logged (what the game's money piles give, for an achievement for collecting them all).
+[[patches.hook]]
+func = "func_15085710"
+before_vram = 0x15085710
+text = "{ extern void conker_stat_change(uint8_t*, recomp_context*); conker_stat_change(rdram, ctx); }"
