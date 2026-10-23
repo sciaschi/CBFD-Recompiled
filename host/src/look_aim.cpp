@@ -301,7 +301,8 @@ void conker::look_aim::add_camera_options(recomp::config::Config& config) {
     config.add_enum_option(options::stick_camera, "Right Stick: Free Camera",
         "A modern third-person camera in single player: the right stick turns the camera around Conker and tilts it up "
         "and down, instead of pressing the C-buttons, and the left stick moves Conker. The C-buttons' other controls "
-        "stay: by default C-Up (first person) on the right stick's click and C-Down on RB. <recomp-color primary>Off</recomp-color> matches the "
+        "stay: by default C-Up (first person) on the right stick's click; C-Down can be bound to a button in Controls. "
+        "<recomp-color primary>Off</recomp-color> matches the "
         "original game. Only the normal camera: in R-Look, aiming and cutscenes, the right stick is the C-buttons as usual.",
         toggle, Toggle::Off);
     config.add_number_option(options::camera_fov, "Camera: Field of View",
@@ -560,6 +561,12 @@ bool conker::look_aim::z_turns_aim(int player) {
 
 bool conker::look_aim::stick_free_camera() {
     return option<Toggle>(options::stick_camera) == Toggle::On && recompinput::players::is_single_player_mode();
+}
+
+void conker::look_aim::set_swap_sticks(bool on) {
+    if (recomp::config::Config* config = recompui::config::find_option_config(options::aim_swap_sticks)) {
+        config->update_option_value(options::aim_swap_sticks, static_cast<uint32_t>(on ? Toggle::On : Toggle::Off));
+    }
 }
 
 // The bank robbery's slow motion leaps (issue #85): standing on a B pad, B leaps (func_15065A5C, 0x15066FC4: the bank,
