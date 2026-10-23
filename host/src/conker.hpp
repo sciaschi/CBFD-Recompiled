@@ -398,6 +398,17 @@ namespace conker {
         void update();
     }
 
+    // netplay/status.cpp: the match's status on screen: waiting for a player, a player leaving, and with
+    // General: Netplay Details, the input delay and each player's round trip in a corner.
+    namespace netplay_status {
+        // On the General tab (conker_config.cpp): Netplay Details.
+        void add_options(recomp::config::Config& config);
+        // From the launcher's init (frontend.cpp): recompui's UI exists now.
+        void on_ui_ready();
+        // On the main thread (update_gfx).
+        void update();
+    }
+
     // netplay/view.cpp: "my view only", the window showing only this player's part of the split screen.
     namespace netplay_view {
         void set_mine_only(bool on);

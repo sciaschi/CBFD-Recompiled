@@ -178,6 +178,9 @@ void conker::init_config() {
     conker::local_achievements::add_options(general_config);
     conker::save_states::add_options(general_config);
     conker::texture_packs::add_notification_options(general_config);
+#if defined(CONKER_NETPLAY)
+    conker::netplay_status::add_options(general_config);
+#endif
     {
         static const std::vector<recomp::config::ConfigOptionEnumOption> choices = {
             {StartDirectly::Off, "Off", "Off"},

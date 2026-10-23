@@ -685,7 +685,7 @@ index 0000000..99ef5c2
 +    };
 +};
 diff --git a/src/hle/rt64_application.cpp b/src/hle/rt64_application.cpp
-index ee8bc1f..428208c 100644
+index ee8bc1f..3e2aa3a 100644
 --- a/src/hle/rt64_application.cpp
 +++ b/src/hle/rt64_application.cpp
 @@ -245,6 +245,11 @@ namespace RT64 {
@@ -700,6 +700,30 @@ index ee8bc1f..428208c 100644
                      else {
                          // Wireframe artifacts have been reported when using a high-precision color format on RDNA3 GPUs in D3D12. The workaround is to switch to Vulkan if this is the case.
                          const bool isRX7 = deviceDescription.name.find("AMD Radeon RX 7") != std::string::npos;
+@@ -524,6 +529,10 @@ namespace RT64 {
+         state->updateScreen(core.decodeVI(), false);
+     }
+ 
++    void Application::presentAgain() {
++        state->presentAgain();
++    }
++
+     void Application::destroyShaderCache() {
+         workloadQueue->waitForWorkloadId(state->workloadId);
+         presentQueue->waitForPresentId(state->presentId);
+diff --git a/src/hle/rt64_application.h b/src/hle/rt64_application.h
+index 6c83fe0..8555308 100644
+--- a/src/hle/rt64_application.h
++++ b/src/hle/rt64_application.h
+@@ -156,6 +156,8 @@ namespace RT64 {
+         SetupResult setup(uint32_t threadId);
+         void processDisplayLists(uint8_t *memory, uint32_t dlStartAddress, uint32_t dlEndAddress, bool isHLE);
+         void updateScreen();
++        // Presents the last frame again, as it is (the UI drawn over it anew), while the game draws none.
++        void presentAgain();
+         void destroyShaderCache();
+         void updateMultisampling();
+         void end();
 diff --git a/src/hle/rt64_framebuffer_manager.cpp b/src/hle/rt64_framebuffer_manager.cpp
 index d7caa12..2043064 100644
 --- a/src/hle/rt64_framebuffer_manager.cpp
@@ -1201,8 +1225,22 @@ index 00a72f6..32e9300 100644
          void buildCallHashMap(uint32_t sceneProjIndex, const Workload &workload, const Projection &proj, std::multimap<uint64_t, GameCallMap> &hashMap) const;
          void buildTransformIdMap(const Workload &workload, std::multimap<uint32_t, uint32_t> &idMap, std::vector<uint32_t> &ignoredIdVector) const;
          uint64_t hashFromCall(const GameCall &call, uint32_t matrixIdHash) const;
+diff --git a/src/hle/rt64_present.h b/src/hle/rt64_present.h
+index e1889e5..c5d5f40 100644
+--- a/src/hle/rt64_present.h
++++ b/src/hle/rt64_present.h
+@@ -21,6 +21,9 @@ namespace RT64 {
+         std::vector<FramebufferOperation> fbOperations;
+         DebuggerFramebuffer debuggerFramebuffer;
+         bool paused = false;
++        // Shown again as it was (presentAgain): the frame once, not the frames interpolated before it again. It counts
++        // the frames as presented, as a present of one frame does, so a workload waiting on them goes on.
++        bool repeated = false;
+         uint64_t presentId = 0;
+         uint64_t workloadId = 0;
+     };
 diff --git a/src/hle/rt64_present_queue.cpp b/src/hle/rt64_present_queue.cpp
-index 7de5b69..2ef2ef5 100644
+index 7de5b69..0a41c76 100644
 --- a/src/hle/rt64_present_queue.cpp
 +++ b/src/hle/rt64_present_queue.cpp
 @@ -9,7 +9,16 @@
@@ -1222,7 +1260,17 @@ index 7de5b69..2ef2ef5 100644
      // PresentQueue
  
      PresentQueue::PresentQueue() {
-@@ -402,6 +411,7 @@ namespace RT64 {
+@@ -188,7 +197,8 @@ namespace RT64 {
+                     }
+                 }
+ 
+-                if (presentFb->interpolationEnabled) {
++                // (A repeated present shows the frame once: its interpolated ones were shown already.)
++                if (presentFb->interpolationEnabled && !present.repeated) {
+                     framesToPresent = frameCounters.count;
+                 }
+                 else {
+@@ -402,6 +412,7 @@ namespace RT64 {
                  RenderCommandSemaphore *waitSemaphore = drawSemaphores[swapChainIndex].get();
                  presentTimestamp = Timer::current();
                  swapChainValid = ext.swapChain->present(swapChainIndex, &waitSemaphore, 1);
@@ -2211,7 +2259,7 @@ index 61bb3b1..b76a3d6 100644
          void setVertexSegmentV1(bool isEnabled, uint32_t vertexElement, uint32_t vertexAddress, uint32_t baseSegmentAddress);
          template<uint32_t floatCount, uint32_t vertexSize>
 diff --git a/src/hle/rt64_state.cpp b/src/hle/rt64_state.cpp
-index 2970e71..3a8d39e 100644
+index 2970e71..3e8520a 100644
 --- a/src/hle/rt64_state.cpp
 +++ b/src/hle/rt64_state.cpp
 @@ -4,6 +4,8 @@
@@ -2322,7 +2370,30 @@ index 2970e71..3a8d39e 100644
          // Store the presentation rate in the workload.
          if (extended.refreshRate != UINT16_MAX) {
              workload.viOriginalRate = extended.refreshRate;
-@@ -2727,6 +2777,13 @@ namespace RT64 {
+@@ -2666,10 +2716,22 @@ namespace RT64 {
+         present.presentId = ++presentId;
+         present.workloadId = workloadId;
+         present.paused = paused;
++        present.repeated = false;
+         present.debuggerFramebuffer.address = debuggerInspector.renderer.framebufferAddress;
+         present.debuggerFramebuffer.view = (debuggerInspector.renderer.framebufferIndex >= 0);
+     }
+ 
++    // The last present again, paused (as the debugger's pause does, without its workload: nothing is drawn anew
++    // but what the present draws over the frame), once the queues are done with it. Repeated: the frame once.
++    void State::presentAgain() {
++        ext.presentQueue->waitForPresentId(presentId);
++        ext.presentQueue->waitForIdle();
++        Present &lastPresent = ext.presentQueue->presents[ext.presentQueue->previousWriteCursor()];
++        advancePresent(lastPresent, true);
++        lastPresent.repeated = true;
++        ext.presentQueue->repeatLastPresent();
++    }
++
+     void State::dpInterrupt() {
+         *MI_INTR_REG |= MI_INTR_DP;
+         checkInterrupts();
+@@ -2727,6 +2789,13 @@ namespace RT64 {
      void State::setDitherNoiseStrength(float noiseStrength) {
          extended.ditherNoiseStrength = noiseStrength;
      }
@@ -2337,10 +2408,18 @@ index 2970e71..3a8d39e 100644
      void State::setExtendedRDRAM(bool isExtended) {
          extended.extendRDRAM = isExtended;
 diff --git a/src/hle/rt64_state.h b/src/hle/rt64_state.h
-index 7a8c13b..373815a 100644
+index 7a8c13b..8400363 100644
 --- a/src/hle/rt64_state.h
 +++ b/src/hle/rt64_state.h
-@@ -165,6 +165,7 @@ namespace RT64 {
+@@ -153,6 +153,7 @@ namespace RT64 {
+         void inspect();
+         void advanceWorkload(Workload &workload, bool paused);
+         void advancePresent(Present &present, bool paused);
++        void presentAgain();
+         void dpInterrupt();
+         void spInterrupt();
+         void advanceFramebufferRenderer();
+@@ -165,6 +166,7 @@ namespace RT64 {
          void setDitherNoiseStrength(float noiseStrength);
          void setExtendedRDRAM(bool isExtended);
          void setTexcoordWrapPoint(int16_t wrapU, int16_t wrapV);

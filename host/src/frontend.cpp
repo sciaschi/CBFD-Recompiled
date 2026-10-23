@@ -243,6 +243,7 @@ namespace {
         conker::notices::update();
 #if defined(CONKER_NETPLAY)
         conker::netplay_menu::update();
+        conker::netplay_status::update();
 #endif
         update_hotkeys();
         conker::reticle::update();
@@ -339,6 +340,7 @@ namespace {
         conker::reticle::on_ui_ready();
         options->add_start_game_or_load_rom_option();
 #if defined(CONKER_NETPLAY)
+        conker::netplay_status::on_ui_ready();
         conker::netplay_menu::init(game.game_id, recomp::get_config_path() / game.stored_filename());
         options->add_option("Netplay", conker::netplay_menu::open);
 #endif

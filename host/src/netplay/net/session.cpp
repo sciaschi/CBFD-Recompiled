@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <bit>
 #include <chrono>
+#include <thread>
 #include <cstdio>
 
 #if defined(_WIN32)
@@ -138,6 +139,20 @@ namespace conker::netplay {
         GameNetworkingSockets_Kill();
     }
 
+    void set_fake_network(const FakeNetwork& fake) {
+        ISteamNetworkingUtils* utils = SteamNetworkingUtils();
+        utils->SetGlobalConfigValueInt32(k_ESteamNetworkingConfig_FakePacketLag_Send, fake.lag_ms);
+        utils->SetGlobalConfigValueFloat(k_ESteamNetworkingConfig_FakePacketJitter_Send_Avg, fake.jitter_ms);
+        utils->SetGlobalConfigValueFloat(k_ESteamNetworkingConfig_FakePacketJitter_Send_Max, 4 * fake.jitter_ms);
+        utils->SetGlobalConfigValueFloat(k_ESteamNetworkingConfig_FakePacketJitter_Send_Pct, fake.jitter_ms > 0 ? 100.0f : 0.0f);
+        utils->SetGlobalConfigValueFloat(k_ESteamNetworkingConfig_FakePacketLoss_Send, fake.outage ? 100.0f : fake.loss);
+        utils->SetGlobalConfigValueFloat(k_ESteamNetworkingConfig_FakePacketLoss_Recv, fake.outage ? 100.0f : 0.0f);
+        utils->SetGlobalConfigValueFloat(k_ESteamNetworkingConfig_FakePacketReorder_Send, fake.reorder);
+        utils->SetGlobalConfigValueInt32(k_ESteamNetworkingConfig_FakePacketReorder_Time, 20);
+        utils->SetGlobalConfigValueFloat(k_ESteamNetworkingConfig_FakePacketDup_Send, fake.dup);
+        utils->SetGlobalConfigValueInt32(k_ESteamNetworkingConfig_FakePacketDup_TimeMax, 20);
+    }
+
     Session::Session() {
         current = this;
     }
@@ -223,6 +238,7 @@ namespace conker::netplay {
             return false;
         }
         entry_open = false;
+        next_inputs.fill(0);
         const Start start{ (uint8_t)match_players, (uint8_t)(own_view ? 1 : 0), (uint8_t)delay, pairs() };
         for (const Peer& peer : peers) {
             if (peer.port >= 0) {
@@ -250,6 +266,23 @@ namespace conker::netplay {
                 SteamNetworkingSockets()->GetConnectionRealTimeStatus(peer.connection, &status, 0, nullptr) == k_EResultOK &&
                 status.m_nPing >= 0) {
                 out.push_back(status.m_nPing);
+            }
+        }
+        return out;
+    }
+
+    std::array<int, max_players> Session::round_trips_by_port() const {
+        std::array<int, max_players> out;
+        out.fill(-1);
+        for (const Peer& peer : peers) {
+            SteamNetConnectionRealTimeStatus_t status;
+            if (SteamNetworkingSockets()->GetConnectionRealTimeStatus(peer.connection, &status, 0, nullptr) != k_EResultOK ||
+                status.m_nPing < 0) {
+                continue;
+            }
+            const uint8_t ports = is_host ? peer.ports : 0x01;
+            for (int port = 0; port < max_players; port++) {
+                if ((ports & (1u << port)) != 0) out[port] = status.m_nPing;
             }
         }
         return out;
@@ -296,8 +329,13 @@ namespace conker::netplay {
                 break;
             case k_ESteamNetworkingConnectionState_ClosedByPeer:
             case k_ESteamNetworkingConnectionState_ProblemDetectedLocally: {
+                // What the peer sent before closing is read first, in order: closing the connection would
+                // throw it away, and a peer's last words matter (after a desync, its Hash for that read, then
+                // its Bye). A Bye among them ends the peer itself.
+                drain(info->m_hConn, pending_events);
                 Peer* peer = find(info->m_hConn);
-                sockets->CloseConnection(info->m_hConn, 0, nullptr, false);
+                // With why, should the other end still hear it (a connection that timed out here only).
+                sockets->CloseConnection(info->m_hConn, k_ESteamNetConnectionEnd_App_Min + (int)reason_of(info->m_info), nullptr, false);
                 if (peer == nullptr) {
                     break;
                 }
@@ -334,20 +372,7 @@ namespace conker::netplay {
                 taken += count;
                 for (int i = 0; i < count; i++) {
                     SteamNetworkingMessage_t* message = messages[i];
-                    Peer* peer = find(message->m_conn);
-                    if (peer != nullptr) {
-                        const std::span<const uint8_t> data((const uint8_t*)message->m_pData, (size_t)message->m_cbSize);
-                        std::optional<Packet> packet = decode(data);
-                        if (packet) {
-                            handle(*peer, *packet, events);
-                        }
-                        else {
-                            // Another protocol version is told so; anything else is a broken packet.
-                            const bool other_version = data.size() >= 4 && data[0] == 'C' && data[1] == 'N' &&
-                                (uint16_t)(data[2] | (data[3] << 8)) != protocol_version;
-                            drop(*peer, other_version ? Reason::version : Reason::protocol, &events);
-                        }
-                    }
+                    take(message->m_conn, { (const uint8_t*)message->m_pData, (size_t)message->m_cbSize }, events);
                     message->Release();
                 }
             }
@@ -364,6 +389,37 @@ namespace conker::netplay {
             }
         }
         return events;
+    }
+
+    void Session::take(uint32_t connection, std::span<const uint8_t> data, std::vector<Event>& events) {
+        Peer* peer = find(connection);
+        if (peer == nullptr) {
+            return;
+        }
+        std::optional<Packet> packet = decode(data);
+        if (packet) {
+            handle(*peer, *packet, events);
+        }
+        else {
+            // Another protocol version is told so; anything else is a broken packet.
+            const bool other_version = data.size() >= 4 && data[0] == 'C' && data[1] == 'N' &&
+                (uint16_t)(data[2] | (data[3] << 8)) != protocol_version;
+            drop(*peer, other_version ? Reason::version : Reason::protocol, &events);
+        }
+    }
+
+    void Session::drain(uint32_t connection, std::vector<Event>& events) {
+        ISteamNetworkingSockets* sockets = SteamNetworkingSockets();
+        SteamNetworkingMessage_t* messages[32];
+        int count;
+        // At most what the library buffers from a peer (recv_buffer_messages), and only while it's a peer.
+        for (int taken = 0; taken < recv_buffer_messages && find(connection) != nullptr &&
+            (count = sockets->ReceiveMessagesOnConnection(connection, messages, 32)) > 0; taken += count) {
+            for (int i = 0; i < count; i++) {
+                take(connection, { (const uint8_t*)messages[i]->m_pData, (size_t)messages[i]->m_cbSize }, events);
+                messages[i]->Release();
+            }
+        }
     }
 
     void Session::handle(Peer& peer, const Packet& packet, std::vector<Event>& events) {
@@ -425,8 +481,12 @@ namespace conker::netplay {
             // anything else is a broken or hostile peer, refused before it's passed on.
             const Inputs* inputs = std::get_if<Inputs>(&packet);
             const Hash* hash = std::get_if<Hash>(&packet);
+            // Each port's Inputs go on from the last read of its earlier ones, and a Hash's read is within the
+            // horizon too: else the others would end the match on it (lockstep checks the same), where dropping
+            // the peer lets them play on without it.
             if ((inputs != nullptr || hash != nullptr) &&
-                (entry_open || (inputs != nullptr && (uint64_t)inputs->first_read + inputs->count > horizon))) {
+                (entry_open || (inputs != nullptr && ((uint64_t)inputs->first_read + inputs->count > horizon ||
+                    inputs->first_read != next_inputs[inputs->port])) || (hash != nullptr && hash->read > horizon))) {
                 drop(peer, Reason::protocol, &events);
                 return;
             }
@@ -439,6 +499,7 @@ namespace conker::netplay {
                 peer.last_hash = hash->read;
             }
             if (inputs != nullptr && (peer.ports & (1u << inputs->port)) != 0) {
+                next_inputs[inputs->port] = inputs->first_read + inputs->count;
                 // Passed on to the others, as they only connect to the host.
                 for (const Peer& other : peers) {
                     if (other.port >= 0 && other.connection != peer.connection) {
@@ -527,6 +588,28 @@ namespace conker::netplay {
             event.packet = packet;
             events.push_back(std::move(event));
         }
+        else if (const Gone* gone = std::get_if<Gone>(&packet); gone != nullptr) {
+            // Once started, about another machine's player.
+            if (!started || (own_ports & (1u << gone->port)) != 0 || gone->port >= match_players) {
+                drop(peer, Reason::protocol, &events);
+                return;
+            }
+            Event event{ Event::Type::packet };
+            event.port = gone->port;
+            event.packet = packet;
+            events.push_back(std::move(event));
+        }
+        else if (std::holds_alternative<Delay>(packet)) {
+            // Once started.
+            if (!started) {
+                drop(peer, Reason::protocol, &events);
+                return;
+            }
+            Event event{ Event::Type::packet };
+            event.port = 0;
+            event.packet = packet;
+            events.push_back(std::move(event));
+        }
         else if (const Bye* bye = std::get_if<Bye>(&packet)) {
             Event event{ Event::Type::ended };
             event.reason = bye->reason;
@@ -536,6 +619,27 @@ namespace conker::netplay {
         }
         else {
             drop(peer, Reason::protocol, &events);
+        }
+    }
+
+    void Session::flush() {
+        // Long enough for a few resends at a bad network's round trip; a peer that's gone isn't waited for.
+        constexpr double flush_seconds = 2.0;
+        const double until = now() + flush_seconds;
+        while (now() < until) {
+            bool pending = false;
+            for (const Peer& peer : peers) {
+                SteamNetConnectionRealTimeStatus_t status;
+                if (SteamNetworkingSockets()->GetConnectionRealTimeStatus(peer.connection, &status, 0, nullptr) == k_EResultOK &&
+                    status.m_eState == k_ESteamNetworkingConnectionState_Connected &&
+                    status.m_cbPendingReliable + status.m_cbSentUnackedReliable > 0) {
+                    pending = true;
+                }
+            }
+            if (!pending) {
+                return;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
         }
     }
 
@@ -582,9 +686,34 @@ namespace conker::netplay {
         }
     }
 
+    void Session::send(const Gone& gone) {
+        for (const Peer& peer : peers) {
+            if (peer.port >= 0) {
+                send_to(peer.connection, gone);
+            }
+        }
+    }
+
+    void Session::send(const Delay& delay) {
+        for (const Peer& peer : peers) {
+            if (peer.port >= 0) {
+                send_to(peer.connection, delay);
+            }
+        }
+    }
+
     void Session::leave(Reason reason) {
+        // The goodbyes first, then a moment for everything sent to arrive, as on a lossy network some of it is
+        // still being resent: the program quitting would drop what isn't acknowledged yet (a quitting player's
+        // last inputs and goodbye among it), and the others would wait for the connection to time out.
+        for (const Peer& peer : peers) {
+            send_to(peer.connection, Bye{ reason });
+        }
+        flush();
         while (!peers.empty()) {
-            drop(peers.back(), reason, nullptr);
+            SteamNetworkingSockets()->CloseConnection(peers.back().connection, k_ESteamNetConnectionEnd_App_Min + (int)reason,
+                describe(reason), true);
+            peers.pop_back();
         }
         // The listen socket stays open (nobody more is let in) until the session goes: closing it closes
         // every connection accepted on it at once, goodbyes not yet sent and all.

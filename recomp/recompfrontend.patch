@@ -264,6 +264,18 @@ index 30c463b..986bb50 100644
      bool get_cursor_visible();
      void set_cursor_visible(bool visible);
      void update_supported_options();
+diff --git a/recompui/include/recompui/renderer.h b/recompui/include/recompui/renderer.h
+index 33f79ab..0a3ae42 100644
+--- a/recompui/include/recompui/renderer.h
++++ b/recompui/include/recompui/renderer.h
+@@ -29,6 +29,7 @@ namespace recompui {
+             void send_dl(const OSTask *task) override;
+             void send_dummy_workload(uint32_t fb_address) override;
+             void update_screen() override;
++            void present_again() override;
+             void shutdown() override;
+             uint32_t get_display_framerate() const override;
+             float get_resolution_scale() const override;
 diff --git a/recompui/src/base/ui_state.cpp b/recompui/src/base/ui_state.cpp
 index 277a421..549dc29 100644
 --- a/recompui/src/base/ui_state.cpp
@@ -747,3 +759,18 @@ index 2c5dc52..9b175f4 100644
      set_as_navigation_container(NavigationType::Horizontal);
  }
  
+diff --git a/recompui/src/renderer/rt64_render_context.cpp b/recompui/src/renderer/rt64_render_context.cpp
+index a7954c7..74c3683 100644
+--- a/recompui/src/renderer/rt64_render_context.cpp
++++ b/recompui/src/renderer/rt64_render_context.cpp
+@@ -360,6 +360,10 @@ void renderer::RT64Context::update_screen() {
+     app->updateScreen();
+ }
+ 
++void renderer::RT64Context::present_again() {
++    app->presentAgain();
++}
++
+ void renderer::RT64Context::shutdown() {
+     if (app != nullptr) {
+         app->end();

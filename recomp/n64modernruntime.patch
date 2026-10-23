@@ -861,6 +861,19 @@ index 1dab1b8..22f09df 100644
      }
  }
  
+diff --git a/ultramodern/include/ultramodern/renderer_context.hpp b/ultramodern/include/ultramodern/renderer_context.hpp
+index d60c4ec..6069a4c 100644
+--- a/ultramodern/include/ultramodern/renderer_context.hpp
++++ b/ultramodern/include/ultramodern/renderer_context.hpp
+@@ -86,6 +86,8 @@ namespace ultramodern {
+                 virtual void send_dl(const OSTask* task) = 0;
+                 virtual void send_dummy_workload(uint32_t fb_address) = 0;
+                 virtual void update_screen() = 0;
++                // Presents the last frame again, while the game gives none (the timeline waits).
++                virtual void present_again() {}
+                 virtual void shutdown() = 0;
+                 virtual uint32_t get_display_framerate() const = 0;
+                 virtual float get_resolution_scale() const = 0;
 diff --git a/ultramodern/include/ultramodern/save_states.hpp b/ultramodern/include/ultramodern/save_states.hpp
 new file mode 100644
 index 0000000..a653fe4
@@ -1070,10 +1083,10 @@ index 0000000..a653fe4
 +#endif
 diff --git a/ultramodern/include/ultramodern/timeline.hpp b/ultramodern/include/ultramodern/timeline.hpp
 new file mode 100644
-index 0000000..c888735
+index 0000000..3ae1bdd
 --- /dev/null
 +++ b/ultramodern/include/ultramodern/timeline.hpp
-@@ -0,0 +1,57 @@
+@@ -0,0 +1,60 @@
 +#ifndef __ULTRAMODERN_TIMELINE_HPP__
 +#define __ULTRAMODERN_TIMELINE_HPP__
 +
@@ -1095,6 +1108,9 @@ index 0000000..c888735
 +        // real time to reach each event (headless replays).
 +        void enable(bool fast);
 +        bool enabled();
++        // While on, the timeline doesn't wait for real time either, as `fast`: a game that fell behind (netplay,
++        // behind the other players) catches up. Once off, it's paced again from where it is (any game thread).
++        void set_catching_up(bool on);
 +        // The time of the last delivery (ticks): the time on the game's side between delivery points, as
 +        // events have reached the game. Unlike the game's clock, reading it doesn't move it. On a game
 +        // thread.
@@ -1166,7 +1182,7 @@ index 46aea61..17be6dd 100644
  bool is_entrypoint_thread();
  bool is_game_thread();
 diff --git a/ultramodern/src/events.cpp b/ultramodern/src/events.cpp
-index 17d7a47..97d04ea 100644
+index 17d7a47..f36eb4f 100644
 --- a/ultramodern/src/events.cpp
 +++ b/ultramodern/src/events.cpp
 @@ -17,6 +17,8 @@
@@ -1178,7 +1194,19 @@ index 17d7a47..97d04ea 100644
  
  static ultramodern::events::callbacks_t events_callbacks{};
  
-@@ -184,6 +186,87 @@ extern moodycamel::LightweightSemaphore graphics_shutdown_ready;
+@@ -39,7 +41,10 @@ struct DummyWorkloadAction {
+     int32_t fb_address;
+ };
+ 
+-using Action = std::variant<SpTaskAction, ScreenUpdateAction, UpdateConfigAction, DummyWorkloadAction>;
++// The last frame shown again (the timeline has stopped).
++struct PresentAgainAction {};
++
++using Action = std::variant<SpTaskAction, ScreenUpdateAction, UpdateConfigAction, DummyWorkloadAction, PresentAgainAction>;
+ 
+ struct ViState {
+     const OSViMode* mode = nullptr;
+@@ -184,6 +189,92 @@ extern moodycamel::LightweightSemaphore graphics_shutdown_ready;
  
  void set_dummy_vi(bool odd);
  
@@ -1188,6 +1216,10 @@ index 17d7a47..97d04ea 100644
 +// Deterministic mode (timeline.hpp): set once the VI thread has stopped for good, and the graphics
 +// tasks submitted and finished (for DP done, which the timeline delivers).
 +static std::atomic_bool vi_thread_stopped = false;
++// When the timeline last gave a VI (steady clock, ns), for the VI thread to see it has stopped, and whether a
++// PresentAgainAction is queued (one at a time: a slow present mustn't pile them up).
++static std::atomic<int64_t> last_timeline_vi = 0;
++static std::atomic_bool present_again_queued = false;
 +static std::atomic<uint64_t> gfx_tasks_submitted = 0;
 +static std::atomic<uint64_t> gfx_tasks_finished = 0;
 +static uint64_t gfx_tasks_delivered = 0;
@@ -1217,6 +1249,7 @@ index 17d7a47..97d04ea 100644
 +    if (exited) {
 +        return;
 +    }
++    last_timeline_vi = std::chrono::steady_clock::now().time_since_epoch().count();
 +    {
 +        std::lock_guard lock{ events_context.message_mutex };
 +        events_context.action_queue.enqueue(ScreenUpdateAction{ events_context.vi.regs });
@@ -1266,7 +1299,7 @@ index 17d7a47..97d04ea 100644
  void vi_thread_func() {
      ultramodern::set_native_thread_name("VI Thread");
      // This thread should be prioritized over every other thread in the application, as it's what allows
-@@ -191,8 +274,6 @@ void vi_thread_func() {
+@@ -191,8 +282,6 @@ void vi_thread_func() {
      ultramodern::set_native_thread_priority(ultramodern::ThreadPriority::Critical);
      using namespace std::chrono_literals;
  
@@ -1275,20 +1308,30 @@ index 17d7a47..97d04ea 100644
      while (!exited) {
          // Determine the next VI time (more accurate than adding 16ms each VI interrupt)
          auto next = ultramodern::get_start() + (total_vis * 1000000us) / (60 * ultramodern::get_speed_multiplier());
-@@ -210,6 +291,12 @@ void vi_thread_func() {
+@@ -210,6 +299,22 @@ void vi_thread_func() {
              next = std::chrono::high_resolution_clock::now();
          }
          ultramodern::sleep_until(next);
-+        // In deterministic mode the timeline has the VIs.
++        // In deterministic mode the timeline has the VIs. While it gives none for a moment (the game waits: a
++        // netplay read waiting for the others), the last frame is shown again every so often, so what the host
++        // draws over the game (its UI, its menus) still changes. Nothing of the game's is drawn anew.
 +        if (ultramodern::timeline::enabled()) {
 +            vi_thread_stopped = true;
++            static int64_t last_again = 0;
++            const int64_t now_ns = std::chrono::steady_clock::now().time_since_epoch().count();
++            const int64_t last_vi = last_timeline_vi.load();
++            if (ultramodern::is_game_started() && last_vi != 0 && now_ns - last_vi > 100'000'000 &&
++                now_ns - last_again > 50'000'000 && !exited && !present_again_queued.exchange(true)) {
++                events_context.action_queue.enqueue(PresentAgainAction{});
++                last_again = now_ns;
++            }
 +            ultramodern::sleep_milliseconds(16);
 +            continue;
 +        }
          auto time_now = ultramodern::time_since_start();
          // Calculate how many VIs have passed
          uint64_t new_total_vis = (time_now * (60 * ultramodern::get_speed_multiplier()) / 1000ms) + 1;
-@@ -295,6 +382,7 @@ void task_thread_func(uint8_t* rdram, moodycamel::LightweightSemaphore* thread_r
+@@ -295,6 +400,7 @@ void task_thread_func(uint8_t* rdram, moodycamel::LightweightSemaphore* thread_r
  
          // Tell the game that the RSP has completed
          sp_complete();
@@ -1296,7 +1339,7 @@ index 17d7a47..97d04ea 100644
      }
  }
  
-@@ -364,11 +452,16 @@ void gfx_thread_func(uint8_t* rdram, moodycamel::LightweightSemaphore* thread_re
+@@ -364,11 +470,16 @@ void gfx_thread_func(uint8_t* rdram, moodycamel::LightweightSemaphore* thread_re
          if (events_context.action_queue.wait_dequeue_timed(action, 1ms)) {
              // Determine the action type and act on it
              if (const auto* task_action = std::get_if<SpTaskAction>(&action)) {
@@ -1314,7 +1357,7 @@ index 17d7a47..97d04ea 100644
                  ultramodern::measure_input_latency();
  
                  PTR(u64) displaylist = task_action->task.t.data_ptr;
-@@ -378,7 +471,14 @@ void gfx_thread_func(uint8_t* rdram, moodycamel::LightweightSemaphore* thread_re
+@@ -378,7 +489,14 @@ void gfx_thread_func(uint8_t* rdram, moodycamel::LightweightSemaphore* thread_re
                  renderer_context->send_dl(&task_action->task);
                  [[maybe_unused]] auto renderer_end = std::chrono::high_resolution_clock::now();
  
@@ -1330,7 +1373,18 @@ index 17d7a47..97d04ea 100644
                  // TODO hook the parsed event up to the actual parsing point when a callback is added to RT64.
                  ultramodern::extensions::on_displaylist_parsed(displaylist);
                  ultramodern::extensions::on_displaylist_completed(displaylist);
-@@ -565,6 +665,29 @@ extern "C" PTR(void) osViGetCurrentFramebuffer() {
+@@ -400,6 +518,10 @@ void gfx_thread_func(uint8_t* rdram, moodycamel::LightweightSemaphore* thread_re
+             else if (const auto* dummy_workload_action = std::get_if<DummyWorkloadAction>(&action)) {
+                 renderer_context->send_dummy_workload(dummy_workload_action->fb_address);
+             }
++            else if (std::holds_alternative<PresentAgainAction>(action)) {
++                renderer_context->present_again();
++                present_again_queued = false;
++            }
+         }
+     }
+ 
+@@ -565,6 +687,29 @@ extern "C" PTR(void) osViGetCurrentFramebuffer() {
  void ultramodern::submit_rsp_task(RDRAM_ARG PTR(OSTask) task_) {
      OSTask* task = TO_PTR(OSTask, task_);
  
@@ -1360,7 +1414,7 @@ index 17d7a47..97d04ea 100644
      // Send gfx tasks to the graphics action queue
      if (task->t.type == M_GFXTASK) {
          events_context.action_queue.enqueue(SpTaskAction{ *task });
-@@ -575,6 +698,57 @@ void ultramodern::submit_rsp_task(RDRAM_ARG PTR(OSTask) task_) {
+@@ -575,6 +720,57 @@ void ultramodern::submit_rsp_task(RDRAM_ARG PTR(OSTask) task_) {
      }
  }
  
@@ -2004,10 +2058,10 @@ index 6e3ed18..221ad3d 100644
  
 diff --git a/ultramodern/src/timeline.cpp b/ultramodern/src/timeline.cpp
 new file mode 100644
-index 0000000..3d6d278
+index 0000000..6b467dd
 --- /dev/null
 +++ b/ultramodern/src/timeline.cpp
-@@ -0,0 +1,208 @@
+@@ -0,0 +1,223 @@
 +#include <algorithm>
 +#include <atomic>
 +#include <chrono>
@@ -2032,6 +2086,10 @@ index 0000000..3d6d278
 +
 +    std::atomic_bool deterministic = false;
 +    bool fast = false;
++    std::atomic_bool catching_up = false;
++    // Set as catching up stops, for pace: from then it paces from where the game is, not from where it was
++    // before (the time it gained would be slept away, and the others ahead again).
++    std::atomic_bool pace_from_now = false;
 +    // The time of the last delivery, and the next VI's number (VI k is at k × ticks_per_vi).
 +    uint64_t now = 0;
 +    uint64_t next_vi = 1;
@@ -2083,11 +2141,14 @@ index 0000000..3d6d278
 +    // Waits for real time to reach virtual time `ticks`.
 +    void pace(uint64_t ticks) {
 +        using namespace std::chrono_literals;
-+        if (fast) {
++        if (fast || catching_up.load(std::memory_order_relaxed)) {
 +            return;
 +        }
-+        const auto target = real_start + ticks_to_duration(ticks);
 +        const auto real_now = std::chrono::high_resolution_clock::now();
++        if (pace_from_now.exchange(false)) {
++            real_start = real_now - ticks_to_duration(ticks);
++        }
++        const auto target = real_start + ticks_to_duration(ticks);
 +        if (real_now < target) {
 +            ultramodern::sleep_until(target);
 +        }
@@ -2105,6 +2166,14 @@ index 0000000..3d6d278
 +    ultramodern::timeline_parts::clock_enable();
 +    ultramodern::timeline_parts::vi_take_over();
 +    real_start = std::chrono::high_resolution_clock::now();
++}
++
++void ultramodern::timeline::set_catching_up(bool on) {
++    // Paced again from where the game is (from any thread: pace, on the game's, moves real_start).
++    if (!on && catching_up.exchange(false)) {
++        pace_from_now = true;
++    }
++    catching_up = on;
 +}
 +
 +bool ultramodern::timeline::enabled() {
