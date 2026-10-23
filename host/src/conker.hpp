@@ -280,6 +280,8 @@ namespace conker {
         // The Right Stick: Free Camera setting (issue #65), in single player: whether the right stick
         // turns the third-person camera (mouse_camera.cpp) instead of pressing the C-buttons.
         bool stick_free_camera();
+        // Sets Aiming: Swap Sticks, for the controller presets that go with it (conker_config.cpp).
+        void set_swap_sticks(bool on);
         // Aiming: Swap Sticks (issue #84): whether a player (0 to 3) is aiming now (either aiming mode
         // ran for their camera in the last few frames) with the setting on, so their controller's sticks
         // are swapped (frontend.cpp): the right stick aims and the left moves. Not with recompinput's own

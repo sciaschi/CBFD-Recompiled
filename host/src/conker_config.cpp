@@ -152,6 +152,60 @@ namespace {
         set_game_input_description(GameInput::DPAD_LEFT, dpad);
         set_game_input_description(GameInput::DPAD_RIGHT, dpad);
     }
+
+    // The Controls tab's presets (issue #149), each the defaults (RecompFrontend's input_mapping.cpp: Standard) with
+    // its changes on top. The controller's set Aiming: Swap Sticks too, which Modern plays with.
+    void add_control_presets() {
+        using recompinput::GameInput;
+        using recompinput::InputDevice;
+        using recompinput::InputField;
+        auto button = [](SDL_GameControllerButton b) { return InputField::controller_digital(b); };
+        auto axis = [](SDL_GameControllerAxis a, bool positive) { return InputField::controller_analog(a, positive); };
+        auto key = [](SDL_Scancode k) { return InputField::keyboard(k); };
+
+        recompinput::add_input_preset({ "Standard", InputDevice::Controller, {}, [] {
+            conker::look_aim::set_swap_sticks(false);
+        } });
+        // A modern third-person shooter's: LT aims (R), RT fires (Z), the right stick aims while aiming.
+        recompinput::add_input_preset({ "Modern", InputDevice::Controller, {
+            { GameInput::R, { button(SDL_CONTROLLER_BUTTON_RIGHTSHOULDER), axis(SDL_CONTROLLER_AXIS_TRIGGERLEFT, true) } },
+            { GameInput::Z, { axis(SDL_CONTROLLER_AXIS_TRIGGERRIGHT, true) } },
+        }, [] {
+            conker::look_aim::set_swap_sticks(true);
+        } });
+        // The defaults before issue #149: the face buttons where an N64 controller has them (B on X, the C-buttons on
+        // Y, B, RB and the right stick's click), R on RT and Z on LT.
+        recompinput::add_input_preset({ "Old Skool", InputDevice::Controller, {
+            { GameInput::B, { button(recompinput::SDL_CONTROLLER_BUTTON_WEST) } },
+            { GameInput::R, { axis(SDL_CONTROLLER_AXIS_TRIGGERRIGHT, true) } },
+            { GameInput::Z, { axis(SDL_CONTROLLER_AXIS_TRIGGERLEFT, true) } },
+            { GameInput::C_LEFT, { axis(SDL_CONTROLLER_AXIS_RIGHTX, false), button(recompinput::SDL_CONTROLLER_BUTTON_NORTH) } },
+            { GameInput::C_RIGHT, { axis(SDL_CONTROLLER_AXIS_RIGHTX, true), button(recompinput::SDL_CONTROLLER_BUTTON_EAST) } },
+            { GameInput::C_UP, { axis(SDL_CONTROLLER_AXIS_RIGHTY, false), button(SDL_CONTROLLER_BUTTON_RIGHTSTICK) } },
+            { GameInput::C_DOWN, { axis(SDL_CONTROLLER_AXIS_RIGHTY, true), button(SDL_CONTROLLER_BUTTON_RIGHTSHOULDER) } },
+            { GameInput::BACK_MENU, { button(recompinput::SDL_CONTROLLER_BUTTON_WEST) } },
+        }, [] {
+            conker::look_aim::set_swap_sticks(false);
+        } });
+
+        recompinput::add_input_preset({ "Standard", InputDevice::Keyboard, {}, nullptr });
+        // The keyboard's defaults before issue #149.
+        recompinput::add_input_preset({ "Classic", InputDevice::Keyboard, {
+            { GameInput::B, { key(SDL_SCANCODE_LSHIFT) } },
+            { GameInput::L, { key(SDL_SCANCODE_E) } },
+            { GameInput::R, { key(SDL_SCANCODE_R) } },
+            { GameInput::Z, { key(SDL_SCANCODE_Q) } },
+            { GameInput::START, { key(SDL_SCANCODE_RETURN) } },
+            { GameInput::C_LEFT, { key(SDL_SCANCODE_LEFT) } },
+            { GameInput::C_RIGHT, { key(SDL_SCANCODE_RIGHT) } },
+            { GameInput::C_UP, { key(SDL_SCANCODE_UP) } },
+            { GameInput::C_DOWN, { key(SDL_SCANCODE_DOWN) } },
+            { GameInput::DPAD_LEFT, { key(SDL_SCANCODE_J) } },
+            { GameInput::DPAD_RIGHT, { key(SDL_SCANCODE_L) } },
+            { GameInput::DPAD_UP, { key(SDL_SCANCODE_I) } },
+            { GameInput::DPAD_DOWN, { key(SDL_SCANCODE_K) } },
+        }, nullptr });
+    }
 }
 
 void conker::init_config() {
@@ -198,6 +252,7 @@ void conker::init_config() {
     conker::texture_packs::add_options(graphics_config);
 
     set_control_descriptions();
+    add_control_presets();
     recompui::config::create_controls_tab();
 
     conker::sound_volumes::add_options(recompui::config::create_sound_tab());
