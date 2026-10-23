@@ -147,8 +147,10 @@ namespace {
         set_game_input_description(GameInput::C_LEFT, "Rotates the camera.");
         set_game_input_description(GameInput::C_RIGHT, "Rotates the camera.");
         const char* dpad = "Unused in the main game. Mods may use it.";
-        set_game_input_description(GameInput::DPAD_UP, dpad);
-        set_game_input_description(GameInput::DPAD_DOWN, dpad);
+        set_game_input_description(GameInput::DPAD_UP, "Zooms the sniper scope in, with Aiming: Swap Sticks on (the stick walks then). "
+            "Otherwise unused in the main game; mods may use it.");
+        set_game_input_description(GameInput::DPAD_DOWN, "Zooms the sniper scope out, with Aiming: Swap Sticks on (the stick walks then). "
+            "Otherwise unused in the main game; mods may use it.");
         set_game_input_description(GameInput::DPAD_LEFT, dpad);
         set_game_input_description(GameInput::DPAD_RIGHT, dpad);
     }

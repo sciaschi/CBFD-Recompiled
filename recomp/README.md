@@ -651,6 +651,17 @@ third-person shooter:
 - With the shotgun, R alone shows the laser sight and the gun-up walk, as R and
   Z do: +0x8A of +0x31C |= 0x20, D_800CC2B0 = 1, +0x1B4 |= 4, and the walk 0x224
   played as 0x31B (`conker_shotgun_laser`, `conker_shotgun_laser_walk`).
+- With the sniper scope he walks any way, and the D-pad zooms. Scoped (state
+  0x80), the scope's camera (`func_15126378`) zooms with C-Up and C-Down, and
+  `func_1504CB98` walks him by the C-buttons through its table of 16 directions
+  (`D_8009917C`) but masks them to C-Left and C-Right (0x1504DD18): strafing only.
+  With Swap Sticks on, scoped, all four go through (`conker_scope_walk`), and the
+  zoom goes by D-pad Up and Down instead (`conker_scope_zoom`, at 0x15127054).
+  Both read only the game's buttons, and in a netplay match each player's own
+  Swap Sticks (their Controls, by their character's object index, the first four
+  objects being the players). D-pad Up and Down default to I and K, and
+  to the mouse wheel: RecompFrontend binds the wheel as two more mouse inputs
+  (Wheel Up, Wheel Down, ids 33 and 34), each notch held 100 ms with a gap.
 
 Aiming: Lock-On (on by default, as the original) can turn off the game's lock-on:
 `func_15063A38` turns the aim by the stick, or, while an enemy is there to lock on

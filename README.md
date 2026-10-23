@@ -40,7 +40,8 @@ yourself instead, read on.
   stays out of walls, camera turning speed and inversion, and a Field of View
   setting.
 - An aiming **Reticle**, a green ring like Live & Reloaded's, and **Swap Sticks**
-  and **Lock-On** options for aiming.
+  and **Lock-On** options for aiming. With Swap Sticks, Conker walks while aiming,
+  the sniper scope included (zooming with the D-pad or the mouse wheel).
 - Full audio: music, sound effects and the voice acting, each with a volume of its
   own (Music, Sound Effects and Speech, under the Main Volume).
 - Saving (EEPROM), stored per user.
