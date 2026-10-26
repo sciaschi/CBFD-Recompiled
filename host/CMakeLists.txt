@@ -113,6 +113,7 @@ add_executable(ConkerRecomp
     src/look_aim.cpp
     src/mouse_camera.cpp
     src/sound_volumes.cpp
+    src/cheat_codes.cpp
     # The audio microcode, recompiled by RSPRecomp (recomp/audio_ucode.toml, run by recomp/recompile.py).
     "${REPO_ROOT}/RecompiledFuncs/rsp/audio_ucode.cpp"
 )

@@ -263,6 +263,10 @@ the settings' Quit prompt: the program restarts at the launcher.
   [docs/save-states.md](docs/save-states.md). **Save State Notifications** on the
   General tab turns off the line in the corner saying a state was saved or loaded,
   or another slot picked (one saying it couldn't be still shows).
+- **Remember Cheat Codes** on the General tab keeps the codes entered in the
+  game's Cheats menu on every time you play, instead of typing them in again
+  after the game is closed (the original game forgets them). Turning it off
+  forgets them. It's off in netplay matches.
 - Default keyboard controls: move with WASD, A = Space, B = Left Shift,
   Z = Q, L = E, R = R, Start = Enter, C buttons = arrow keys, D-pad = IJKL.
   Everything can be remapped in Controls.

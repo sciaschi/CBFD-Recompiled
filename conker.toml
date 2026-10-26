@@ -862,6 +862,13 @@ func = "func_151F2E88"
 before_vram = 0x151F36E4
 text = "{ extern int32_t conker_stream_volume(uint8_t*, int32_t); ctx->r14 = conker_stream_volume(rdram, (int32_t)ctx->r14); }"
 
+# Remember Cheat Codes (issue #166): func_151EEFF0 has just cleared the cheats' bits (D_800E9D00) as the game
+# boots, and the codes kept are put back (host/src/cheat_codes.cpp).
+[[patches.hook]]
+func = "func_151EEFF0"
+before_vram = 0x151EEFF8
+text = "{ extern void conker_cheat_codes_boot(uint8_t*, recomp_context*); conker_cheat_codes_boot(rdram, ctx); }"
+
 # Sound: when the Music or Sound Effects volume changes, the playing voices are set to it as the
 # synthesizer starts its next audio frame (host/src/sound_volumes.cpp).
 [[patches.hook]]

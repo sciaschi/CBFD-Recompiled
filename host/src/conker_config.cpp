@@ -177,6 +177,7 @@ void conker::init_config() {
     conker::notices::add_options(general_config);
     conker::local_achievements::add_options(general_config);
     conker::save_states::add_options(general_config);
+    conker::cheat_codes::add_options(general_config);
     conker::texture_packs::add_notification_options(general_config);
     {
         static const std::vector<recomp::config::ConfigOptionEnumOption> choices = {
