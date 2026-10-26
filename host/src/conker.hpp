@@ -86,6 +86,9 @@ namespace conker {
         // A hash of the mods on but texture packs, in load order: each one's id, version, file and saved
         // settings (0 for none), for netplay's handshake: everyone in a match needs the same.
         uint64_t mods_hash();
+        // The mods on but texture packs, in load order, for the player: "Name 1.2.0, Other 0.3.1" (empty for
+        // none).
+        std::string mods_text();
 #else
         inline bool active() { return false; }
 #endif
@@ -396,13 +399,20 @@ namespace conker {
         void open();
         // On the main thread (update_gfx): says when a match is over.
         void update();
+        // The Esc menu's Netplay tab (conker_config.cpp): during a match, its players, with Kick (the host's)
+        // and Block, and Leave match.
+        void add_tab();
     }
 
     // netplay/status.cpp: the match's status on screen: waiting for a player, a player leaving, and with
-    // General: Netplay Details, the input delay and each player's round trip in a corner.
+    // the Netplay tab's Netplay Details, the input delay and each player's round trip in a corner.
     namespace netplay_status {
-        // On the General tab (conker_config.cpp): Netplay Details.
+        // Netplay Details, kept with the General tab's options (conker_config.cpp) but not shown there: the Netplay tab
+        // (menu.cpp) sets it, beside the match, with details_wanted() and set_details_wanted() (saved at once), with details_description.
         void add_options(recomp::config::Config& config);
+        bool details_wanted();
+        void set_details_wanted(bool on);
+        extern const char* const details_description;
         // From the launcher's init (frontend.cpp): recompui's UI exists now.
         void on_ui_ready();
         // On the main thread (update_gfx).
@@ -423,6 +433,13 @@ namespace conker {
 
     // notices.cpp: a line in the top-left corner for a few seconds, one at a time (an unlock, a save state's
     // "State saved"...).
+    namespace log_file {
+        // From then on, stdout and stderr go to `folder`/conker.log, or else `otherwise`/conker.log (log_file.cpp):
+        // for a game whose output would go nowhere.
+        void start(const std::filesystem::path& folder, const std::filesystem::path& otherwise);
+        // As the frontend updates: a log past its most stops there.
+        void check();
+    }
     namespace notices {
         // From any thread. With replace, it's shown at once in place of what's shown (and of an earlier one to
         // replace), as a save state's slot is as F6 is pressed again and again.
@@ -472,6 +489,8 @@ namespace conker {
         void save();
         void load();
         void next_slot();
+        // As the program ends: the states still being written are (5 s at most).
+        void wait_for_writes();
         // On the General tab (conker_config.cpp): Save State Notifications (issue #133).
         void add_options(recomp::config::Config& config);
     }

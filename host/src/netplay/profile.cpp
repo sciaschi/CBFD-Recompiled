@@ -20,8 +20,9 @@
 //   Save states (F5, F7): off.
 //   Mods: none, in netplay matches, recordings and replays (check_mods; lockstep::begin): a mod is native
 //     code the other players would have to trust, and a recording doesn't say which were on. The handshake
-//     still carries mods_hash (each mod on, its file and its settings), so a player with mods on is refused
-//     by the host. Texture packs only change the picture, so they're left out of both and can be on.
+//     still carries mods_hash (each mod on, its version, its file and its settings), so a player with mods
+//     on is refused by the host. Texture packs only change the picture, so they're left out of both and
+//     can be on.
 //   The renderer: RT64 renders nothing back into game memory (its Render to RAM), as headless has no
 //     renderer to: see tools/netplay/README.md for what the game then reads instead.
 //
@@ -159,6 +160,14 @@ uint64_t conker::netplay_profile::mods_hash() {
     std::printf("\n");
     const uint64_t hash = XXH3_64bits_digest(&state);
     return hash == 0 ? 1 : hash;
+}
+
+std::string conker::netplay_profile::mods_text() {
+    std::string text;
+    for (const recomp::mods::ModDetails& mod : game_mods()) {
+        text += (text.empty() ? "" : ", ") + mod.display_name + " " + mod.version.to_string();
+    }
+    return text;
 }
 
 bool conker::netplay_profile::check_mods() {

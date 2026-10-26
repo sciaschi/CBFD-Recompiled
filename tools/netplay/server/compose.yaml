@@ -1,0 +1,243 @@
+# Netplay's servers: the signalling server (rooms and room codes; players find each other's way through
+# it), coturn (the TURN relay, so players don't see each other's addresses) and net (this machine's network
+# for the relay). See README.md.
+#
+#   cp .env.example .env    # then set PUBLIC_HOST (or PUBLIC_IP) and TURN_SECRET
+#   docker compose up -d
+#
+# This file and .env are all a host needs: the server's image is published by the netplay-server workflow.
+# To build it from this repository instead, add compose.build.yaml:
+#   docker compose -f compose.yaml -f compose.build.yaml up -d --build
+#
+# All use the host's network: coturn relays on a range of UDP ports, which Docker's port mapping handles
+# badly. Open in the firewall (or forward to this machine, behind a router): UDP 27100 (signalling), UDP
+# 3478 (TURN), UDP 49160-49659 (relays).
+#
+# The relay has to tell players its public IP address (the TURN protocol carries an address, not a name).
+# Each container takes PUBLIC_IP if it's set, or else looks PUBLIC_HOST up as it starts: after the address
+# changes, `docker compose restart`.
+
+services:
+  signal:
+    image: ${IMAGE:-ghcr.io/sciaschi/conker-netplay-server:latest}
+    network_mode: host
+    restart: unless-stopped
+    # It hands each player TURN credentials of their own, made from the secret it shares with coturn, and
+    # reads coturn's metrics (on this machine only) for how many relays are open. With STATUS_PORT, it serves
+    # its status on that TCP port (README.md: The status page), whose numbers it keeps in the data volume (or
+    # DATA_DIR) so they count on across restarts and updates.
+    environment:
+      TURN_SECRET: ${TURN_SECRET:?set TURN_SECRET in .env}
+      PUBLIC_IP: ${PUBLIC_IP:-}
+      PUBLIC_HOST: ${PUBLIC_HOST:-}
+      STATUS_PORT: ${STATUS_PORT:-}
+      STATUS_ADDRESS: ${STATUS_ADDRESS:-0.0.0.0}
+      TURN_METRICS_PORT: ${TURN_METRICS_PORT:-9641}
+    volumes:
+      - ${DATA_DIR:-data}:/var/lib/conker-netplay
+    entrypoint:
+      - sh
+      - -c
+      - |
+        ip=$${PUBLIC_IP:-$$(getent ahostsv4 "$$PUBLIC_HOST" | awk 'NR == 1 { print $$1 }')}
+        [ -n "$$ip" ] || { echo "set PUBLIC_IP in .env, or PUBLIC_HOST to a name that resolves" >&2; exit 1; }
+        echo "public address $$ip"
+        exec netplay_server "$$@" --turn "$$ip:3478" --turn-metrics "127.0.0.1:$$TURN_METRICS_PORT" --state /var/lib/conker-netplay/state \
+            $${STATUS_PORT:+--status "$$STATUS_ADDRESS:$$STATUS_PORT"}
+      - sh
+    command: ["--port", "${SIGNAL_PORT:-27100}", "--max-per-address", "${MAX_PER_ADDRESS:-8}", "--turn-hours", "${TURN_HOURS:-12}"]
+
+  # This machine's network for the relay, as root with network-admin rights only (the server's image,
+  # which has nftables and iproute2), in nftables tables of its own (IPv4 family, for older kernels too):
+  # - The guard (conker_netplay_guard), always: coturn (user nobody, pinned below) may relay to the public
+  #   address (this machine's) only on the relay ports (other players' relays), never its other services.
+  #   Its other addresses are private ones, which coturn denies (a second public one isn't guarded). It's
+  #   replaced in one step as net starts, and left in place as it stops, so it never lapses while coturn
+  #   runs (README.md says how to remove it).
+  # - Behind NAT (at home behind a router, or a cloud machine whose public address isn't on it): the
+  #   public address on lo, for coturn's relays, so relay to relay goes straight between public addresses
+  #   (coturn's own --external-ip would relay between LAN addresses, which players don't recognise); and
+  #   translation (conker_netplay_nat) between it and this machine's LAN address (HOME_LAN_IP, or the one
+  #   its default route goes from), which the router forwards to: in, to the public one; out, from the LAN
+  #   one. Both go as it stops.
+  # coturn starts once it's ready (a marker in memory, so never left from before a reboot), and restarts
+  # with it.
+  net:
+    image: ${IMAGE:-ghcr.io/sciaschi/conker-netplay-server:latest}
+    network_mode: host
+    restart: unless-stopped
+    user: "0:0"
+    cap_drop: [ALL]
+    cap_add: [NET_ADMIN]
+    environment:
+      PUBLIC_IP: ${PUBLIC_IP:-}
+      PUBLIC_HOST: ${PUBLIC_HOST:-}
+      HOME_LAN_IP: ${HOME_LAN_IP:-}
+    volumes:
+      - net:/run/conker-net
+    entrypoint:
+      - sh
+      - -c
+      - |
+        added=
+        cleanup() {
+            rm -f /run/conker-net/ready
+            nft delete table ip conker_netplay_nat 2> /dev/null
+            [ -z "$$added" ] || ip addr del "$$added/32" dev lo 2> /dev/null
+        }
+        trap cleanup EXIT
+        trap 'exit 0' TERM INT
+        command -v nft > /dev/null || { echo "this image has no nftables: docker compose pull" >&2; exit 1; }
+        ip=$${PUBLIC_IP:-$$(getent ahostsv4 "$$PUBLIC_HOST" | awk 'NR == 1 { print $$1 }')}
+        [ -n "$$ip" ] || { echo "set PUBLIC_IP in .env, or PUBLIC_HOST to a name that resolves" >&2; exit 1; }
+        # What a run before left (killed, or the public address changed); the guard is replaced below.
+        rm -f /run/conker-net/ready
+        nft delete table ip conker_netplay_nat 2> /dev/null
+        for old in $$(ip -4 -o addr show dev lo label lo:conker | awk '{ print $$4 }'); do ip addr del "$$old" dev lo; done
+        nat=
+        if ip -4 -o addr show | awk '{ print $$4 }' | cut -d/ -f1 | grep -Fqx "$$ip"; then
+            echo "public address $$ip is this machine's"
+        else
+            route=$$(ip -4 route get 1.1.1.1 2> /dev/null)
+            dev=$$(echo "$$route" | sed -n 's/.* dev \([^ ]*\).*/\1/p')
+            lan=$${HOME_LAN_IP:-$$(echo "$$route" | sed -n 's/.* src \([0-9.]*\).*/\1/p')}
+            [ -n "$$lan" ] || { echo "public address $$ip isn't this machine's, and it has no LAN address: set HOME_LAN_IP" >&2; exit 1; }
+            ip -4 -o addr show dev "$$dev" 2> /dev/null | grep -Fq " $$lan/" ||
+                echo "warning: $$lan isn't on $$dev, which the default route goes out of (a VPN?): replies from the relays go out that way" >&2
+            echo "behind NAT: public address $$ip on this machine for the relays, to and from $$lan (on $$dev)"
+            nat="
+        table ip conker_netplay_nat {
+            chain prerouting {
+                type nat hook prerouting priority -100; policy accept;
+                ip daddr $$lan udp dport 49160-49659 dnat to $$ip
+            }
+            chain postrouting {
+                type nat hook postrouting priority 100; policy accept;
+                ip saddr $$ip oifname != \"lo\" snat to $$lan
+            }
+        }"
+        fi
+        # The guard replaced in one transaction (made first, so the delete always has something to delete).
+        printf '%s\n' "table ip conker_netplay_guard {}
+        delete table ip conker_netplay_guard
+        table ip conker_netplay_guard {
+            chain output {
+                type filter hook output priority 0; policy accept;
+                meta skuid 65534 ip daddr $$ip udp sport 49160-49659 udp dport != 49160-49659 drop
+            }
+        }$$nat" | nft -f - || { echo "couldn't set up nftables (does this kernel have nf_tables?)" >&2; exit 1; }
+        if [ -n "$$nat" ]; then
+            ip addr add "$$ip/32" dev lo label lo:conker || exit 1
+            added=$$ip
+        fi
+        echo "$$ip" > /run/conker-net/ready
+        echo "ready: coturn's relays reach this machine only on the relay ports"
+        while :; do sleep 3600 & wait $$!; done
+      - sh
+
+  turn:
+    image: coturn/coturn:4.6.3
+    network_mode: host
+    restart: unless-stopped
+    # The user net's guard knows it by.
+    user: "65534:65534"
+    # Restarted with net (by compose), which may have been set up anew.
+    depends_on:
+      net:
+        condition: service_started
+        restart: true
+    # Only the signalling server's credentials (turn_credentials.hpp), each for a while: use-auth-secret,
+    # with the secret in a config file only coturn can read, not on its command line (which every user of
+    # the machine can see). Its relays are on the public address (net puts it on this machine behind NAT),
+    # IPv4 only.
+    environment:
+      PUBLIC_IP: ${PUBLIC_IP:-}
+      PUBLIC_HOST: ${PUBLIC_HOST:-}
+      TURN_SECRET: ${TURN_SECRET:?set TURN_SECRET in .env}
+    volumes:
+      - net:/run/conker-net:ro
+    entrypoint:
+      - sh
+      - -c
+      - |
+        ip=$${PUBLIC_IP:-$$(getent ahostsv4 "$$PUBLIC_HOST" | awk 'NR == 1 { print $$1 }')}
+        [ -n "$$ip" ] || { echo "set PUBLIC_IP in .env, or PUBLIC_HOST to a name that resolves" >&2; exit 1; }
+        echo "public address $$ip"
+        i=0
+        until [ "$$(cat /run/conker-net/ready 2> /dev/null)" = "$$ip" ]; do
+            i=$$((i + 1))
+            [ $$i -le 120 ] || { echo "net isn't ready (docker compose logs net)" >&2; exit 1; }
+            sleep 1
+        done
+        umask 077
+        config=$$(mktemp)
+        printf 'static-auth-secret=%s\n' "$$TURN_SECRET" > "$$config"
+        unset TURN_SECRET
+        exec turnserver -c "$$config" "$$@" --relay-ip="$$ip"
+      - sh
+    # No -n (it would skip the config file). use-auth-secret stays here: without the file's secret coturn
+    # then refuses everyone, rather than relaying for anyone.
+    command:
+      - --log-file=stdout
+      - --listening-port=3478
+      - --realm=${TURN_REALM:-conker}
+      - --use-auth-secret
+      - --min-port=49160
+      - --max-port=49659
+      - --fingerprint
+      - --no-cli
+      # Its metrics, for the signalling server's status: on this machine only.
+      - --prometheus
+      - --prometheus-address=127.0.0.1
+      - --prometheus-port=${TURN_METRICS_PORT:-9641}
+      - --no-tls
+      - --no-dtls
+      - --no-multicast-peers
+      # UDP only (the game's way): no TCP listener, and no TCP relay (which could open connections
+      # anywhere).
+      - --no-tcp
+      - --no-tcp-relay
+      # Inputs are small: a few KB/s each way per player. This is far more, and stops the relay being
+      # used for anything big. A player's credentials make a relay for each other player: --user-quota of
+      # them at once, so one player can't take them all.
+      - --max-bps=200000
+      - --total-quota=${TURN_TOTAL_QUOTA:-400}
+      - --user-quota=${TURN_USER_QUOTA:-32}
+      # Never relay into private, local or special networks (a TURN server can otherwise be used to reach
+      # them, cloud metadata at 169.254.169.254 among them), nor IPv6 ways back into IPv4 ones. (Not :: nor a
+      # range from it: coturn matches every IPv4 address against those. test.sh checks what's denied.)
+      - --denied-peer-ip=0.0.0.0-0.255.255.255
+      - --denied-peer-ip=10.0.0.0-10.255.255.255
+      - --denied-peer-ip=100.64.0.0-100.127.255.255
+      - --denied-peer-ip=127.0.0.0-127.255.255.255
+      - --denied-peer-ip=169.254.0.0-169.254.255.255
+      - --denied-peer-ip=172.16.0.0-172.31.255.255
+      - --denied-peer-ip=192.0.0.0-192.0.0.255
+      - --denied-peer-ip=192.0.2.0-192.0.2.255
+      - --denied-peer-ip=192.88.99.0-192.88.99.255
+      - --denied-peer-ip=192.168.0.0-192.168.255.255
+      - --denied-peer-ip=198.18.0.0-198.19.255.255
+      - --denied-peer-ip=198.51.100.0-198.51.100.255
+      - --denied-peer-ip=203.0.113.0-203.0.113.255
+      - --denied-peer-ip=224.0.0.0-255.255.255.255
+      - --denied-peer-ip=::1
+      - --denied-peer-ip=::ffff:0.0.0.0-::ffff:255.255.255.255
+      - --denied-peer-ip=64:ff9b::-64:ff9b::ffff:ffff
+      - --denied-peer-ip=64:ff9b:1::-64:ff9b:1:ffff:ffff:ffff:ffff:ffff
+      - --denied-peer-ip=100::-100::ffff:ffff:ffff:ffff
+      - --denied-peer-ip=2001::-2001:1ff:ffff:ffff:ffff:ffff:ffff:ffff
+      - --denied-peer-ip=2001:db8::-2001:db8:ffff:ffff:ffff:ffff:ffff:ffff
+      - --denied-peer-ip=2002::-2002:ffff:ffff:ffff:ffff:ffff:ffff:ffff
+      - --denied-peer-ip=fc00::-fdff:ffff:ffff:ffff:ffff:ffff:ffff:ffff
+      - --denied-peer-ip=fe80::-febf:ffff:ffff:ffff:ffff:ffff:ffff:ffff
+      - --denied-peer-ip=ff00::-ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff
+
+volumes:
+  # The signalling server's kept numbers (unless DATA_DIR is set): `docker compose down -v` deletes it.
+  data:
+  # In memory: net's marker that it's ready.
+  net:
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: size=64k

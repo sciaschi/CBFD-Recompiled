@@ -63,6 +63,8 @@ yourself instead, read on.
   other replacements.
 - Save states: save anywhere with F5 and load with F7, in nine slots
   ([how to use them, and how they work](docs/save-states.md)).
+- Netplay (built with the CMake option `CONKER_NETPLAY`, off by default): online
+  multiplayer from the launcher's **Netplay** menu. See [Netplay](#netplay).
 
 ## Status
 
@@ -79,7 +81,9 @@ The game is playable, and has been played through to the end. Known issues:
 
 If the game crashes on Windows, a report is written to `crash.log` next to the
 executable and shown in a message box. On Linux and macOS, the crash report is printed
-to the terminal. Please include it when reporting a problem.
+to the terminal, or, started from the desktop, to `conker.log` next to the game (in your user
+folder on macOS, or where the game's folder can't be written to); the run before is kept as
+`conker.prev.log`. Please include it when reporting a problem.
 
 ## What you need to build it
 
@@ -272,6 +276,29 @@ the settings' Quit prompt: the program restarts at the launcher.
   `assets/controllerdb.txt`, with the C buttons as the right stick. A controller
   SDL doesn't know can be given a mapping in the `SDL_GAMECONTROLLERCONFIG`
   environment variable, which takes precedence.
+
+## Netplay
+
+Built with `-DCONKER_NETPLAY=ON` (see [tools/netplay/README.md](tools/netplay/README.md) for what it
+needs), the launcher has a **Netplay** menu: every player runs the game on their own computer and sees
+the match on their own screen. Everyone needs the same build and the same ROM, with no mods on.
+
+- **Hosting:** by a join code (your address and a forwarded UDP port), or visible to games on the same
+  network with no code at all. With a netplay server set (Settings; there's none by default, and anyone
+  can run one: [tools/netplay/server](tools/netplay/server/README.md)), also through a room code with no
+  port to forward, a public room list and Quick Match. Matches through a server go through its relay by
+  default, so nobody sees anyone's address.
+- **The waiting room:** players mark themselves Ready and the host starts; the host can kick a player,
+  and anyone can block one. Several players can play on one computer, each with their own controller.
+- **During a match:** players can leave and come back, and new players or spectators can join a match
+  under way. If one game drifts from the host's (a desync), the host sends its game and the match goes on.
+  Each player gets their own input delay, sized for their connection; a computer that falls behind
+  catches up, and one whose inputs stop is let go of a while and comes back by itself. **Rollback** (the
+  host's choice, on by default) hides lag by predicting the others' inputs and correcting them.
+- **Screens:** by default each player sees only their own view, full screen (the host decides).
+
+Each run writes `conker.log` next to the game (in your user folder on macOS, or where the game's folder
+can't be written to), and keeps the run before as `conker.prev.log`: attach them to netplay reports.
 
 ## ROM hacks
 

@@ -96,6 +96,7 @@ endif()
 
 add_executable(ConkerRecomp
     src/main.cpp
+    src/log_file.cpp
     src/null_renderer.cpp
     src/overlays.cpp
     src/ultra_extras.cpp
@@ -209,6 +210,9 @@ if (CONKER_RT64)
     if (CONKER_NETPLAY)
         # The launcher's Netplay menu, "my view only", and the match's status on screen.
         target_sources(ConkerRecomp PRIVATE src/netplay/menu.cpp src/netplay/view.cpp src/netplay/status.cpp)
+        # Desync recovery compresses the host's game with RT64's zstd (lockstep.cpp).
+        target_link_libraries(ConkerRecomp PRIVATE libzstd_static)
+        target_include_directories(ConkerRecomp PRIVATE "${RT64_DIR}/src/contrib/zstd/lib")
     endif()
     if (WIN32)
         target_compile_definitions(ConkerRecomp PRIVATE NOMINMAX)

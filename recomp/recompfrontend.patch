@@ -386,7 +386,7 @@ index 33f79ab..0a3ae42 100644
              uint32_t get_display_framerate() const override;
              float get_resolution_scale() const override;
 diff --git a/recompui/src/base/ui_state.cpp b/recompui/src/base/ui_state.cpp
-index 277a421..549dc29 100644
+index 277a421..980291d 100644
 --- a/recompui/src/base/ui_state.cpp
 +++ b/recompui/src/base/ui_state.cpp
 @@ -35,7 +35,33 @@
@@ -423,6 +423,24 @@ index 277a421..549dc29 100644
      recompui::open_choice_prompt(
          "Are you sure you want to quit?",
          "Any progress since your last save will be lost.",
+@@ -389,6 +415,17 @@ public:
+         // }
+ 
+         document->PullToFront();
++        // A context that takes no mouse (an overlay: a counter, a notice) lets it through to what's under it: in front of
++        // a menu open as it appears, its document would take the menu's clicks.
++        if (!context.captures_mouse()) {
++            document->SetProperty(Rml::PropertyId::PointerEvents, Rml::Property(Rml::Style::PointerEvents::None));
++        }
++        // A context that takes no input (an overlay: a counter, a notice) is shown without focus, which would take the
++        // keyboard and controller from a menu open as it appears.
++        if (!context.captures_input()) {
++            document->Show(Rml::ModalFlag::None, Rml::FocusFlag::None);
++            return;
++        }
+         document->Show();
+ 
+         if (!mouse_is_active) {
 diff --git a/recompui/src/composites/ui_mod_installer.cpp b/recompui/src/composites/ui_mod_installer.cpp
 index 1f98b3c..c91df6f 100644
 --- a/recompui/src/composites/ui_mod_installer.cpp
