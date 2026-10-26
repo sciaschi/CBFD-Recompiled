@@ -188,7 +188,10 @@ namespace {
             conker::look_aim::set_swap_sticks(false);
         } });
 
-        recompinput::add_input_preset({ "Standard", InputDevice::Keyboard, {}, nullptr });
+        // With Z and R on the mouse buttons, the mouse turns the camera too (the C-buttons stay on IJKL).
+        recompinput::add_input_preset({ "Standard", InputDevice::Keyboard, {}, [] {
+            conker::look_aim::turn_on_mouse_camera();
+        } });
         // The keyboard's defaults before issue #149.
         recompinput::add_input_preset({ "Classic", InputDevice::Keyboard, {
             { GameInput::B, { key(SDL_SCANCODE_LSHIFT) } },

@@ -273,7 +273,8 @@ the settings' Quit prompt: the program restarts at the launcher.
 - **Presets and profiles** (Controls tab): **Load preset** puts a ready-made
   layout in the profile: for controllers **Standard** (the defaults), **Modern**
   (LT = R to aim, RT = Z, and Aiming: Swap Sticks on) and **Old Skool** (the
-  N64-style layout from before, B on X); for the keyboard **Standard** and
+  N64-style layout from before, B on X); for the keyboard **Standard** (which
+  also turns the mouse camera on, at Mouse: Sensitivity 50 if it was off) and
   **Classic** (the old keyboard layout). **New profile** makes your own, a copy
   of the one in use that you can name and remap; the **Profile** list at the top
   picks which one you play with, for the controller and the keyboard each.

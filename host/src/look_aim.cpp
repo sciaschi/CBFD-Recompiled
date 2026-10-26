@@ -569,6 +569,19 @@ void conker::look_aim::set_swap_sticks(bool on) {
     }
 }
 
+void conker::look_aim::turn_on_mouse_camera() {
+    const std::string& sensitivity = recompui::config::general::options::mouse_sensitivity;
+    if (recomp::config::Config* config = recompui::config::find_option_config(sensitivity)) {
+        // A sensitivity already chosen is kept: only the mouse turned off (0) is turned on, at the middle.
+        if (std::get<double>(config->get_option_value(sensitivity)) <= 0.0) {
+            config->update_option_value(sensitivity, 50.0);
+        }
+    }
+    if (recomp::config::Config* config = recompui::config::find_option_config(options::mouse_camera)) {
+        config->update_option_value(options::mouse_camera, static_cast<uint32_t>(Toggle::On));
+    }
+}
+
 // The bank robbery's slow motion leaps (issue #85): standing on a B pad, B leaps (func_15065A5C, 0x15066FC4: the bank,
 // 0x36 in D_800BE9F0, B pressed and +0x2EC of Conker's object 1), and Conker flies across the room in slow motion
 // while the stick aims a crosshair. The leap has no aiming mode or camera of its own: Conker stays in the bank's state
