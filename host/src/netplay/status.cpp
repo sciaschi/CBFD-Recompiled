@@ -3,10 +3,12 @@
 // - at the top, in the middle: "Waiting for Player 2... 4 s" once a read has waited a moment for the others
 //   (a read waits a few ms most of the time, which isn't worth a word), "Catching up..." once that has gone on
 //   a moment, and for a few seconds each, what happened: "Player 3 left.", "Player 3 stopped answering (they
-//   may have quit).", "Everyone else has left: the match goes on here."
-// - with General: Netplay Details on, in the bottom-right corner: the input delay, how far ahead of the others
+//   may have quit).", "Player 3 lost connection: the others play on.", "Everyone else has left: the match goes on
+//   here."; "Getting the host's game... 40%" while a
+//   desync is set right here (desync recovery)
+// - with Netplay Details on (the in-game menu's Netplay tab), in the bottom-right corner: the input delay (a spectator: Watching), how far ahead of the others
 //   this machine is (or behind), and each player's round trip (a joiner knows only the host's: the others'
-//   pads come through it), or that they're on this machine or left.
+//   pads come through it) and input delay, or that they're on this machine or left.
 //
 // It's drawn by recompui, as notices.cpp's lines and the FPS counter are: a context of its own that takes no
 // input and no mouse, nothing in the game's memory. It waits for the game to start and for the launcher's init
@@ -40,7 +42,7 @@ namespace {
     // How often the corner's numbers change.
     constexpr double details_every = 0.25;
 
-    // General: Netplay Details, Off or On.
+    // Netplay Details, Off or On (kept with General's options, shown on the Netplay tab).
     const std::string details_option = "netplay_details";
     enum class Details : uint32_t { Off, On };
 
@@ -157,7 +159,10 @@ namespace {
     // The banner's lines for `status` at `t`.
     std::array<std::string, 1 + most_news> banner_lines(const conker::lockstep::Status& status, double t) {
         std::array<std::string, 1 + most_news> lines;
-        if (status.playing && status.waiting_for != 0 && t - status.waiting_since >= waiting_grace) {
+        if (status.getting_state) {
+            lines[0] = "Getting the host's game... " + std::to_string((int)(status.state_progress * 100)) + "%";
+        }
+        else if (status.playing && status.waiting_for != 0 && t - status.waiting_since >= waiting_grace) {
             lines[0] = "Waiting for " + players_text(status.waiting_for) + "... " +
                 std::to_string((int)(t - status.waiting_since)) + " s";
         }
@@ -178,30 +183,51 @@ namespace {
             where = status.ahead > 0 ? frames_text(status.ahead) + " ahead"
                 : status.ahead < 0 ? frames_text(-status.ahead) + " behind" : "level with the others";
         }
-        lines[0] = "Input delay " + std::to_string(status.input_delay) + " | " + where;
+        lines[0] = (status.watching ? std::string("Watching") : "Input delay " + std::to_string(status.input_delay)) + " | " + where;
         for (int port = 0; port < status.players && port < conker::netplay::max_players; port++) {
             std::string what;
             if ((status.own_ports & (1u << port)) != 0) what = "here";
+            else if ((status.open & (1u << port)) != 0) what = "open";
+            else if ((status.lost & (1u << port)) != 0) what = "lost connection";
             else if ((status.left_silently & (1u << port)) != 0) what = "stopped answering";
             else if ((status.left & (1u << port)) != 0) what = "left";
             else if (status.round_trip_ms[port] >= 0) what = std::to_string(status.round_trip_ms[port]) + " ms";
             else what = status.hosting ? "..." : "through the host";
+            // (Each player's input delay is their own: one with a bad link has a higher one.)
+            if (((status.own_ports | status.open | status.left | status.lost) & (1u << port)) == 0) {
+                what += ", delay " + std::to_string(status.delays[port]);
+            }
             lines[1 + port] = "Player " + std::to_string(port + 1) + (port == 0 && !status.hosting ? " (host)" : "") + ": " + what;
         }
         return lines;
     }
 }
 
+const char* const conker::netplay_status::details_description =
+    "In a netplay match, shows in the bottom-right corner the input delay, how far ahead of the others (or "
+    "behind) this computer is, and each player's round trip and input delay. Waiting for a player, and a player "
+    "leaving, are shown at the top whatever this is set to.";
+
 void conker::netplay_status::add_options(recomp::config::Config& config) {
     static const std::vector<recomp::config::ConfigOptionEnumOption> choices = {
         {Details::Off, "Off", "Off"},
         {Details::On, "On", "On"},
     };
-    config.add_enum_option(details_option, "Netplay Details",
-        "In a netplay match, shows in the bottom-right corner the input delay, how far ahead of the others (or "
-        "behind) this computer is, and each player's round trip in milliseconds. Waiting for a player, and a player "
-        "leaving, are shown at the top whatever this is set to.",
-        choices, Details::Off);
+    // (Hidden: the Netplay tab shows it.)
+    config.add_enum_option(details_option, "Netplay Details", details_description, choices, Details::Off, true);
+}
+
+bool conker::netplay_status::details_wanted() {
+    return details_on();
+}
+
+void conker::netplay_status::set_details_wanted(bool on) {
+    recomp::config::Config* config = recompui::config::find_option_config(details_option);
+    if (config == nullptr) {
+        return;
+    }
+    config->set_option_value(details_option, (uint32_t)(on ? Details::On : Details::Off));
+    config->save_config();
 }
 
 void conker::netplay_status::on_ui_ready() {

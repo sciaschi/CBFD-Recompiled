@@ -889,3 +889,37 @@ text = "{ extern void conker_audio_frame(uint8_t*, recomp_context*); conker_audi
 func = "func_150198FC"
 before_vram = 0x15019B70
 text = "{ extern void conker_hud_models_to_sides(uint8_t*, recomp_context*); conker_hud_models_to_sides(rdram, ctx); }"
+
+# Multiplayer Characters: more bots in a multiplayer game (host/src/more_bots.cpp). As the game starts, its 8MB
+# layout (the heap's end) for 16 characters; the most characters in the Deathmatch and Tank bot menu ($s4, just
+# loaded from its table) and in the team games' ($s3 and $a1, just loaded from their map's record); and the rank
+# names past 12th, the HUD's (two ways) and the pause and match-end scores'.
+[[patches.hook]]
+func = "func_10003BD0"
+before_vram = 0x10003BD0
+text = "{ extern void conker_more_bots_memory(uint8_t*, recomp_context*); conker_more_bots_memory(rdram, ctx); }"
+
+[[patches.hook]]
+func = "func_151E1214"
+before_vram = 0x151E1350
+text = "{ extern void conker_more_bots_row(uint8_t*, recomp_context*); conker_more_bots_row(rdram, ctx); }"
+
+[[patches.hook]]
+func = "func_151E1744"
+before_vram = 0x151E18E4
+text = "{ extern void conker_more_bots_teams(uint8_t*, recomp_context*); conker_more_bots_teams(rdram, ctx); }"
+
+[[patches.hook]]
+func = "func_150918EC"
+before_vram = 0x1509201C
+text = "{ extern void conker_more_bots_rank_name(uint8_t*, recomp_context*); conker_more_bots_rank_name(rdram, ctx); }"
+
+[[patches.hook]]
+func = "func_150918EC"
+before_vram = 0x15092FF0
+text = "{ extern void conker_more_bots_rank_name_other(uint8_t*, recomp_context*); conker_more_bots_rank_name_other(rdram, ctx); }"
+
+[[patches.hook]]
+func = "func_151EA15C"
+before_vram = 0x151EABC0
+text = "{ extern void conker_more_bots_score_rank_name(uint8_t*, recomp_context*); conker_more_bots_score_rank_name(rdram, ctx); }"

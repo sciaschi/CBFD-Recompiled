@@ -21,6 +21,7 @@ import struct
 MAGIC = b"CBFDPADS"
 VERSION = 4
 OWN_VIEW = 1  # the header's flag
+CHARACTERS_SHIFT = 8  # the header's flags' bits 8-15: the most characters in a multiplayer game (0: the game's own)
 DEFAULT_CONTROLS = 0x0200  # the stick's Invert Y, everything else off (motion.cpp)
 START = 0x1000
 BUTTONS = [0x8000, 0x4000, 0x2000, 0x0020, 0x0010, 0x0008, 0x0004, 0x0002, 0x0001]  # A B Z L R C-pad
@@ -65,13 +66,16 @@ def main():
     print(f"{args.out}: {args.reads} reads, {args.ports} ports, seed {args.seed}" + (", with mouse and gyro" if args.mouse else ""))
 
 
-def header(ports, own_view, pairs=""):
+def header(ports, own_view, pairs="", characters=0):
     """The recording's header: magic, version, ports, the ROM's and profile's hashes (0: not checked), flags,
     and the ports shown two to a window (port numbers from 1, e.g. "12")."""
     if any(p not in "1234"[:ports] for p in pairs) or len(set(pairs)) != len(pairs) or len(pairs) % 2:
         raise SystemExit(f"view pairs {pairs!r}: an even number of different ports from 1 to {ports}")
     pair_bits = sum(1 << (int(p) - 1) for p in pairs)
-    return MAGIC + struct.pack("<IIQQII", VERSION, ports, 0, 0, OWN_VIEW if own_view else 0, pair_bits)
+    if characters not in (0, 12, 16):
+        raise SystemExit(f"characters {characters}: 0 (the game's own), 12 or 16")
+    flags = (OWN_VIEW if own_view else 0) | (characters << CHARACTERS_SHIFT)
+    return MAGIC + struct.pack("<IIQQII", VERSION, ports, 0, 0, flags, pair_bits)
 
 
 NO_MOTION = struct.pack("<hhhhbI", 0, 0, 0, 0, 0, DEFAULT_CONTROLS)

@@ -6,7 +6,12 @@
 # compilers turn the game's code into the same arithmetic (host/CMakeLists.txt keeps them from fusing
 # multiply-adds); the memory hashes the peers compare catch it if not. Without git (a source download) the
 # commit is "unknown", and only the version tells builds apart.
-# The file is rewritten only when the id changes, so nothing is rebuilt otherwise.
+# And the release's name, for players to read (the room list, a refusal): CONKER_RELEASE from the environment
+# (the release workflow sets its tag, e.g. v0.1.6-netplay.15), or else "<version>-dev-<short commit>", with
+# "-dirty" if there are changes. It isn't part of the id: a release and a local build of its commit play
+# together.
+# A release build fails if the tree has changes: an id with "-dirty-" wouldn't match another platform's.
+# The file is rewritten only when the id or the name changes, so nothing is rebuilt otherwise.
 #   cmake -DSOURCE_DIR=<repo> -DOUT=<file> -P build_id.cmake
 file(READ "${SOURCE_DIR}/host/src/main.cpp" main_source)
 string(REGEX MATCH "project_version = recomp::Version\\{ *([0-9]+), *([0-9]+), *([0-9]+)(, *\"([^\"]*)\")? *\\}" version_match "${main_source}")
@@ -21,8 +26,11 @@ execute_process(COMMAND git rev-parse HEAD
     OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
 if (failed OR commit STREQUAL "")
     set(id "${version} unknown")
+    set(release "${version}-dev")
 else()
     set(id "${version} ${commit}")
+    string(SUBSTRING "${commit}" 0 7 short_commit)
+    set(release "${version}-dev-${short_commit}")
     execute_process(COMMAND git diff HEAD --ignore-submodules=dirty
         WORKING_DIRECTORY "${SOURCE_DIR}" OUTPUT_VARIABLE changes ERROR_QUIET)
     # Files not yet added: each one's name and contents.
@@ -39,9 +47,24 @@ else()
         string(SHA256 changes_hash "${changes}")
         string(SUBSTRING "${changes_hash}" 0 16 changes_hash)
         string(APPEND id "-dirty-${changes_hash}")
+        string(APPEND release "-dirty")
+        # A release (CONKER_RELEASE set, below) is built from its commit alone: with changes, each
+        # platform's build would have its own id and refuse the others'.
+        if (DEFINED ENV{CONKER_RELEASE})
+            execute_process(COMMAND git status --short --untracked-files=all --ignore-submodules=dirty
+                WORKING_DIRECTORY "${SOURCE_DIR}" OUTPUT_VARIABLE changed ERROR_QUIET)
+            message(FATAL_ERROR "A release's tree has changes, so its build id would be its own:\n${changed}")
+        endif()
     endif()
 endif()
-set(content "// Written by host/src/netplay/build_id.cmake at each build.\nnamespace conker::netplay {\n    const char* build_id() { return \"${id}\"; }\n}\n")
+# Printable, no spaces, 1 to 40 characters (signal_packets.hpp's max_release): anything else isn't used.
+if (DEFINED ENV{CONKER_RELEASE} AND "$ENV{CONKER_RELEASE}" MATCHES "^[!-~]+$")
+    string(LENGTH "$ENV{CONKER_RELEASE}" release_length)
+    if (release_length LESS_EQUAL 40)
+        set(release "$ENV{CONKER_RELEASE}")
+    endif()
+endif()
+set(content "// Written by host/src/netplay/build_id.cmake at each build.\nnamespace conker::netplay {\n    const char* build_id() { return \"${id}\"; }\n    const char* release_name() { return \"${release}\"; }\n}\n")
 if (EXISTS "${OUT}")
     file(READ "${OUT}" old)
 endif()

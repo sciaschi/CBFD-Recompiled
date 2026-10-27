@@ -29,6 +29,19 @@ index 716d48b..2b15ac1 100644
  
  if (WIN32)
      add_compile_definitions(NOMINMAX)
+diff --git a/librecomp/include/librecomp/addresses.hpp b/librecomp/include/librecomp/addresses.hpp
+index b1b50cb..f33320a 100644
+--- a/librecomp/include/librecomp/addresses.hpp
++++ b/librecomp/include/librecomp/addresses.hpp
+@@ -10,6 +10,8 @@ namespace recomp {
+     constexpr size_t mem_size = 512ULL * 1024ULL * 1024ULL;
+     // 4GB (the full address space)
+     constexpr size_t allocation_size = 4096ULL * 1024ULL * 1024ULL;
++    // Reserved and never accessible on each side of it: a 16-bit offset's reach, rounded up to whole pages.
++    constexpr size_t rdram_guard = 64ULL * 1024ULL;
+     // We need a place in rdram to hold the PI handles, so pick an address in extended rdram
+     constexpr int32_t cart_handle = 0x80800000;
+     constexpr int32_t drive_handle = (int32_t)(cart_handle + sizeof(OSPiHandle));
 diff --git a/librecomp/include/librecomp/game.hpp b/librecomp/include/librecomp/game.hpp
 index a4cf7e8..a3af6d3 100644
 --- a/librecomp/include/librecomp/game.hpp
@@ -72,10 +85,10 @@ index 35703bd..3169003 100644
              size_t function_index;
 diff --git a/librecomp/include/librecomp/save_states.hpp b/librecomp/include/librecomp/save_states.hpp
 new file mode 100644
-index 0000000..419b079
+index 0000000..d5483be
 --- /dev/null
 +++ b/librecomp/include/librecomp/save_states.hpp
-@@ -0,0 +1,51 @@
+@@ -0,0 +1,61 @@
 +#ifndef __RECOMP_SAVE_STATES_HPP__
 +#define __RECOMP_SAVE_STATES_HPP__
 +
@@ -112,6 +125,16 @@ index 0000000..419b079
 +
 +// Checks a state, and loads it if it can be loaded now.
 +LoadResult restore(uint8_t* rdram, std::span<const uint8_t> data, std::string& error);
++
++// A state from elsewhere (a netplay host's): whether it can be loaded without reaching past the game's
++// memory, as far as its own parts go. The layout must be this one, with no more threads and timers than a game
++// has, and every thread's integer registers (and hi, lo) must hold 32-bit values sign-extended, as the game's
++// code makes them: the recompiled code adds a register to the game memory's base to load and store, so one
++// with other high bits would reach anywhere. (The game memory itself is any 8MB: the game's code reaches at
++// most 4GB and a 16-bit offset from its base with what it loads from there, and that's all reserved; the native
++// pointers OSThreads hold are only followed if they're this run's threads', ultramodern's known_context.) False,
++// with why, if not; restore still checks the rest.
++bool check_untrusted(std::span<const uint8_t> data, std::string& error);
 +
 +// Whether a state was taken by this build of the program. In this build, a state loads where each
 +// thread waits in the same native calls (its signature) and the same calls through the game's code.
@@ -261,7 +284,7 @@ index 43509ba..39b4a99 100644
      ctx->r2 = 0;
  }
 diff --git a/librecomp/src/recomp.cpp b/librecomp/src/recomp.cpp
-index 850689d..e061d59 100644
+index 850689d..2fdd7a1 100644
 --- a/librecomp/src/recomp.cpp
 +++ b/librecomp/src/recomp.cpp
 @@ -21,6 +21,7 @@
@@ -341,12 +364,79 @@ index 850689d..e061d59 100644
  std::string recomp::current_mod_game_id() {
      auto find_it = game_roms.find(current_game_id());
      const recomp::GameEntry& game_entry = find_it->second;
+@@ -933,27 +955,34 @@ void recomp::start(const recomp::Configuration& cfg) {
+ 
+     // Allocate rdram without comitting it. Use a platform-specific virtual allocation function
+     // that initializes to zero. Protect the region above the memory size to catch accesses to invalid addresses.
++    // A guard of rdram_guard on each side too: a load or store adds a signed 16-bit offset to a 32-bit address,
++    // which can reach that far past either end of the 4GB (a game memory from elsewhere, a netplay host's state,
++    // can't touch the program's own memory beside it).
+     uint8_t* rdram;
++    uint8_t* allocation;
+     bool alloc_failed;
+ #ifdef _WIN32
+-    rdram = reinterpret_cast<uint8_t*>(VirtualAlloc(nullptr, allocation_size, MEM_COMMIT | MEM_RESERVE, PAGE_NOACCESS));
++    allocation = reinterpret_cast<uint8_t*>(VirtualAlloc(nullptr, allocation_size + 2 * rdram_guard, MEM_RESERVE, PAGE_NOACCESS));
++    rdram = allocation + rdram_guard;
+     DWORD old_protect = 0;
+-    alloc_failed = (rdram == nullptr);
++    alloc_failed = (allocation == nullptr);
+     if (!alloc_failed) {
+-        // VirtualProtect returns 0 on failure.
+-        alloc_failed = (VirtualProtect(rdram, mem_size, PAGE_READWRITE, &old_protect) == 0);
++        // VirtualAlloc returns null on failure.
++        alloc_failed = (VirtualAlloc(rdram, allocation_size, MEM_COMMIT, PAGE_NOACCESS) == nullptr) ||
++            (VirtualProtect(rdram, mem_size, PAGE_READWRITE, &old_protect) == 0);
+         if (alloc_failed) {
+-            VirtualFree(rdram, 0, MEM_RELEASE);
++            VirtualFree(allocation, 0, MEM_RELEASE);
+         }
+     }
+ #else
+-    rdram = (uint8_t*)mmap(NULL, allocation_size, PROT_NONE, MAP_ANON | MAP_PRIVATE, -1, 0);
+-    alloc_failed = rdram == reinterpret_cast<uint8_t*>(MAP_FAILED);
++    allocation = (uint8_t*)mmap(NULL, allocation_size + 2 * rdram_guard, PROT_NONE, MAP_ANON | MAP_PRIVATE, -1, 0);
++    alloc_failed = allocation == reinterpret_cast<uint8_t*>(MAP_FAILED);
++    rdram = allocation + rdram_guard;
+     if (!alloc_failed) {
+         // mprotect returns -1 on failure.
+         alloc_failed = (mprotect(rdram, mem_size, PROT_READ | PROT_WRITE) == -1);
+         if (alloc_failed) {
+-            munmap(rdram, allocation_size);
++            munmap(allocation, allocation_size + 2 * rdram_guard);
+         }
+     }
+ #endif
+@@ -995,18 +1024,10 @@ void recomp::start(const recomp::Configuration& cfg) {
+     ultramodern::join_event_threads();
+     ultramodern::join_thread_cleaner_thread();
+     ultramodern::join_saving_thread();
++    ultramodern::join_timer_thread();
+     
+-    // Free rdram.
+-    bool free_failed;
+-#ifdef _WIN32
+-    // VirtualFree returns zero on failure.
+-    free_failed = (VirtualFree(rdram, 0, MEM_RELEASE) == 0);
+-#else
+-    // munmap returns -1 on failure.
+-    free_failed = (munmap(rdram, allocation_size) == -1);
+-#endif
+-
+-    if (free_failed) {
+-        printf("Failed to free rdram\n");
+-    }
++    // Game memory is left as it is, for the process's end to free: the game's own threads (not joined: they're
++    // blocked in the game's code, or about to run it) may still read it as the process ends, and freeing it
++    // first made quitting crash in them now and then.
++    (void)allocation;
+ }
 diff --git a/librecomp/src/save_states.cpp b/librecomp/src/save_states.cpp
 new file mode 100644
-index 0000000..5d6e10d
+index 0000000..db75227
 --- /dev/null
 +++ b/librecomp/src/save_states.cpp
-@@ -0,0 +1,453 @@
+@@ -0,0 +1,499 @@
 +// Save states: a whole state of the game, as bytes (see librecomp/save_states.hpp, and
 +// ultramodern/save_states.hpp for how a save state of a recompiled game works).
 +//
@@ -367,6 +457,7 @@ index 0000000..5d6e10d
 +#include <algorithm>
 +#include <cinttypes>
 +#include <cstdio>
++#include <cstddef>
 +#include <cstring>
 +
 +#include "recomp.h"
@@ -693,7 +784,16 @@ index 0000000..5d6e10d
 +    w.put_bytes(dmem, rsp_dmem_size);
 +
 +    w.put(game_memory_size);
++    const size_t memory_at = out.size();
 +    w.put_bytes(rdram, game_memory_size);
++    // Each thread's OSThread holds its native context (this run's address, of no use elsewhere, which a state sent to
++    // another machine shouldn't tell): blank in the state, and put back on a load (restore_thread_link).
++    for (const ThreadInfo& thread : threads) {
++        const uint32_t offset = (uint32_t)thread.thread - 0x80000000u + (uint32_t)offsetof(OSThread, context);
++        if (offset + sizeof(UltraThreadContext*) <= game_memory_size) {
++            std::memset(out.data() + memory_at + offset, 0, sizeof(UltraThreadContext*));
++        }
++    }
 +
 +    unlock_timers();
 +    return true;
@@ -772,6 +872,42 @@ index 0000000..5d6e10d
 +    // The events that came in for the state that was replaced.
 +    drop_external_messages();
 +    return LoadResult::Loaded;
++}
++
++bool recomp::save_states::check_untrusted(std::span<const uint8_t> data, std::string& error) {
++    // More than any game makes (the N64's libultra threads and the game's own), and than its timers.
++    constexpr size_t most_threads = 64;
++    constexpr size_t most_timers = 256;
++    ParsedState state;
++    if (!parse(data, state, error)) {
++        return false;
++    }
++    Reader in{ data };
++    in.get_bytes(sizeof(magic));
++    if (in.get<uint32_t>() != layout_version) {
++        error = "it isn't this version's layout";
++        return false;
++    }
++    if (state.threads.size() > most_threads || state.timers.active.size() > most_timers) {
++        error = "it has more threads or timers than a game has";
++        return false;
++    }
++    auto sign_extended = [](uint64_t value) { return value == (uint64_t)(int64_t)(int32_t)(uint32_t)value; };
++    for (const SavedThread& thread : state.threads) {
++        if (!thread.has_registers) {
++            continue;
++        }
++        const Registers& r = thread.registers;
++        bool fits = r.gpr[0] == 0 && sign_extended(r.hi) && sign_extended(r.lo) && r.mips3_float_mode <= 1;
++        for (int i = 1; i < 32 && fits; i++) {
++            fits = sign_extended(r.gpr[i]);
++        }
++        if (!fits) {
++            error = "thread " + std::to_string(thread.id) + "'s registers aren't the game code's";
++            return false;
++        }
++    }
++    return true;
 +}
 +
 +bool recomp::save_states::same_build(std::span<const uint8_t> data) {
@@ -876,10 +1012,10 @@ index d60c4ec..6069a4c 100644
                  virtual float get_resolution_scale() const = 0;
 diff --git a/ultramodern/include/ultramodern/save_states.hpp b/ultramodern/include/ultramodern/save_states.hpp
 new file mode 100644
-index 0000000..a653fe4
+index 0000000..557af80
 --- /dev/null
 +++ b/ultramodern/include/ultramodern/save_states.hpp
-@@ -0,0 +1,201 @@
+@@ -0,0 +1,204 @@
 +#ifndef __ULTRAMODERN_SAVE_STATES_HPP__
 +#define __ULTRAMODERN_SAVE_STATES_HPP__
 +
@@ -1065,6 +1201,9 @@ index 0000000..a653fe4
 +// threads.cpp: a thread made by osCreateThread, and once it's ended.
 +void register_thread(UltraThreadContext* context, PTR(OSThread) thread);
 +void unregister_thread(UltraThreadContext* context);
++// threads.cpp: `context`, from an OSThread in game memory, if it's a game thread's (else null). Game memory can come
++// from elsewhere (a loaded state, a netplay host's), so its native pointers aren't followed unless they're one.
++UltraThreadContext* known_context(UltraThreadContext* context);
 +// threads.cpp: on the thread, as it starts.
 +void set_current_thread(UltraThreadContext* context);
 +// threads.cpp: on the thread, just before it waits (to be resumed, started, or for the next event).
@@ -1083,10 +1222,10 @@ index 0000000..a653fe4
 +#endif
 diff --git a/ultramodern/include/ultramodern/timeline.hpp b/ultramodern/include/ultramodern/timeline.hpp
 new file mode 100644
-index 0000000..3ae1bdd
+index 0000000..a0ffef6
 --- /dev/null
 +++ b/ultramodern/include/ultramodern/timeline.hpp
-@@ -0,0 +1,60 @@
+@@ -0,0 +1,72 @@
 +#ifndef __ULTRAMODERN_TIMELINE_HPP__
 +#define __ULTRAMODERN_TIMELINE_HPP__
 +
@@ -1111,6 +1250,18 @@ index 0000000..3ae1bdd
 +        // While on, the timeline doesn't wait for real time either, as `fast`: a game that fell behind (netplay,
 +        // behind the other players) catches up. Once off, it's paced again from where it is (any game thread).
 +        void set_catching_up(bool on);
++        // Paces the game `us` microseconds later from now on: it runs that much behind where it would have been,
++        // as a netplay machine that's ahead of the others slows down to them (time sync). Taken at the next
++        // paced delivery (not while catching up or replaying). Any thread.
++        void pace_later(uint32_t us);
++        // Replaying: the game plays again what it has played already (netplay's rollback, after loading a state),
++        // up to `ticks`, the time it had reached (delivery_time() before the load). Till the timeline passes it,
++        // it doesn't wait for real time, a load doesn't move its pacing (it's paced on from where it was before
++        // going back), and nothing is shown or heard again: the graphics tasks aren't drawn, the VIs show no
++        // frame, and the sound isn't played. Then it's off by itself; 0 turns it off. On a game thread.
++        void set_replay_until(uint64_t ticks);
++        uint64_t replay_until();    // 0 when not replaying
++        bool replaying();
 +        // The time of the last delivery (ticks): the time on the game's side between delivery points, as
 +        // events have reached the game. Unlike the game's clock, reading it doesn't move it. On a game
 +        // thread.
@@ -1148,7 +1299,7 @@ index 0000000..3ae1bdd
 +
 +#endif
 diff --git a/ultramodern/include/ultramodern/ultramodern.hpp b/ultramodern/include/ultramodern/ultramodern.hpp
-index 46aea61..17be6dd 100644
+index 46aea61..f02b2fe 100644
 --- a/ultramodern/include/ultramodern/ultramodern.hpp
 +++ b/ultramodern/include/ultramodern/ultramodern.hpp
 @@ -25,6 +25,19 @@ struct UltraThreadContext {
@@ -1181,8 +1332,16 @@ index 46aea61..17be6dd 100644
  void set_entrypoint_thread();
  bool is_entrypoint_thread();
  bool is_game_thread();
+@@ -148,6 +164,7 @@ void quit();
+ void join_event_threads();
+ void join_thread_cleaner_thread();
+ void join_saving_thread();
++void join_timer_thread();
+ 
+ void set_audio_callbacks(const audio_callbacks_t& callbacks);
+ 
 diff --git a/ultramodern/src/events.cpp b/ultramodern/src/events.cpp
-index 17d7a47..f36eb4f 100644
+index 17d7a47..47d1957 100644
 --- a/ultramodern/src/events.cpp
 +++ b/ultramodern/src/events.cpp
 @@ -17,6 +17,8 @@
@@ -1206,7 +1365,7 @@ index 17d7a47..f36eb4f 100644
  
  struct ViState {
      const OSViMode* mode = nullptr;
-@@ -184,6 +189,92 @@ extern moodycamel::LightweightSemaphore graphics_shutdown_ready;
+@@ -184,6 +189,96 @@ extern moodycamel::LightweightSemaphore graphics_shutdown_ready;
  
  void set_dummy_vi(bool odd);
  
@@ -1250,9 +1409,13 @@ index 17d7a47..f36eb4f 100644
 +        return;
 +    }
 +    last_timeline_vi = std::chrono::steady_clock::now().time_since_epoch().count();
++    // Replaying (timeline.hpp): no frame is shown, and the host's VI work waits for the game to be back.
++    const bool replaying = ultramodern::timeline::replaying();
 +    {
 +        std::lock_guard lock{ events_context.message_mutex };
-+        events_context.action_queue.enqueue(ScreenUpdateAction{ events_context.vi.regs });
++        if (!replaying) {
++            events_context.action_queue.enqueue(ScreenUpdateAction{ events_context.vi.regs });
++        }
 +        events_context.vi.update_vi();
 +        remaining_retraces--;
 +        ViState* cur_state = events_context.vi.get_cur_state();
@@ -1266,7 +1429,7 @@ index 17d7a47..f36eb4f 100644
 +            ultramodern::enqueue_external_message_src(events_context.ai.mq, events_context.ai.msg, false, ultramodern::EventMessageSource::Ai);
 +        }
 +    }
-+    if (events_callbacks.vi_callback != nullptr) {
++    if (events_callbacks.vi_callback != nullptr && !replaying) {
 +        events_callbacks.vi_callback();
 +    }
 +}
@@ -1299,7 +1462,7 @@ index 17d7a47..f36eb4f 100644
  void vi_thread_func() {
      ultramodern::set_native_thread_name("VI Thread");
      // This thread should be prioritized over every other thread in the application, as it's what allows
-@@ -191,8 +282,6 @@ void vi_thread_func() {
+@@ -191,8 +286,6 @@ void vi_thread_func() {
      ultramodern::set_native_thread_priority(ultramodern::ThreadPriority::Critical);
      using namespace std::chrono_literals;
  
@@ -1308,7 +1471,7 @@ index 17d7a47..f36eb4f 100644
      while (!exited) {
          // Determine the next VI time (more accurate than adding 16ms each VI interrupt)
          auto next = ultramodern::get_start() + (total_vis * 1000000us) / (60 * ultramodern::get_speed_multiplier());
-@@ -210,6 +299,22 @@ void vi_thread_func() {
+@@ -210,6 +303,22 @@ void vi_thread_func() {
              next = std::chrono::high_resolution_clock::now();
          }
          ultramodern::sleep_until(next);
@@ -1331,7 +1494,7 @@ index 17d7a47..f36eb4f 100644
          auto time_now = ultramodern::time_since_start();
          // Calculate how many VIs have passed
          uint64_t new_total_vis = (time_now * (60 * ultramodern::get_speed_multiplier()) / 1000ms) + 1;
-@@ -295,6 +400,7 @@ void task_thread_func(uint8_t* rdram, moodycamel::LightweightSemaphore* thread_r
+@@ -295,6 +404,7 @@ void task_thread_func(uint8_t* rdram, moodycamel::LightweightSemaphore* thread_r
  
          // Tell the game that the RSP has completed
          sp_complete();
@@ -1339,7 +1502,7 @@ index 17d7a47..f36eb4f 100644
      }
  }
  
-@@ -364,11 +470,16 @@ void gfx_thread_func(uint8_t* rdram, moodycamel::LightweightSemaphore* thread_re
+@@ -364,11 +474,16 @@ void gfx_thread_func(uint8_t* rdram, moodycamel::LightweightSemaphore* thread_re
          if (events_context.action_queue.wait_dequeue_timed(action, 1ms)) {
              // Determine the action type and act on it
              if (const auto* task_action = std::get_if<SpTaskAction>(&action)) {
@@ -1357,7 +1520,7 @@ index 17d7a47..f36eb4f 100644
                  ultramodern::measure_input_latency();
  
                  PTR(u64) displaylist = task_action->task.t.data_ptr;
-@@ -378,7 +489,14 @@ void gfx_thread_func(uint8_t* rdram, moodycamel::LightweightSemaphore* thread_re
+@@ -378,7 +493,14 @@ void gfx_thread_func(uint8_t* rdram, moodycamel::LightweightSemaphore* thread_re
                  renderer_context->send_dl(&task_action->task);
                  [[maybe_unused]] auto renderer_end = std::chrono::high_resolution_clock::now();
  
@@ -1373,7 +1536,7 @@ index 17d7a47..f36eb4f 100644
                  // TODO hook the parsed event up to the actual parsing point when a callback is added to RT64.
                  ultramodern::extensions::on_displaylist_parsed(displaylist);
                  ultramodern::extensions::on_displaylist_completed(displaylist);
-@@ -400,6 +518,10 @@ void gfx_thread_func(uint8_t* rdram, moodycamel::LightweightSemaphore* thread_re
+@@ -400,6 +522,10 @@ void gfx_thread_func(uint8_t* rdram, moodycamel::LightweightSemaphore* thread_re
              else if (const auto* dummy_workload_action = std::get_if<DummyWorkloadAction>(&action)) {
                  renderer_context->send_dummy_workload(dummy_workload_action->fb_address);
              }
@@ -1384,7 +1547,7 @@ index 17d7a47..f36eb4f 100644
          }
      }
  
-@@ -565,6 +687,29 @@ extern "C" PTR(void) osViGetCurrentFramebuffer() {
+@@ -565,6 +691,40 @@ extern "C" PTR(void) osViGetCurrentFramebuffer() {
  void ultramodern::submit_rsp_task(RDRAM_ARG PTR(OSTask) task_) {
      OSTask* task = TO_PTR(OSTask, task_);
  
@@ -1398,7 +1561,18 @@ index 17d7a47..f36eb4f 100644
 +        if (task->t.type == M_GFXTASK) {
 +            gfx_tasks_submitted++;
 +            sp_complete();
-+            events_context.action_queue.enqueue(SpTaskAction{ *task });
++            if (ultramodern::timeline::replaying()) {
++                // Not drawn: done as it's submitted (the renderer never writes the game's memory).
++                PTR(u64) displaylist = task->t.data_ptr;
++                ultramodern::extensions::on_displaylist_submitted(displaylist);
++                gfx_tasks_finished++;
++                ultramodern::save_states::task_finished();
++                ultramodern::extensions::on_displaylist_parsed(displaylist);
++                ultramodern::extensions::on_displaylist_completed(displaylist);
++            }
++            else {
++                events_context.action_queue.enqueue(SpTaskAction{ *task });
++            }
 +        }
 +        else {
 +            if (!ultramodern::rsp::run_task(PASS_RDRAM task)) {
@@ -1414,7 +1588,7 @@ index 17d7a47..f36eb4f 100644
      // Send gfx tasks to the graphics action queue
      if (task->t.type == M_GFXTASK) {
          events_context.action_queue.enqueue(SpTaskAction{ *task });
-@@ -575,6 +720,57 @@ void ultramodern::submit_rsp_task(RDRAM_ARG PTR(OSTask) task_) {
+@@ -575,6 +735,57 @@ void ultramodern::submit_rsp_task(RDRAM_ARG PTR(OSTask) task_) {
      }
  }
  
@@ -1614,10 +1788,10 @@ index 9944a02..a7a40ae 100644
      
 diff --git a/ultramodern/src/save_states.cpp b/ultramodern/src/save_states.cpp
 new file mode 100644
-index 0000000..3dd2f99
+index 0000000..b5d89bc
 --- /dev/null
 +++ b/ultramodern/src/save_states.cpp
-@@ -0,0 +1,304 @@
+@@ -0,0 +1,309 @@
 +// Save states: the game's threads, where each one waits, and the idle moment (see save_states.hpp for
 +// how a save state of a recompiled game works).
 +
@@ -1775,6 +1949,11 @@ index 0000000..3dd2f99
 +    context->self = thread;
 +    std::lock_guard lock{ threads_mutex };
 +    game_threads.push_back(context);
++}
++
++UltraThreadContext* ultramodern::save_states::known_context(UltraThreadContext* context) {
++    std::lock_guard lock{ threads_mutex };
++    return std::find(game_threads.begin(), game_threads.end(), context) != game_threads.end() ? context : nullptr;
 +}
 +
 +void ultramodern::save_states::unregister_thread(UltraThreadContext* context) {
@@ -1978,7 +2157,7 @@ index a22f747..48cff77 100644
      ultramodern::check_running_queue(PASS_RDRAM1);
  }
 diff --git a/ultramodern/src/threads.cpp b/ultramodern/src/threads.cpp
-index 6e3ed18..221ad3d 100644
+index 6e3ed18..b5ea11d 100644
 --- a/ultramodern/src/threads.cpp
 +++ b/ultramodern/src/threads.cpp
 @@ -8,6 +8,7 @@
@@ -2008,10 +2187,38 @@ index 6e3ed18..221ad3d 100644
      // If this thread's context was replaced by another thread or deleted, destroy it again from its own context.
      // This will trigger thread cleanup instead.
      if (TO_PTR(OSThread, ultramodern::this_thread())->context != thread_context) {
-@@ -176,12 +187,16 @@ void run_next_thread(RDRAM_ARG1) {
+@@ -159,9 +170,19 @@ void wait_for_resumed(RDRAM_ARG UltraThreadContext* thread_context) {
+     }
+ }
+ 
++// A thread's native context, from its OSThread in game memory: only one of the game threads' (save_states.hpp's
++// known_context), never whatever the memory holds.
++static UltraThreadContext* context_of(OSThread* t) {
++    UltraThreadContext* context = ultramodern::save_states::known_context(t->context);
++    if (context == nullptr) {
++        throw std::runtime_error("A thread to run isn't one of the game's\n");
++    }
++    return context;
++}
++
+ void resume_thread(OSThread* t) {
+     debug_printf("[Thread] Resuming execution of thread %d\n", t->id);
+-    t->context->running.signal();
++    context_of(t)->running.signal();
+ }
+ 
+ void run_next_thread(RDRAM_ARG1) {
+@@ -171,17 +192,21 @@ void run_next_thread(RDRAM_ARG1) {
+ 
+     OSThread* to_run = TO_PTR(OSThread, ultramodern::thread_queue_pop(PASS_RDRAM ultramodern::running_queue));
+     debug_printf("[Scheduling] Resuming execution of thread %d\n", to_run->id);
+-    to_run->context->running.signal();
++    context_of(to_run)->running.signal();
+ }
  
  void ultramodern::run_next_thread_and_wait(RDRAM_ARG1) {
-     UltraThreadContext* cur_context = TO_PTR(OSThread, thread_self)->context;
+-    UltraThreadContext* cur_context = TO_PTR(OSThread, thread_self)->context;
++    UltraThreadContext* cur_context = context_of(TO_PTR(OSThread, thread_self));
 +    // Where this thread waits, for save states (save_states.hpp): before the next thread runs. A message
 +    // queue wait has noted its own kind; otherwise the thread stops itself.
 +    ultramodern::save_states::record_wait(cur_context, ultramodern::save_states::WaitKind::Stopped);
@@ -2020,12 +2227,13 @@ index 6e3ed18..221ad3d 100644
  }
  
  void ultramodern::resume_thread_and_wait(RDRAM_ARG OSThread *t) {
-     UltraThreadContext* cur_context = TO_PTR(OSThread, thread_self)->context;
+-    UltraThreadContext* cur_context = TO_PTR(OSThread, thread_self)->context;
++    UltraThreadContext* cur_context = context_of(TO_PTR(OSThread, thread_self));
 +    ultramodern::save_states::record_wait(cur_context, ultramodern::save_states::WaitKind::Preempted);
      resume_thread(t);
      wait_for_resumed(PASS_RDRAM cur_context);
  }
-@@ -191,12 +206,14 @@ static void _thread_func(RDRAM_ARG PTR(OSThread) self_, PTR(thread_func_t) entry
+@@ -191,12 +216,14 @@ static void _thread_func(RDRAM_ARG PTR(OSThread) self_, PTR(thread_func_t) entry
      debug_printf("[Thread] Thread created: %d\n", self->id);
      thread_self = self_;
      is_game_thread = true;
@@ -2040,7 +2248,7 @@ index 6e3ed18..221ad3d 100644
      thread_context->initialized.signal();
  
      debug_printf("[Thread] Thread waiting to be started: %d\n", self->id);
-@@ -263,6 +280,7 @@ extern "C" void osCreateThread(RDRAM_ARG PTR(OSThread) t_, OSId id, PTR(thread_f
+@@ -263,6 +290,7 @@ extern "C" void osCreateThread(RDRAM_ARG PTR(OSThread) t_, OSId id, PTR(thread_f
      // Pass the context as an argument to the thread function to ensure that it can't get cleared before the thread captures its value.
      UltraThreadContext* context = new UltraThreadContext{};
      t->context = context;
@@ -2048,7 +2256,16 @@ index 6e3ed18..221ad3d 100644
      context->host_thread = std::thread{_thread_func, PASS_RDRAM t_, entrypoint, arg, t->context};
  
      // Wait until the thread is initialized to indicate that it's ready to be started.
-@@ -363,6 +381,7 @@ void ultramodern::init_thread_cleanup() {
+@@ -297,7 +325,7 @@ extern "C" void osDestroyThread(RDRAM_ARG PTR(OSThread) t_) {
+         ultramodern::thread_queue_remove(PASS_RDRAM t->queue, t_);
+     }
+     // Check if the thread has already been destroyed to prevent destroying it again.
+-    UltraThreadContext* cur_context = t->context;
++    UltraThreadContext* cur_context = ultramodern::save_states::known_context(t->context);
+     if (cur_context != nullptr) {
+         // Mark the target thread as destroyed and resume it. When it starts it'll check this and terminate itself instead of resuming.
+         t->context = nullptr;
+@@ -363,6 +391,7 @@ void ultramodern::init_thread_cleanup() {
  }
  
  void ultramodern::cleanup_thread(UltraThreadContext *cur_context) {
@@ -2058,10 +2275,10 @@ index 6e3ed18..221ad3d 100644
  
 diff --git a/ultramodern/src/timeline.cpp b/ultramodern/src/timeline.cpp
 new file mode 100644
-index 0000000..6b467dd
+index 0000000..ebf7321
 --- /dev/null
 +++ b/ultramodern/src/timeline.cpp
-@@ -0,0 +1,223 @@
+@@ -0,0 +1,251 @@
 +#include <algorithm>
 +#include <atomic>
 +#include <chrono>
@@ -2090,6 +2307,10 @@ index 0000000..6b467dd
 +    // Set as catching up stops, for pace: from then it paces from where the game is, not from where it was
 +    // before (the time it gained would be slept away, and the others ahead again).
 +    std::atomic_bool pace_from_now = false;
++    // Replaying till the timeline passes this (0: not).
++    std::atomic<uint64_t> replay_end = 0;
++    // Pacing put off by pace_later, not yet taken (microseconds).
++    std::atomic<uint64_t> later_us = 0;
 +    // The time of the last delivery, and the next VI's number (VI k is at k × ticks_per_vi).
 +    uint64_t now = 0;
 +    uint64_t next_vi = 1;
@@ -2138,16 +2359,21 @@ index 0000000..6b467dd
 +        burst_start = std::chrono::high_resolution_clock::now();
 +    }
 +
-+    // Waits for real time to reach virtual time `ticks`.
++    // Waits for real time to reach virtual time `ticks`. Past the replay's end, it's played as it was the first time.
 +    void pace(uint64_t ticks) {
++        const uint64_t end = replay_end.load(std::memory_order_relaxed);
++        if (end != 0 && ticks > end) {
++            replay_end = 0;
++        }
 +        using namespace std::chrono_literals;
-+        if (fast || catching_up.load(std::memory_order_relaxed)) {
++        if (fast || catching_up.load(std::memory_order_relaxed) || replay_end.load(std::memory_order_relaxed) != 0) {
 +            return;
 +        }
 +        const auto real_now = std::chrono::high_resolution_clock::now();
 +        if (pace_from_now.exchange(false)) {
 +            real_start = real_now - ticks_to_duration(ticks);
 +        }
++        real_start += std::chrono::microseconds{ later_us.exchange(0) };
 +        const auto target = real_start + ticks_to_duration(ticks);
 +        if (real_now < target) {
 +            ultramodern::sleep_until(target);
@@ -2174,6 +2400,22 @@ index 0000000..6b467dd
 +        pace_from_now = true;
 +    }
 +    catching_up = on;
++}
++
++void ultramodern::timeline::pace_later(uint32_t us) {
++    later_us += us;
++}
++
++void ultramodern::timeline::set_replay_until(uint64_t ticks) {
++    replay_end = ticks;
++}
++
++uint64_t ultramodern::timeline::replay_until() {
++    return replay_end.load(std::memory_order_relaxed);
++}
++
++bool ultramodern::timeline::replaying() {
++    return replay_until() != 0;
 +}
 +
 +bool ultramodern::timeline::enabled() {
@@ -2206,8 +2448,11 @@ index 0000000..6b467dd
 +        next_vi = clock / ticks_per_vi + 1;
 +        ultramodern::timeline_parts::set_dp_due(0);
 +    }
-+    // Paced from here, neither waiting for nor racing to the state's time.
-+    real_start = std::chrono::high_resolution_clock::now() - ticks_to_duration(now);
++    // Paced from here, neither waiting for nor racing to the state's time. (Not while replaying: the game
++    // plays again up to where it was, and is paced from there as before.)
++    if (replay_end == 0) {
++        real_start = std::chrono::high_resolution_clock::now() - ticks_to_duration(now);
++    }
 +    in_burst = false;
 +}
 +
@@ -2286,7 +2531,7 @@ index 0000000..6b467dd
 +    }
 +}
 diff --git a/ultramodern/src/timer.cpp b/ultramodern/src/timer.cpp
-index ee26c45..7e25f1a 100644
+index ee26c45..b872110 100644
 --- a/ultramodern/src/timer.cpp
 +++ b/ultramodern/src/timer.cpp
 @@ -1,10 +1,16 @@
@@ -2307,7 +2552,7 @@ index ee26c45..7e25f1a 100644
  
  #ifdef _WIN32
  #define WIN32_LEAN_AND_MEAN
-@@ -29,20 +35,25 @@ struct OSTimer {
+@@ -29,20 +35,27 @@ struct OSTimer {
      OSMesg msg;
  };
  
@@ -2321,12 +2566,14 @@ index ee26c45..7e25f1a 100644
 +// in game memory, which loading a save state overwrites (save_states.hpp), and a timer set again while
 +// it runs gets a new one. There are only ever a few, so the next one is found by looking at each.
 +//
-+// Made once and never destroyed: the timer thread is detached and waits on `changed` until the process
-+// ends. A static one was destroyed as the program exited, with the thread still waiting on it, and on
-+// Linux destroying a condition variable waits for its waiters (glibc's pthread_cond_destroy), so quitting
-+// hung (issue #127); the queue it replaced didn't wait.
++// Made once and never destroyed: a static one was destroyed as the program exited, with the thread still
++// waiting on it, and on Linux destroying a condition variable waits for its waiters (glibc's
++// pthread_cond_destroy), so quitting hung (issue #127); the queue it replaced didn't wait. The thread is
++// stopped and joined as the game quits (join_timer_thread): left running, a timer running out as the
++// program ended read game memory freed, and quitting crashed.
 +struct TimerContext {
 +    std::thread thread;
++    bool stopping = false;
 +    std::mutex mutex;
 +    std::condition_variable changed;
 +    std::vector<PTR(OSTimer)> active;
@@ -2345,14 +2592,14 @@ index ee26c45..7e25f1a 100644
  
  uint64_t duration_to_ticks(std::chrono::high_resolution_clock::duration duration) {
      uint64_t delta_micros = std::chrono::duration_cast<std::chrono::microseconds>(duration).count();
-@@ -59,83 +70,121 @@ std::chrono::microseconds ticks_to_duration(uint64_t ticks) {
+@@ -59,90 +72,138 @@ std::chrono::microseconds ticks_to_duration(uint64_t ticks) {
  }
  
  std::chrono::high_resolution_clock::time_point ticks_to_timepoint(uint64_t ticks) {
 -    return start_time + ticks_to_duration(ticks);
 +    return start_time + ticks_to_duration(ticks + clock_offset.load());
- }
- 
++}
++
 +// The virtual clock, in deterministic mode (timeline.hpp): the timeline's time, which each read of
 +// the clock moves on a step, so reads still differ and loops that wait on the clock still end.
 +static std::atomic<bool> virtual_clock = false;
@@ -2362,8 +2609,8 @@ index ee26c45..7e25f1a 100644
 +
 +uint64_t real_time_now() {
 +    return duration_to_ticks(std::chrono::high_resolution_clock::now() - start_time) - clock_offset.load();
-+}
-+
+ }
+ 
 +// The game's clock, for the game's own reads: with the virtual clock, each moves it on.
  uint64_t time_now() {
 -    return duration_to_ticks(std::chrono::high_resolution_clock::now() - start_time);
@@ -2464,17 +2711,17 @@ index ee26c45..7e25f1a 100644
 +        }
 +    }
 +}
-+
-+void timer_thread(RDRAM_ARG1) {
-+    ultramodern::set_native_thread_name("Timer Thread");
-+    ultramodern::set_native_thread_priority(ultramodern::ThreadPriority::VeryHigh);
  
 -        // If there's no timer to act on, wait for one to come in from the action queue
 -        while (active_timers.empty()) {
 -            timer_context.action_queue.wait_dequeue(cur_action);
 -            process_timer_action(cur_action);
++void timer_thread(RDRAM_ARG1) {
++    ultramodern::set_native_thread_name("Timer Thread");
++    ultramodern::set_native_thread_priority(ultramodern::ThreadPriority::VeryHigh);
++
 +    std::unique_lock lock{ timer_context.mutex };
-+    while (true) {
++    while (!timer_context.stopping) {
 +        // If there's no timer to act on, wait for one. In deterministic mode the timeline runs them.
 +        if (timer_context.active.empty() || virtual_clock.load()) {
 +            timer_context.changed.wait(lock);
@@ -2524,7 +2771,25 @@ index ee26c45..7e25f1a 100644
          }
      }
  }
-@@ -180,30 +229,68 @@ extern "C" void osSetTime(OSTime t) {
+ 
+ void ultramodern::init_timers(RDRAM_ARG1) {
+     timer_context.thread = std::thread{ timer_thread, PASS_RDRAM1 };
+-    timer_context.thread.detach();
++}
++
++void ultramodern::join_timer_thread() {
++    {
++        std::lock_guard lock{ timer_context.mutex };
++        timer_context.stopping = true;
++    }
++    timer_context.changed.notify_all();
++    if (timer_context.thread.joinable()) {
++        timer_context.thread.join();
++    }
+ }
+ 
+ uint32_t ultramodern::get_speed_multiplier() {
+@@ -180,30 +241,68 @@ extern "C" void osSetTime(OSTime t) {
  
  extern "C" int osSetTimer(RDRAM_ARG PTR(OSTimer) t_, OSTime countdown, OSTime interval, PTR(OSMesgQueue) mq, OSMesg msg) {
      OSTimer* t = TO_PTR(OSTimer, t_);

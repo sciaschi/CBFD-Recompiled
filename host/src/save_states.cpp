@@ -128,8 +128,11 @@ namespace {
     // Written on a thread of its own (a state is 8MB), to a temporary file first, so a slot is never
     // left half written.
     std::mutex write_mutex;
+    std::atomic<int> writes_pending{ 0 };
     void write_state(int slot, std::vector<uint8_t> state, std::vector<uint8_t> progress) {
+        writes_pending++;
         std::thread([slot, state = std::move(state), progress = std::move(progress)]() {
+            struct Done { ~Done() { writes_pending--; } } done;
             std::lock_guard lock{write_mutex};
             std::vector<uint8_t> out;
             out.reserve(state.size() + progress.size() + 256);
@@ -377,6 +380,12 @@ void conker::save_states::add_options(recomp::config::Config& config) {
         "With <recomp-color primary>Off</recomp-color> they aren't shown; a line saying one couldn't be saved or loaded "
         "still is. The keys are the Controls tab's Hotkeys, to bind them to others or to buttons.",
         choices, Notifications::On);
+}
+
+void conker::save_states::wait_for_writes() {
+    for (int waited = 0; writes_pending.load() > 0 && waited < 500; waited++) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
 }
 
 void conker::save_states::init() {

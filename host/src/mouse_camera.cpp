@@ -760,6 +760,16 @@ void conker::mouse_camera::set_state(const std::vector<uint32_t>& words) {
         return;
     }
     std::memcpy(orbits, words.data() + 1, sizeof(orbits));
+    // Each bool's byte as 0 or 1 (a state can come from a netplay host: any other byte isn't a bool).
+    for (Orbit& o : orbits) {
+        for (bool* flag : { &o.engaged, &o.follow_camera_ran, &o.look_mode_ran, &o.c_turning, &o.turned, &o.moved, &o.was_normal,
+                            &o.has_target, &o.wheel_zoomed, &o.contact, &o.resting, &o.has_last, &o.placed }) {
+            uint8_t byte;
+            std::memcpy(&byte, flag, 1);
+            byte = byte != 0;
+            std::memcpy(flag, &byte, 1);
+        }
+    }
 }
 
 // frontend.cpp, once SDL is up: listen for the scroll wheel.

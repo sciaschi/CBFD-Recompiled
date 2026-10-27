@@ -9,6 +9,9 @@
 // default; a replay's recording says whether its match had it). That rule can't be enforced against a modified
 // build (every machine draws every view); it keeps honest players on the same footing.
 //
+// A spectator (no ports of its own) sees the whole split screen, or one player's view across the window, as it
+// chooses (lockstep::watched_ports: L and R on its controller go from one to the next), whatever the match's rule.
+//
 // A view drawn this way shows more of the world than the game culled it for: above and below for a view made
 // taller, at the sides for one made wider. So while the rule is on, the game's culls for every view are made as
 // tall and as wide on every machine (widescreen.cpp's own_view_scale: game memory, so by the match's rule and its
@@ -117,14 +120,16 @@ void conker::netplay_view::set_replay_ports(uint8_t ports) {
 }
 
 void conker::netplay_view::game_frame(uint8_t* rdram) {
-    // In a match, this machine's ports; replaying a recording (to try it), --my-view-ports' (player 1's).
+    // In a match, this machine's ports (a spectator's, the one it watches: none, everyone's); replaying a recording (to
+    // try it), --my-view-ports' (player 1's).
     const bool in_match = conker::lockstep::connected();
-    const uint8_t ports = in_match ? conker::lockstep::ports() : replay_ports.load();
+    const bool watching = in_match && conker::lockstep::spectating();
+    const uint8_t ports = watching ? conker::lockstep::watched_ports() : in_match ? conker::lockstep::ports() : replay_ports.load();
     const int count = std::popcount(ports);
     const uint32_t cameras = (uint32_t)MEM_W(0, cameras_pointer);
     const int32_t frame_width = MEM_W(0, frame_width_address);
-    // The player's choice, or the match's rule (the host's) that everyone sees only their own view.
-    const bool wanted = mine_only || conker::harness::own_view_rule();
+    // The player's choice, or the match's rule (the host's) that everyone sees only their own view; a spectator's.
+    const bool wanted = watching || mine_only || conker::harness::own_view_rule();
     if (!wanted || !(in_match || conker::harness::replaying()) || count < 1 || count > 2 || cameras < 0x80000000u ||
         cameras >= 0x80800000u || frame_width < 16 || frame_width > 640) {
         show(rdram, {}, frame_width);

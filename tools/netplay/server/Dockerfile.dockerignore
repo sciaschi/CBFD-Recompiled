@@ -1,0 +1,3 @@
+# The build context is the repository: only the netplay transport's folder is needed.
+*
+!host/src/netplay/net

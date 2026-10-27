@@ -106,4 +106,57 @@ namespace conker::netplay {
         }
         return endpoint;
     }
+
+    std::string encode_room_code(uint64_t room) {
+        if (room == 0 || room > max_room) {
+            return {};
+        }
+        std::string code;
+        for (int c = 0; c < 8; c++) {
+            if (c == 4) code += '-';
+            code += alphabet[(room >> (35 - 5 * c)) & 31];
+        }
+        return code;
+    }
+
+    std::optional<uint64_t> decode_room_code(std::string_view code) {
+        uint64_t room = 0;
+        int characters = 0;
+        for (char c : code) {
+            if (c == '-' || c == ' ') continue;
+            const int value = value_of(c);
+            if (value < 0 || ++characters > 8) return std::nullopt;
+            room = room << 5 | (uint64_t)value;
+        }
+        if (characters != 8 || room == 0) {
+            return std::nullopt;
+        }
+        return room;
+    }
+
+    std::string room_name(uint64_t room) {
+        static constexpr const char* adjectives[32] = {
+            "Grumpy", "Sleepy", "Brave", "Fuzzy", "Sneaky", "Jolly", "Rusty", "Lucky", "Muddy", "Shiny",
+            "Bouncy", "Clumsy", "Dizzy", "Fancy", "Gentle", "Hasty", "Mighty", "Nimble", "Plucky", "Quiet",
+            "Rowdy", "Silly", "Spooky", "Sturdy", "Tiny", "Wobbly", "Zesty", "Cheeky", "Crafty", "Dapper",
+            "Frosty", "Golden",
+        };
+        static constexpr const char* nouns[32] = {
+            "Squirrel", "Panther", "Weasel", "Hedgehog", "Bat", "Wasp", "Bee", "Teddy", "Haybale", "Acorn",
+            "Barrel", "Cog", "Cheese", "Pumpkin", "Scarecrow", "Raptor", "Tank", "Castle", "Windmill", "Barn",
+            "Beehive", "Sunflower", "Mushroom", "Frying Pan", "Toilet", "Scythe", "Anchor", "Lantern", "Kettle",
+            "Cannon", "Bucket", "Trophy",
+        };
+        // Mixed first, so near numbers don't share a word.
+        uint64_t x = room * 0x9E3779B97F4A7C15ull;
+        x ^= x >> 29;
+        return std::string(adjectives[x & 31]) + " " + nouns[(x >> 5) & 31];
+    }
+
+    std::string player_name(uint64_t player) {
+        // Another mix than rooms', so a player and their room don't share a name.
+        uint64_t x = (player ^ 0xC2B2AE3D27D4EB4Full) * 0xBF58476D1CE4E5B9ull;
+        x ^= x >> 31;
+        return room_name(x == 0 ? 1 : x);
+    }
 }

@@ -48,6 +48,7 @@ static uint8_t* crash_rdram = nullptr;
 #if defined(__linux__) || defined(__APPLE__)
 #include <csignal>
 #include <execinfo.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #if defined(__APPLE__)
 #include <mach-o/dyld.h>
@@ -111,7 +112,7 @@ static void crash_add_stack(CrashReport& report, void* const* frames, USHORT cou
             DWORD displacement = 0;
             if (SymGetLineFromAddr64(process, (DWORD64)frames[i], &displacement, &line)) {
                 crash_add(report, "  %s+0x%llx (%s:%lu)\n", symbol->Name, (unsigned long long)offset,
-                    std::filesystem::path(line.FileName).filename().string().c_str(), line.LineNumber);
+                    reinterpret_cast<const char*>(std::filesystem::path(line.FileName).filename().u8string().c_str()), line.LineNumber);
             }
             else {
                 crash_add(report, "  %s+0x%llx\n", symbol->Name, (unsigned long long)offset);
@@ -125,6 +126,7 @@ static void crash_add_stack(CrashReport& report, void* const* frames, USHORT cou
 
 // The console window closes with the process, so also keep the report in
 // crash.log next to the executable, and show it with where it was saved.
+constexpr uintmax_t crash_log_most_bytes = 1024 * 1024;
 static void crash_publish(const CrashReport& report) {
     std::fputs(report.c_str(), stderr);
     std::fflush(stderr);
@@ -132,14 +134,20 @@ static void crash_publish(const CrashReport& report) {
     DWORD length = GetModuleFileNameW(nullptr, exe, MAX_PATH);
     std::filesystem::path log_path = (length > 0 && length < MAX_PATH)
         ? std::filesystem::path(exe).parent_path() / "crash.log" : std::filesystem::path("crash.log");
+    // (Begun afresh once it has grown big, so it keeps the latest reports.)
+    std::error_code size_error;
+    if (std::filesystem::file_size(log_path, size_error) > crash_log_most_bytes && !size_error) {
+        std::filesystem::remove(log_path, size_error);
+    }
     if (FILE* log = _wfopen(log_path.c_str(), L"a")) {
         std::fputs(report.c_str(), log);
         std::fputs("\n", log);
         std::fclose(log);
     }
-    std::string message = "Conker's Bad Fur Day (recompiled) crashed. The report below was saved to " +
-        log_path.string() + ".\n\n" + report;
-    MessageBoxA(nullptr, message.c_str(), "Conker's Bad Fur Day (recompiled)", MB_OK | MB_ICONERROR);
+    // (Wide: a path with characters outside the system's code page can't be made narrow, and threw here.)
+    std::wstring message = L"Conker's Bad Fur Day (recompiled) crashed. The report below was saved to " +
+        log_path.wstring() + L".\n\n" + std::wstring(report.begin(), report.end());
+    MessageBoxW(nullptr, message.c_str(), L"Conker's Bad Fur Day (recompiled)", MB_OK | MB_ICONERROR);
 }
 
 static LONG WINAPI crash_handler(EXCEPTION_POINTERS* info) {
@@ -222,15 +230,19 @@ static void install_crash_handler() {}
 // opens beside the game's (issue #128). Its output still goes where it went: a stream already handed
 // over (redirected to a file or a pipe) is kept, and otherwise, started from a terminal, the program
 // writes to that terminal's console. Started from Explorer or Steam there's none, and nothing's shown.
-static void attach_parent_console() {
+// Whether what it prints goes somewhere (a stream handed over, or a console): else it's written to conker.log.
+static bool attach_parent_console() {
     auto handed_over = [](DWORD which) {
         const HANDLE handle = GetStdHandle(which);
         return handle != nullptr && handle != INVALID_HANDLE_VALUE && GetFileType(handle) != FILE_TYPE_UNKNOWN;
     };
     const bool out_handed_over = handed_over(STD_OUTPUT_HANDLE);
     const bool err_handed_over = handed_over(STD_ERROR_HANDLE);
-    if ((out_handed_over && err_handed_over) || !AttachConsole(ATTACH_PARENT_PROCESS)) {
-        return;
+    if (out_handed_over && err_handed_over) {
+        return true;
+    }
+    if (!AttachConsole(ATTACH_PARENT_PROCESS)) {
+        return out_handed_over;
     }
     FILE* stream = nullptr;
     if (!out_handed_over) {
@@ -239,9 +251,15 @@ static void attach_parent_console() {
     if (!err_handed_over) {
         freopen_s(&stream, "CONOUT$", "w", stderr);
     }
+    return true;
 }
 #else
-static void attach_parent_console() {}
+// Whether what it prints goes somewhere: a terminal, a file or a pipe (not nowhere, as from a desktop: /dev/null, or a
+// session's journal).
+static bool attach_parent_console() {
+    struct stat info;
+    return isatty(STDOUT_FILENO) || (fstat(STDOUT_FILENO, &info) == 0 && (S_ISREG(info.st_mode) || S_ISFIFO(info.st_mode)));
+}
 #endif
 
 extern "C" void recomp_entrypoint(uint8_t* rdram, recomp_context* ctx);
@@ -532,7 +550,7 @@ namespace {
 }
 
 int main(int argc, char** argv) {
-    attach_parent_console();
+    const bool output_seen = attach_parent_console();
     // Unbuffered, so diagnostics (e.g. RT64's microcode hashes) survive a crash.
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     install_crash_handler();
@@ -612,6 +630,17 @@ int main(int argc, char** argv) {
         recomp::register_config_path(old_data_dir);
     }
     std::filesystem::create_directories(recomp::get_config_path());
+    // conker.log, if what it prints would go nowhere: next to the game, where a player finds it (with crash.log), unless
+    // that's somewhere it can't write (or, on macOS, the app bundle); else in the data folder.
+    if (!output_seen) {
+        std::filesystem::path log_folder = recomp::get_config_path();
+#if !defined(__APPLE__)
+        if (data_dir.empty()) {
+            log_folder = exe_directory(argv[0]);
+        }
+#endif
+        conker::log_file::start(log_folder, recomp::get_config_path());
+    }
     // --seconds (test runs) starts the game directly instead of opening the launcher.
     bool start_directly = headless || seconds > 0;
 #if defined(CONKER_NETPLAY)
@@ -724,8 +753,16 @@ int main(int argc, char** argv) {
     if (timer.joinable()) {
         timer.join();
     }
+    // Ended here rather than by returning: some of the runtime's threads (the game's own, the audio's) are never joined,
+    // and destroying the program's statics under them made quitting crash now and then (a message queue freed while one
+    // took from it). Everything kept is written by now (recomp::start joins the game, saving and timer threads; the
+    // settings are written as they change; stdout and stderr aren't buffered), but a save state just taken. Return to
+    // Launcher starts the program again first (on Linux and macOS it replaces this one, so doesn't come back).
+    conker::save_states::wait_for_writes();
+    std::fflush(stdout);
+    std::fflush(stderr);
     if (restart_into_launcher) {
         restart_at_launcher(argc, argv);
     }
-    return EXIT_SUCCESS;
+    std::_Exit(EXIT_SUCCESS);
 }

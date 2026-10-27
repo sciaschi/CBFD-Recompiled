@@ -241,6 +241,7 @@ namespace {
         conker::texture_packs::update_unpacking();
         conker::fps_counter::update();
         conker::notices::update();
+        conker::log_file::check();
 #if defined(CONKER_NETPLAY)
         conker::netplay_menu::update();
         conker::netplay_status::update();
