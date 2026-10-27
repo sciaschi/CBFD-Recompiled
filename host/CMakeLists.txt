@@ -256,8 +256,11 @@ elseif (WIN32)
     # The crash handler symbolises the stack with DbgHelp.
     target_link_libraries(ConkerRecomp PRIVATE DbgHelp)
     # Mods replace recompiled functions by patching their machine code, so identical
-    # functions must not be folded into one.
-    target_link_options(ConkerRecomp PRIVATE /OPT:NOICF)
+    # functions must not be folded into one, nor linked incrementally (issue #178): RelWithDebInfo
+    # links with /INCREMENTAL, which points every function pointer at a 5-byte jmp thunk in a table
+    # of them, and a mod's 12-byte patch there overwrote the next two thunks, so calling those
+    # functions crashed (the left stick's, for one hook).
+    target_link_options(ConkerRecomp PRIVATE /OPT:NOICF /INCREMENTAL:NO)
     # A GUI app, so no console window opens beside the game's (issue #128), still entered at main
     # (main.cpp's attach_parent_console keeps the output going to a terminal it's started from).
     set_target_properties(ConkerRecomp PROPERTIES WIN32_EXECUTABLE TRUE)
