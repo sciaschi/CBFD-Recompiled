@@ -113,4 +113,5 @@ def main():
     return 0 if first is None and len(a) == len(b) else 1
 
 
-sys.exit(main())
+if __name__ == "__main__":
+    sys.exit(main())

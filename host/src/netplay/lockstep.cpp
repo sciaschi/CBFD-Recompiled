@@ -18,21 +18,29 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
+#include <filesystem>
 #include <map>
 #include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
 
+#include "librecomp/game.hpp"
 #include "librecomp/save_states.hpp"
+#include "ultramodern/timeline.hpp"
 
+#include "../conker.hpp"
+#include "hello.hpp"
 #include "net/session.hpp"
 
 // The runtime's flag for the program quitting (ultramodern::quit), set before it waits for the game's
 // threads to end. librecomp's pi.cpp reads it the same way.
 extern std::atomic_bool exited;
 
+using conker::netplay::Delay;
 using conker::netplay::Event;
+using conker::netplay::Gone;
 using conker::netplay::Hash;
 using conker::netplay::Inputs;
 using conker::netplay::Motion;
@@ -61,31 +69,138 @@ namespace {
     // --input-delay's, or the menu's: the reads ahead, or auto (the host chooses from the round trips).
     constexpr int auto_delay = -1;
     int delay_option = auto_delay;
-    // The match's, from the host (Start).
+    // The match's, from the host (Start), at the read the game is at.
     int delay = 2;
+    // ...and its last change (#18): `before` up to read `from`, `after` from it. With auto, the host changes it
+    // as the round trips do (Delay); every peer switches at the same read, which none has reached as it hears.
+    // At that read each peer sends its own pads up to the read plus the new delay: a raised one's reads in
+    // between get the pad the controllers give then too (held), and a lowered one's live pads aren't sent
+    // until the reads already sent are played.
+    struct DelayChange {
+        uint64_t from = 0;
+        int before = 2;
+        int after = 2;
+    } delays;
+    int delay_at(uint64_t read) { return read < delays.from ? delays.before : delays.after; }
+    // The host's checks (every hash_every reads) in a row that wanted a higher delay, and a lower one. Higher:
+    // the round trips need more, or at least late_reads_to_raise reads came late as they waited for the others
+    // since the last check (a lossy network: the pads that are sent again come late, which a higher delay
+    // hides; the round trips don't show it), or most of a peer's reads since its last hash waited over
+    // long_wait_ms (its own, or a joiner's, its Hash says: two machines half a frame out of step on a LAN, one
+    // waiting so at every read, keep 30 frames a second but show them unevenly, which frame interpolation
+    // makes judder), then one more, up to most_raised_for_waiting more than the round
+    // trips need (a peer that can't keep up, rather than the network, makes reads late whatever the delay). It's
+    // raised after raise_checks (every read waits until then), and lowered only after lower_checks with
+    // lower_spare_ms to spare and no read late from waiting, so it doesn't go back and forth: a read at a time
+    // while it's above what the round trips need for waiting, else to what they need. Nor is it changed again
+    // within settle_reads of the last change (Delay's from read relies on that: a joiner is at most the delay
+    // ahead only once the pads a lowering already sent are played).
+    int wanted_higher = 0;
+    int wanted_lower = 0;
+    int raised_for_waiting = 0;
+    constexpr int most_raised_for_waiting = 2;
+    uint64_t late_from_waiting = 0;
+    // Reads since this peer's last hash that waited over long_wait_ms, and the most a joiner's last Hash said.
+    uint64_t long_waits = 0;
+    uint8_t joiners_long_waits = 0;
+    constexpr double long_wait_ms = 8.0;    // delay_needed's wait_ms: more than a read can wait unseen
+    constexpr uint64_t long_waits_to_raise = hash_every / 2;
+    constexpr int raise_checks = 2;
+    constexpr int lower_checks = 5;
+    constexpr uint64_t late_reads_to_raise = 3;
+    constexpr double lower_spare_ms = 12.0;
+    constexpr uint64_t settle_reads = 90;
     uint64_t desync_at = never;
+    // --netplay-fake-network's: the network faked from the start, and changes at reads (an outage of
+    // `outage_seconds` from read `outage_at`; the lag `lag_then` from read `lag_at`).
+    conker::netplay::FakeNetwork fake;
+    bool faking = false;
+    uint64_t outage_at = never;
+    double outage_seconds = 0;
+    double outage_until = 0;
+    uint64_t lag_at = never;
+    int lag_then = 0;
+    // --netplay-stall-at's: the game stops at that read for that long, as on a hitch (loading, the system).
+    uint64_t stall_at = never;
+    long stall_ms = 0;
     bool options_valid = true;
 
     bool library_started = false;
     conker::netplay::Session* session = nullptr;
     uint8_t own_ports = 0;          // bit n: port n
     int match_players = 0;
+    conker::netplay::Hello sent;    // what this peer said in the handshake (begin's)
     bool initial_sent = false;
     bool ended = false;         // the match is over for this peer: nothing more is sent
     bool left = false;
     std::string why_over;       // why the match ended, for the player
+    // How long the game waited for the others' input, for tests (printed as the match ends): the reads that
+    // waited over a millisecond, the time in all and the longest wait.
+    struct Waits {
+        uint64_t reads = 0;
+        uint64_t waited = 0;
+        double seconds = 0;
+        double longest = 0;
+        uint64_t longest_read = 0;
+        uint64_t catch_ups = 0;
+        uint64_t delay_changes = 0;
+        // What a player feels: reads that came late after the one before (a frame is 33 ms at 30 a second;
+        // a read waiting where the game would have slept until its time anyway costs nothing).
+        double last_read_at = 0;
+        uint64_t late = 0;
+        double latest = 0;
+        uint64_t latest_read = 0;
+        bool printed = false;
+    } waits;
+    constexpr double late_seconds = 0.050;
+    // Catching up (#16): when the others' inputs reach this many reads further ahead than they would if they
+    // were at this peer's read, this peer has fallen behind them (a hitch here: the others ran on until they
+    // needed its inputs, then waited, and would wait on it at every read from then on). It runs the timeline
+    // faster than real time until they're no further ahead than that again. The input delay is the furthest
+    // anyone can get ahead, so with a delay of 0 or 1 it never needs to.
+    constexpr int64_t behind_to_catch_up = 2;
+    bool catching_up = false;
+    uint64_t caught_up_from = 0;
+    double catching_up_since = 0;
+
+    void set_catching_up(bool on) {
+        catching_up = on;
+        ultramodern::timeline::set_catching_up(on);
+    }
 
     std::array<std::vector<Input>, conker::netplay::max_players> received;
     std::array<bool, conker::netplay::max_players> gone{};
+    // A player that left the match while it went on (#17): from this read their port gets an idle pad (never:
+    // they're in, or the match ends without them). The host decides it, the read after the last of their
+    // inputs it had, and tells the others (Gone); nobody can be past it, as everyone needed those inputs.
+    std::array<uint64_t, conker::netplay::max_players> idle_from;
     // Whether a peer that's gone stopped answering, rather than saying goodbye (a crash, a lost connection),
     // so it's told as maybe having quit.
     bool gone_silently = false;
+    // What status() and take_news() give the main thread, from the game thread (and the connecting one):
+    // set by publish, under their own lock, as the session's is held while a read waits. A port's round trip
+    // is asked of the library every round_trips_every seconds at most.
+    std::mutex status_mutex;
+    conker::lockstep::Status shown;
+    std::vector<std::string> news;
+    double round_trips_at = 0;
+    constexpr double round_trips_every = 0.5;
+    // How many reads the others are ahead of this peer at the last read (INT64_MIN: nobody else plays).
+    int64_t last_behind = INT64_MIN;
+    void publish(uint8_t waiting_for = 0, double waiting_since = 0);
+    void tell(const std::string& sentence) {
+        std::printf("[netplay] (on screen) %s\n", sentence.c_str());
+        std::lock_guard lock(status_mutex);
+        news.push_back(sentence);
+    }
     // The read the game is at, and how far ahead of it the others' Inputs and hashes may be: a peer runs at
     // most the input delay ahead of the slowest (it waits for their pads), and sends its own pads the delay
     // ahead again, so twice the delay, an Inputs packet's reads and some spare. Anything further is a broken
     // or hostile peer, and refused, so a peer can't make this one keep pads or hashes without end.
     uint64_t current_read = 0;
-    uint64_t horizon() { return current_read + 2 * (uint64_t)delay + conker::netplay::input_window + 16; }
+    uint64_t horizon() {
+        return current_read + 2 * (uint64_t)std::max(delays.before, delays.after) + conker::netplay::input_window + 16;
+    }
 
     // The session is used by the thread connecting (the menu's, or the game's), then the game's, and by the
     // main thread as the program quits (finish): one at a time. `stopping` is set by finish, after which
@@ -96,10 +211,18 @@ namespace {
     // ended every game thread, and by then the others have long given up on this peer (the game thread
     // may be waiting in on_read for pads that won't come, as they're waiting for this one's).
     std::thread quit_watcher;
-    // This peer's hashes, and those of the others (the host's for a joiner, every joiner's for the host),
-    // until they're compared.
-    std::map<uint32_t, uint64_t> own_hashes;
-    std::map<std::pair<int, uint32_t>, uint64_t> their_hashes;
+    // This peer's hashes (the memory's, and each region's), and those of the others (the host's for a
+    // joiner, every joiner's for the host), until they're compared.
+    struct OwnHash {
+        uint64_t hash = 0;
+        std::array<uint64_t, conker::netplay::memory_regions> regions{};
+    };
+    std::map<uint32_t, OwnHash> own_hashes;
+    std::map<std::pair<int, uint32_t>, Hash> their_hashes;
+    // on_read's, while it runs: the memory kept for a desync report.
+    const conker::lockstep::Memory* memory_now = nullptr;
+    // A desync report holds each player's inputs for this many reads up to the desync's.
+    constexpr uint32_t report_reads = 120;
 
     double now() {
         using namespace std::chrono;
@@ -118,7 +241,28 @@ namespace {
         return (count == 1 ? "port " : "ports ") + numbers;
     }
 
+    // "Player 2", or "Players 2 and 3", for the player.
+    std::string players_text(uint8_t ports) {
+        std::string text = ports_text(ports);
+        text.replace(0, 4, "Player");
+        return text;
+    }
+
+    void print_waits() {
+        if (waits.printed || waits.reads == 0) return;
+        waits.printed = true;
+        std::printf("[netplay] waits: %llu of %llu reads waited for the others, %.0f ms in all, the longest %.0f ms (read %llu); "
+            "%llu reads came over %.0f ms after the one before, the latest %.0f ms (read %llu); input delay %d, changed %llu times; "
+            "caught up %llu times\n",
+            (unsigned long long)waits.waited, (unsigned long long)waits.reads, waits.seconds * 1000, waits.longest * 1000,
+            (unsigned long long)waits.longest_read, (unsigned long long)waits.late, late_seconds * 1000, waits.latest * 1000,
+            (unsigned long long)waits.latest_read, delay, (unsigned long long)waits.delay_changes, (unsigned long long)waits.catch_ups);
+    }
+
     void end_match(Reason reason, const char* why) {
+        print_waits();
+        // The game goes on without the match (the menu's): on real time.
+        if (catching_up) set_catching_up(false);
         std::printf("[netplay] the match is over: %s\n", why);
         why_over = why;
         if (!left && session != nullptr) {
@@ -126,12 +270,14 @@ namespace {
             left = true;
         }
         ended = true;
+        publish();
     }
 
     // Leaves the match with a goodbye, and polls the library a moment for it to go out (it's sent as the
     // library is polled), or the others only hear the match is over when their connection times out.
     void say_goodbye() {
         std::scoped_lock lock(session_mutex);
+        if (catching_up) set_catching_up(false);
         if (session != nullptr && !left) {
             session->leave(Reason::quit);
             left = true;
@@ -141,6 +287,125 @@ namespace {
             }
         }
         ended = true;
+        publish();
+    }
+
+    std::string hex(uint64_t value, int digits = 16) {
+        char text[17];
+        std::snprintf(text, sizeof(text), "%0*llx", digits, (unsigned long long)value);
+        return text;
+    }
+
+    // The regions of memory whose hashes differ (by the 16 bits a Hash carries).
+    std::vector<int> differing_regions(const OwnHash& own, const Hash& theirs) {
+        std::vector<int> regions;
+        for (int i = 0; i < conker::netplay::memory_regions; i++) {
+            if ((uint16_t)own.regions[i] != theirs.regions[i]) {
+                regions.push_back(i);
+            }
+        }
+        return regions;
+    }
+
+    // The game's addresses a region covers, as "0x80400000-0x8040FFFF".
+    std::string region_addresses(int region) {
+        const uint32_t start = 0x80000000u + (uint32_t)region * conker::netplay::memory_region_size;
+        return "0x" + hex(start, 8) + "-0x" + hex(start + conker::netplay::memory_region_size - 1, 8);
+    }
+
+    // A path as UTF-8, for the log and the player (what string() gives can't hold every character on Windows).
+    std::string path_text(const std::filesystem::path& path) {
+        const std::u8string text = path.u8string();
+        return std::string(text.begin(), text.end());
+    }
+
+    Input idle_input(int port);
+
+    // Writes this peer's desync report (lockstep.hpp) for a difference from `port`'s at `read`, and the memory
+    // kept at that read beside it. Its path, or empty if it couldn't.
+    std::string write_report(int port, uint32_t read, const OwnHash& own, const Hash& theirs, const std::vector<int>& regions) {
+        std::error_code error;
+        const std::filesystem::path folder = recomp::get_config_path() / "netplay-desyncs";
+        std::filesystem::create_directories(folder, error);
+        char stamp[32];
+        const std::time_t time = std::time(nullptr);
+        std::strftime(stamp, sizeof(stamp), "%Y%m%d-%H%M%S", std::localtime(&time));
+        const std::string name = std::string("desync-") + stamp + "-read" + std::to_string(read) + "-port" +
+            std::to_string(std::countr_zero(own_ports) + 1);
+        const std::filesystem::path path = folder / (name + ".json");
+        const bool dumped = memory_now != nullptr && memory_now->dump(read, folder / (name + ".bin"));
+        FILE* file = conker::lockstep::create_file(path);
+        if (file == nullptr) {
+            std::fprintf(stderr, "[netplay] %s: couldn't create the desync report\n", path_text(path).c_str());
+            return {};
+        }
+        std::fprintf(file, "{\n  \"report\": \"Conker netplay desync\",\n  \"version\": 1,\n");
+        std::fprintf(file, "  \"read\": %u,\n  \"ports\": [", read);
+        for (int p = 0, n = 0; p < conker::netplay::max_players; p++) {
+            if ((own_ports & (1u << p)) != 0) std::fprintf(file, "%s%d", n++ == 0 ? "" : ", ", p + 1);
+        }
+        std::fprintf(file, "],\n  \"compared_with_port\": %d,\n", port + 1);
+        std::fprintf(file, "  \"build_id\": \"%s\",\n  \"build\": \"%s\",\n  \"rom\": \"%s\",\n  \"profile\": \"%s\",\n  \"mods\": \"%s\",\n",
+            conker::netplay::build_id(), hex(sent.build).c_str(), hex(sent.rom).c_str(), hex(sent.profile).c_str(), hex(sent.mods).c_str());
+        std::fprintf(file, "  \"players\": %d,\n  \"input_delay\": %d,\n  \"own_view\": %s,\n  \"view_pairs\": %u,\n",
+            match_players, delay_at(read), match_own_view ? "true" : "false", match_pairs);
+        std::fprintf(file, "  \"hash\": \"%s\",\n  \"their_hash\": \"%s\",\n  \"differing_regions\": [",
+            hex(own.hash).c_str(), hex(theirs.hash).c_str());
+        for (size_t i = 0; i < regions.size(); i++) std::fprintf(file, "%s%d", i == 0 ? "" : ", ", regions[i]);
+        std::fprintf(file, "],\n  \"region_size\": %u,\n  \"regions\": [", conker::netplay::memory_region_size);
+        for (int i = 0; i < conker::netplay::memory_regions; i++) {
+            std::fprintf(file, "%s\"%s\"", i == 0 ? "" : i % 4 == 0 ? ",\n    " : ", ", hex(own.regions[i]).c_str());
+        }
+        std::fprintf(file, "],\n  \"their_regions\": [");
+        for (int i = 0; i < conker::netplay::memory_regions; i++) {
+            std::fprintf(file, "%s\"%s\"", i == 0 ? "" : i % 8 == 0 ? ",\n    " : ", ", hex(theirs.regions[i], 4).c_str());
+        }
+        std::fprintf(file, "],\n  \"memory\": %s,\n", dumped ? ("\"" + name + ".bin\"").c_str() : "null");
+        // Each player's input for the reads up to the desync's (the reads before it made the memory compared;
+        // the read's own is given after): [buttons, stick x, stick y, mouse x, y, gyro x, y, wheel, Controls].
+        const uint32_t first = read > report_reads ? read - report_reads : 0;
+        // Players that left: the read their port was idle from (the inputs then are the idle ones), or null.
+        std::fprintf(file, "  \"idle_from\": [");
+        for (int p = 0; p < match_players; p++) {
+            std::fprintf(file, "%s%s", p == 0 ? "" : ", ", idle_from[p] == never ? "null" : std::to_string(idle_from[p]).c_str());
+        }
+        std::fprintf(file, "],\n  \"inputs_from_read\": %u,\n  \"inputs\": [", first);
+        for (int p = 0; p < match_players; p++) {
+            std::fprintf(file, "%s\n    [", p == 0 ? "" : ",");
+            for (uint32_t r = first; r <= read && (r < received[p].size() || r >= idle_from[p]); r++) {
+                const Input in = r < idle_from[p] ? received[p][r] : idle_input(p);
+                std::fprintf(file, "%s[%u, %d, %d, %d, %d, %d, %d, %d, %u]", r == first ? "" : (r - first) % 4 == 0 ? ",\n     " : ", ",
+                    in.pad.buttons, in.pad.stick_x, in.pad.stick_y, in.motion.mouse_x, in.motion.mouse_y,
+                    in.motion.gyro_x, in.motion.gyro_y, in.motion.wheel, in.motion.controls);
+            }
+            std::fprintf(file, "]");
+        }
+        std::fprintf(file, "\n  ]\n}\n");
+        if (std::fclose(file) != 0) {
+            std::fprintf(stderr, "[netplay] %s: couldn't write the desync report\n", path_text(path).c_str());
+            return {};
+        }
+        std::printf("[netplay] desync report written to %s%s\n", path_text(path).c_str(), dumped ? " (and its memory)" : "");
+        return path_text(path);
+    }
+
+    // The game's memory at `read` isn't `port`'s: says where, writes the report, and ends the match.
+    void desync(int port, uint32_t read, const OwnHash& own, const Hash& theirs) {
+        const std::vector<int> regions = differing_regions(own, theirs);
+        std::string where;
+        for (size_t i = 0; i < regions.size() && i < 8; i++) {
+            where += (i == 0 ? "" : ", ") + std::to_string(regions[i]) + " (" + region_addresses(regions[i]) + ")";
+        }
+        if (regions.size() > 8) where += " and " + std::to_string(regions.size() - 8) + " more";
+        std::printf("[netplay] desync at read %u: port %d's game memory isn't this one's (%016llx, here %016llx), in %s\n",
+            read, port + 1, (unsigned long long)theirs.hash, (unsigned long long)own.hash,
+            regions.empty() ? "no region the region hashes tell apart" : ((regions.size() == 1 ? "region " : "regions ") + where).c_str());
+        const std::string report = write_report(port, read, own, theirs, regions);
+        std::string why = "the games went different ways (a desync)";
+        if (!report.empty()) {
+            why += ". A report is in " + report + ": please send it, with the other players' reports, when you report the problem";
+        }
+        end_match(Reason::desync, why.c_str());
     }
 
     // Compares every hash that both sides have for the same read. Peers are never more than the input
@@ -152,10 +417,8 @@ namespace {
                 ++it;
                 continue;
             }
-            if (own->second != it->second) {
-                std::printf("[netplay] desync at read %u: port %d's game memory isn't this one's (%016llx, here %016llx)\n",
-                    it->first.second, it->first.first + 1, (unsigned long long)it->second, (unsigned long long)own->second);
-                end_match(Reason::desync, "the games went different ways (a desync)");
+            if (own->second.hash != it->second.hash) {
+                desync(it->first.first, own->first, own->second, it->second);
                 return;
             }
             it = their_hashes.erase(it);
@@ -165,20 +428,85 @@ namespace {
         }
     }
 
+    // A peer found a desync. Its hash for that read came before its goodbye, so if this peer's game is the
+    // one it differs from, the comparison finds it here too (and writes this peer's report).
+    void other_desynced() {
+        compare_hashes();
+        if (!ended) {
+            end_match(Reason::desync, "a player's game went a different way (a desync)");
+        }
+    }
+
+    // `port` plays no more from read `from`: an idle pad, with their last Controls (their camera's settings).
+    void let_go(int port, uint64_t from) {
+        idle_from[port] = from;
+        std::printf("[netplay] port %d plays no more: no input from read %llu, the others play on\n", port + 1, (unsigned long long)from);
+    }
+
+    // Tells the player that `ports` left (`silently`: stopped answering), and when nobody else is left, that
+    // this machine's players play on.
+    void tell_left(uint8_t ports, bool silently) {
+        {
+            std::lock_guard lock(status_mutex);
+            shown.left |= ports;
+            if (silently) shown.left_silently |= ports;
+        }
+        tell(players_text(ports) + (silently ? " stopped answering (they may have quit)." : " left."));
+        for (int port = 0; port < match_players; port++) {
+            if ((own_ports & (1u << port)) == 0 && idle_from[port] == never) return;
+        }
+        tell("Everyone else has left: the match goes on here.");
+    }
+
+    // The delay becomes `to` from read `from`.
+    void change_delay(int to, uint64_t from) {
+        std::printf("[netplay] read %llu: the input delay becomes %d from read %llu (it's %d)\n", (unsigned long long)current_read, to,
+            (unsigned long long)from, delays.after);
+        delays = { from, delays.after, to };
+        waits.delay_changes++;
+    }
+
+    Input idle_input(int port) {
+        Input idle;
+        idle.motion.controls = received[port].empty() ? conker::motion::default_controls : received[port].back().motion.controls;
+        return idle;
+    }
+
     void handle(const Event& event) {
+        // Once the match is over (a poll's events go on after the one that ended it), nothing more: the first
+        // reason stays the one told, and a desync's report with it.
+        if (ended) {
+            return;
+        }
         switch (event.type) {
             case Event::Type::joined:
             case Event::Type::welcomed:
             case Event::Type::started:
                 break;
             case Event::Type::left:
+                // The host's: a joiner's machine left (all its ports), saying goodbye or not answering.
                 std::printf("[netplay] %s left: %s\n", ports_text(event.ports).c_str(), conker::netplay::describe(event.reason));
                 for (int port = 0; port < conker::netplay::max_players; port++) {
                     if ((event.ports & (1u << port)) != 0) gone[port] = true;
                 }
                 gone_silently = gone_silently || event.reason == Reason::timeout;
                 if (event.reason == Reason::desync) {
-                    end_match(Reason::desync, "a player's game went a different way (a desync)");
+                    other_desynced();
+                }
+                else if (!ended) {
+                    // The others play on: every input of theirs this host had was passed on as it came, so
+                    // the read after the last is the same for everyone, and none of them is past it.
+                    uint8_t let_go_ports = 0;
+                    for (int port = 0; port < conker::netplay::max_players; port++) {
+                        if ((event.ports & (1u << port)) != 0 && idle_from[port] == never) {
+                            let_go(port, received[port].size());
+                            session->send(Gone{ (uint8_t)port, (uint32_t)received[port].size(), (uint8_t)(event.reason == Reason::timeout) });
+                            let_go_ports |= (uint8_t)(1u << port);
+                        }
+                    }
+                    if (let_go_ports != 0) {
+                        tell_left(let_go_ports, event.reason == Reason::timeout);
+                    }
                 }
                 break;
             case Event::Type::ended:
@@ -193,7 +521,7 @@ namespace {
                 gone_silently = gone_silently || event.reason == Reason::timeout;
                 left = true;
                 if (event.reason == Reason::desync) {
-                    end_match(Reason::desync, "a player's game went a different way (a desync)");
+                    other_desynced();
                 }
                 break;
             case Event::Type::packet:
@@ -208,6 +536,26 @@ namespace {
                         got.push_back({ inputs->pads[i], inputs->motions[i] });
                     }
                 }
+                else if (const Gone* g = std::get_if<Gone>(&event.packet)) {
+                    // The host's word that a player left: from the read after the last of their inputs it passed on,
+                    // all of which came first.
+                    if (idle_from[g->port] != never || g->from_read != received[g->port].size()) {
+                        end_match(Reason::protocol, "the host said a player left at a read that doesn't fit");
+                        return;
+                    }
+                    std::printf("[netplay] %s left%s\n", ports_text((uint8_t)(1u << g->port)).c_str(), g->silent ? " (stopped answering)" : "");
+                    gone[g->port] = true;
+                    let_go(g->port, g->from_read);
+                    tell_left((uint8_t)(1u << g->port), g->silent != 0);
+                }
+                else if (const Delay* d = std::get_if<Delay>(&event.packet)) {
+                    // The host's: from a read this peer hasn't sent its pads at yet, once the last change is made.
+                    if (d->from_read <= current_read || current_read < delays.from) {
+                        end_match(Reason::protocol, "the host changed the input delay at a read that doesn't fit");
+                        return;
+                    }
+                    change_delay(d->delay, d->from_read);
+                }
                 else if (const Hash* hash = std::get_if<Hash>(&event.packet)) {
                     // Hashes come every hash_every reads, within the horizon; one for a read this peer no
                     // longer has its own of can't be compared, and is dropped.
@@ -216,8 +564,9 @@ namespace {
                         return;
                     }
                     if (own_hashes.empty() || hash->read >= own_hashes.begin()->first) {
-                        their_hashes[{ event.port, hash->read }] = hash->hash;
+                        their_hashes[{ event.port, hash->read }] = *hash;
                     }
+                    joiners_long_waits = std::max(joiners_long_waits, hash->long_waits);
                 }
                 break;
         }
@@ -259,36 +608,99 @@ namespace {
     // is a frame, 33 ms at 30 frames a second, most of it spare), so a LAN's sub-millisecond trips give 0:
     // the others' inputs reach the game as soon as this one's own. Each read past that hides a frame's
     // worth of trip, with a few ms for the trip to vary.
-    int delay_for(std::vector<int> round_trips, size_t joiners) {
+    constexpr double spare_ms = 4.0;    // for the trip varying
+    int delay_needed(std::vector<int> round_trips, double spare) {
         constexpr double frame_ms = 1000.0 / 30.0;
         constexpr double wait_ms = 8.0;     // what a read can wait without the game falling behind
-        constexpr double spare_ms = 4.0;    // for the trip varying
-        // A round trip the library doesn't know yet: the delay a match had before it was chosen.
-        if (round_trips.size() < joiners) {
-            std::printf("[netplay] the round trips to the players aren't all known: input delay 2\n");
-            return 2;
-        }
         std::sort(round_trips.rbegin(), round_trips.rend());
         double one_way = 0;
         for (size_t i = 0; i < round_trips.size() && i < 2; i++) {
             one_way += round_trips[i] / 2.0;
         }
-        const double ahead = one_way + spare_ms - wait_ms;
-        const int chosen = ahead <= 0 ? 0 : (int)std::ceil(ahead / frame_ms);
-        std::printf("[netplay] round trips to the players: %s ms: input delay %d\n", [&] {
-            std::string list;
-            for (int t : round_trips) list += (list.empty() ? "" : ", ") + std::to_string(t);
-            return list.empty() ? std::string("unknown") : list;
-        }().c_str(), std::min(chosen, conker::netplay::max_delay));
-        return std::min(chosen, conker::netplay::max_delay);
+        const double ahead = one_way + spare - wait_ms;
+        return std::min(ahead <= 0 ? 0 : (int)std::ceil(ahead / frame_ms), conker::netplay::max_delay);
     }
 
-    // Whether every player's pad for `read` is here.
-    bool all_here(uint64_t read) {
-        for (int port = 0; port < match_players; port++) {
-            if (received[port].size() <= read) return false;
+    std::string trips_text(const std::vector<int>& round_trips) {
+        std::string list;
+        for (int t : round_trips) list += (list.empty() ? "" : ", ") + std::to_string(t);
+        return list.empty() ? std::string("unknown") : list;
+    }
+
+    int delay_for(const std::vector<int>& round_trips, size_t joiners) {
+        // A round trip the library doesn't know yet: the delay a match had before it was chosen.
+        if (round_trips.size() < joiners) {
+            std::printf("[netplay] the round trips to the players aren't all known: input delay 2\n");
+            return 2;
         }
-        return true;
+        const int chosen = delay_needed(round_trips, spare_ms);
+        std::printf("[netplay] round trips to the players: %s ms: input delay %d\n", trips_text(round_trips).c_str(), chosen);
+        return chosen;
+    }
+
+    // The host, with auto, at read `read` (every hash_every reads): changes the delay if the round trips have
+    // wanted another for long enough. From the read after the furthest a joiner can send its pads at before
+    // it hears: a joiner is at most the delay ahead (it needs the host's pads, sent the delay ahead), and
+    // can make the read after its last of the host's pads before the Delay (sent after them) arrives.
+    void adapt_delay(uint64_t read) {
+        const std::vector<int> trips = session->round_trips_ms();
+        if (trips.empty() || trips.size() < (size_t)session->joiners() || read < delays.from + settle_reads) {
+            late_from_waiting = 0;
+            joiners_long_waits = 0;
+            wanted_higher = 0;
+            wanted_lower = 0;
+            return;
+        }
+        const uint64_t late = late_from_waiting;
+        late_from_waiting = 0;
+        const uint64_t most_long_waits = std::max<uint64_t>(long_waits, joiners_long_waits);
+        joiners_long_waits = 0;
+        const int needed = delay_needed(trips, spare_ms);
+        const int roomy = delay_needed(trips, spare_ms + lower_spare_ms);
+        const bool waiting = (late >= late_reads_to_raise || most_long_waits >= long_waits_to_raise) &&
+            delay < conker::netplay::max_delay && raised_for_waiting < most_raised_for_waiting;
+        wanted_higher = needed > delay || waiting ? wanted_higher + 1 : 0;
+        wanted_lower = roomy < delay && late == 0 && most_long_waits < long_waits_to_raise ? wanted_lower + 1 : 0;
+        if (wanted_higher < raise_checks && wanted_lower < lower_checks) {
+            return;
+        }
+        int to = roomy;
+        if (wanted_higher >= raise_checks && needed > delay) {
+            to = needed;
+            raised_for_waiting = 0;
+        }
+        else if (wanted_higher >= raise_checks) {
+            to = delay + 1;
+            raised_for_waiting++;
+        }
+        else if (raised_for_waiting > 0) {
+            to = delay - 1;
+            raised_for_waiting--;
+        }
+        std::printf("[netplay] round trips to the players: %s ms; %llu reads late from waiting, at most %llu of %llu waited over "
+            "%.0f ms, since the last check\n", trips_text(trips).c_str(), (unsigned long long)late, (unsigned long long)most_long_waits,
+            (unsigned long long)hash_every, long_wait_ms);
+        change_delay(to, read + delay + 2);
+        session->send(Delay{ (uint8_t)to, (uint32_t)delays.from });
+        wanted_higher = 0;
+        wanted_lower = 0;
+    }
+
+    // The read a peer is at whose pads reach `last`: the earliest it can be, as the delay changes.
+    int64_t read_sending(int64_t last) {
+        const int64_t from = (int64_t)delays.from;
+        if (last <= from - 1 + delays.before) return last - delays.before;
+        if (last >= from + delays.after) return last - delays.after;
+        return from - 1;
+    }
+
+    // The ports whose pad for `read` isn't here yet (and who haven't left), bit n for port n.
+    uint8_t missing(uint64_t read) {
+        uint8_t ports = 0;
+        for (int port = 0; port < match_players; port++) {
+            if (received[port].size() <= read && read < idle_from[port]) ports |= (uint8_t)(1u << port);
+        }
+        return ports;
     }
 }
 
@@ -332,6 +744,56 @@ bool conker::lockstep::parse_option(int argc, char** argv, int& i) {
         }
         number(0, netplay::max_delay, n);
         delay_option = (int)n;
+        return true;
+    }
+    if (std::strcmp(option, "--netplay-fake-network") == 0) {
+        // e.g. lag=100,jitter=10,loss=5,reorder=2,dup=1,outage=300:3,lag-at=600:150
+        std::string spec = value != nullptr ? value : "";
+        if (value != nullptr) i++;
+        faking = true;
+        bool good = !spec.empty();
+        for (size_t at = 0; good && at < spec.size();) {
+            size_t end = spec.find(',', at);
+            if (end == std::string::npos) end = spec.size();
+            const std::string item = spec.substr(at, end - at);
+            at = end + 1;
+            const size_t equals = item.find('=');
+            const std::string key = item.substr(0, equals);
+            const char* text = equals == std::string::npos ? "" : item.c_str() + equals + 1;
+            char* rest = nullptr;
+            const double a = std::strtod(text, &rest);
+            double b = 0;
+            const bool pair = *rest == ':';
+            if (pair) b = std::strtod(rest + 1, &rest);
+            good = rest != text && *rest == '\0' && a >= 0 && b >= 0;
+            if (!good) break;
+            if (key == "lag" && !pair && a <= 2000) fake.lag_ms = (int)a;
+            else if (key == "jitter" && !pair && a <= 500) fake.jitter_ms = (float)a;
+            else if (key == "loss" && !pair && a <= 50) fake.loss = (float)a;
+            else if (key == "reorder" && !pair && a <= 50) fake.reorder = (float)a;
+            else if (key == "dup" && !pair && a <= 50) fake.dup = (float)a;
+            else if (key == "outage" && pair && b > 0 && b <= 8) { outage_at = (uint64_t)a; outage_seconds = b; }
+            else if (key == "lag-at" && pair && b <= 2000) { lag_at = (uint64_t)a; lag_then = (int)b; }
+            else good = false;
+        }
+        if (!good) {
+            std::fprintf(stderr, "[netplay] --netplay-fake-network takes lag=<ms>, jitter=<ms>, loss=<%%>, reorder=<%%>, dup=<%%>, "
+                "outage=<read>:<s> (8 s at most) and lag-at=<read>:<ms>, separated by commas\n");
+            options_valid = false;
+        }
+        return true;
+    }
+    if (std::strcmp(option, "--netplay-stall-at") == 0) {
+        unsigned long long at = 0;
+        long ms = 0;
+        char end = 0;
+        if (value == nullptr || std::sscanf(value, "%llu:%ld%c", &at, &ms, &end) != 2 || ms <= 0 || ms > 8000) {
+            std::fprintf(stderr, "[netplay] --netplay-stall-at takes <read>:<ms>, up to 8000 ms\n");
+            options_valid = false;
+        }
+        stall_at = at;
+        stall_ms = ms;
+        if (value != nullptr) i++;
         return true;
     }
     if (std::strcmp(option, "--netplay-desync-at") == 0) {
@@ -421,7 +883,48 @@ namespace {
     int joined = 0;             // host: the players in so far, the host too
     double connecting_since = 0;
     bool match_started = false;
-    conker::netplay::Hello sent;
+
+    // Updates what status() gives, with the ports the read waits for since `waiting_since` (none: it's not
+    // waiting). With the session's lock held, or the session alone.
+    void publish(uint8_t waiting_for, double waiting_since) {
+        const bool playing = match_started && !ended && session != nullptr;
+        std::array<int, conker::netplay::max_players> trips{ -1, -1, -1, -1 };
+        const double t = now();
+        const bool ask = playing && t - round_trips_at >= round_trips_every;
+        if (ask) {
+            trips = session->round_trips_by_port();
+            round_trips_at = t;
+        }
+        std::lock_guard lock(status_mutex);
+        shown.playing = playing;
+        shown.hosting = session != nullptr && session->hosting();
+        shown.players = match_players;
+        shown.own_ports = own_ports;
+        shown.input_delay = delay;
+        shown.others_playing = last_behind != INT64_MIN;
+        shown.ahead = shown.others_playing ? -last_behind : 0;
+        shown.waiting_for = waiting_for;
+        shown.waiting_since = waiting_since;
+        shown.catching_up = catching_up;
+        shown.catching_up_since = catching_up_since;
+        if (ask) shown.round_trip_ms = trips;
+    }
+}
+
+conker::lockstep::Status conker::lockstep::status() {
+    std::lock_guard lock(status_mutex);
+    return shown;
+}
+
+double conker::lockstep::now() {
+    return ::now();
+}
+
+std::vector<std::string> conker::lockstep::take_news() {
+    std::lock_guard lock(status_mutex);
+    std::vector<std::string> out;
+    out.swap(news);
+    return out;
 }
 
 bool conker::lockstep::begin(const netplay::Hello& me, std::string& error) {
@@ -438,6 +941,12 @@ bool conker::lockstep::begin(const netplay::Hello& me, std::string& error) {
             return false;
         }
         library_started = true;
+    }
+    if (faking) {
+        fake.outage = false;
+        netplay::set_fake_network(fake);
+        std::printf("[netplay] faking a bad network: lag %d ms, jitter %.0f ms, loss %.1f%%, reorder %.1f%%, dup %.1f%%\n",
+            fake.lag_ms, fake.jitter_ms, fake.loss, fake.reorder, fake.dup);
     }
     cancel();
     session = new netplay::Session();
@@ -461,10 +970,28 @@ bool conker::lockstep::begin(const netplay::Hello& me, std::string& error) {
     match_own_view = false;
     match_pairs = 0;
     why_over.clear();
+    waits = {};
+    delays = {};
+    wanted_higher = 0;
+    wanted_lower = 0;
+    raised_for_waiting = 0;
+    late_from_waiting = 0;
+    long_waits = 0;
+    joiners_long_waits = 0;
+    outage_until = 0;
+    if (catching_up) set_catching_up(false);
     initial_sent = false;
     for (auto& pads : received) pads.clear();
     gone = {};
+    idle_from.fill(never);
     gone_silently = false;
+    last_behind = INT64_MIN;
+    round_trips_at = 0;
+    {
+        std::lock_guard status_lock(status_mutex);
+        shown = {};
+        news.clear();
+    }
     own_hashes.clear();
     their_hashes.clear();
     if (hosting) {
@@ -506,10 +1033,16 @@ conker::lockstep::Progress conker::lockstep::poll_connect(std::string& status) {
                         match_own_view = host_own_view;
                         match_pairs = session->pairs();
                         delay = chosen;
+                        delays = { 0, chosen, chosen };
                     }
                 }
                 break;
             case Event::Type::left:
+                // Once started (a joiner leaving in the poll the match started in), as in the match: Gone.
+                if (match_started) {
+                    handle(event);
+                    break;
+                }
                 // Before the start, a joiner leaving frees its ports, for the next to start afresh.
                 joined -= std::popcount(event.ports);
                 for (int port = 0; port < netplay::max_players; port++) {
@@ -530,6 +1063,7 @@ conker::lockstep::Progress conker::lockstep::poll_connect(std::string& status) {
                 match_own_view = event.own_view;
                 match_pairs = event.pairs;
                 delay = event.delay;
+                delays = { 0, event.delay, event.delay };
                 break;
             case Event::Type::ended:
                 std::printf("[netplay] couldn't join: %s (%s)\n", netplay::describe(event.reason), event.detail.c_str());
@@ -549,6 +1083,7 @@ conker::lockstep::Progress conker::lockstep::poll_connect(std::string& status) {
     if (match_started) {
         std::printf("[netplay] the match starts: %d players, this is %s, input delay %d reads%s\n", match_players,
             ports_text(own_ports).c_str(), delay, match_own_view ? ", everyone sees only their own view" : "");
+        publish();
         status = "The match starts.";
         return Progress::started;
     }
@@ -581,6 +1116,7 @@ void conker::lockstep::cancel() {
         session = nullptr;
     }
     match_started = false;
+    publish();
 }
 
 bool conker::lockstep::connected() {
@@ -645,12 +1181,17 @@ uint8_t conker::lockstep::view_pairs() {
 }
 
 bool conker::lockstep::on_read(uint64_t read, ultramodern::input::Pad* pads, netplay::Motion* motions, const InputSource& source,
-    const std::function<uint64_t()>& hash, uint8_t* rdram) {
+    const Memory& memory, uint8_t* rdram) {
     std::unique_lock lock(session_mutex);
+    struct MemoryNow {
+        MemoryNow(const Memory& memory) { memory_now = &memory; }
+        ~MemoryNow() { memory_now = nullptr; }
+    } memory_while_here(memory);
     if (ended || stopping) {
         return false;
     }
     current_read = read;
+    delay = delay_at(read);
     session->set_horizon(horizon());
     if (!initial_sent) {
         if (!quit_watcher.joinable()) {
@@ -665,32 +1206,66 @@ bool conker::lockstep::on_read(uint64_t read, ultramodern::input::Pad* pads, net
                 }
             });
         }
-        for (int r = 0; r < delay; r++) {
-            for (int local = 0; local < std::popcount(own_ports); local++) {
-                send_own((uint64_t)r, nth_own_port(local), source((uint64_t)r, nullptr, local));
-            }
-        }
-        initial_sent = true;
     }
+    // This machine's players' input for read + delay, and for any read before it not sent yet: at the first read,
+    // the reads before it (nobody has played yet), and as the delay goes up, those it skips (the controllers'
+    // pads now again: the movement goes with the first). As it goes down, the reads up to it are sent already.
     if (read + delay < UINT32_MAX - netplay::input_window) {
         for (int local = 0; local < std::popcount(own_ports); local++) {
-            send_own(read + delay, nth_own_port(local), source(read + delay, pads, local));
+            const int port = nth_own_port(local);
+            for (uint64_t r = received[port].size(); r <= read + delay; r++) {
+                send_own(r, port, source(r, initial_sent || r == read + delay ? pads : nullptr, local));
+            }
         }
     }
+    initial_sent = true;
 
+    if (faking && read == outage_at) {
+        fake.outage = true;
+        netplay::set_fake_network(fake);
+        outage_until = now() + outage_seconds;
+        std::printf("[netplay] read %llu: the network is out for %.1f s (--netplay-fake-network)\n", (unsigned long long)read, outage_seconds);
+    }
+    if (faking && read == lag_at) {
+        fake.lag_ms = lag_then;
+        netplay::set_fake_network(fake);
+        std::printf("[netplay] read %llu: the lag is %d ms now (--netplay-fake-network)\n", (unsigned long long)read, lag_then);
+    }
+    if (read == stall_at) {
+        std::printf("[netplay] read %llu: the game stops for %ld ms (--netplay-stall-at)\n", (unsigned long long)read, stall_ms);
+        lock.unlock();
+        std::this_thread::sleep_for(std::chrono::milliseconds(stall_ms));
+        lock.lock();
+        if (stopping) {
+            return false;
+        }
+    }
     if (read == desync_at) {
         rdram[recomp::save_states::game_memory_size / 2] ^= 0x5A;
         std::printf("[netplay] read %llu: game memory changed, as --netplay-desync-at asked\n", (unsigned long long)read);
     }
     if (read % hash_every == 0) {
-        const uint64_t h = hash();
-        own_hashes[(uint32_t)read] = h;
-        session->send(Hash{ (uint32_t)read, h });
+        OwnHash& own = own_hashes[(uint32_t)read];
+        own.hash = memory.hash();
+        own.regions = memory.keep(read);
+        Hash sent_hash{ (uint32_t)read, own.hash };
+        for (int i = 0; i < netplay::memory_regions; i++) {
+            sent_hash.regions[i] = (uint16_t)own.regions[i];
+        }
+        sent_hash.long_waits = (uint8_t)std::min<uint64_t>(long_waits, 255);
+        session->send(sent_hash);
     }
 
     const double since = now();
     double last_note = since;
+    uint8_t waiting_for = 0;
     while (true) {
+        if (outage_until != 0 && now() >= outage_until) {
+            outage_until = 0;
+            fake.outage = false;
+            netplay::set_fake_network(fake);
+            std::printf("[netplay] read %llu: the network is back (--netplay-fake-network)\n", (unsigned long long)read);
+        }
         for (const Event& event : session->poll()) {
             handle(event);
         }
@@ -698,11 +1273,16 @@ bool conker::lockstep::on_read(uint64_t read, ultramodern::input::Pad* pads, net
         if (ended) {
             return false;
         }
-        if (all_here(read)) {
+        const uint8_t missing_ports = missing(read);
+        if (missing_ports == 0) {
             break;
         }
+        if (missing_ports != waiting_for) {
+            waiting_for = missing_ports;
+            publish(waiting_for, since);
+        }
         for (int port = 0; port < match_players; port++) {
-            if (received[port].size() <= read && gone[port]) {
+            if (received[port].size() <= read && gone[port] && read < idle_from[port]) {
                 end_match(Reason::quit, gone_silently ? "a player stopped answering (they may have quit)" : "a player left");
                 return false;
             }
@@ -724,12 +1304,68 @@ bool conker::lockstep::on_read(uint64_t read, ultramodern::input::Pad* pads, net
         }
     }
 
+    // How far behind the others this peer is: how many reads ahead of it they are, by how far their inputs reach.
+    int64_t behind = INT64_MIN;
     for (int port = 0; port < match_players; port++) {
-        const Input& input = received[port][read];
+        if ((own_ports & (1u << port)) == 0 && idle_from[port] == never) {
+            behind = std::max(behind, read_sending((int64_t)received[port].size() - 1) - (int64_t)read);
+        }
+    }
+    last_behind = behind;
+    if (!catching_up && behind >= behind_to_catch_up) {
+        std::printf("[netplay] read %llu: %lld reads behind the others: catching up\n", (unsigned long long)read, (long long)behind);
+        set_catching_up(true);
+        caught_up_from = read;
+        catching_up_since = now();
+        waits.catch_ups++;
+    }
+    else if (catching_up && behind <= 0) {
+        std::printf("[netplay] read %llu: caught up (%llu reads in %.0f ms)\n", (unsigned long long)read,
+            (unsigned long long)(read - caught_up_from), (now() - catching_up_since) * 1000);
+        set_catching_up(false);
+    }
+
+    const double done = now();
+    const double waited = done - since;
+    if (waits.reads > 0 && done - waits.last_read_at > late_seconds) {
+        waits.late++;
+        if (waited > 0.001) late_from_waiting++;
+        if (done - waits.last_read_at > waits.latest) {
+            waits.latest = done - waits.last_read_at;
+            waits.latest_read = read;
+        }
+    }
+    waits.last_read_at = done;
+    waits.reads++;
+    if (waited > 0.001) {
+        waits.waited++;
+        waits.seconds += waited;
+        if (waited > waits.longest) {
+            waits.longest = waited;
+            waits.longest_read = read;
+        }
+    }
+    if (waited * 1000 > long_wait_ms) long_waits++;
+    if (delay_option == auto_delay && session->hosting() && read % hash_every == 0) {
+        adapt_delay(read);
+    }
+    if (read % hash_every == 0) long_waits = 0;
+    publish();
+
+    for (int port = 0; port < match_players; port++) {
+        const Input input = read < idle_from[port] ? received[port][read] : idle_input(port);
         pads[port] = { input.pad.buttons, input.pad.stick_x, input.pad.stick_y, input.pad.err_no };
         motions[port] = input.motion;
     }
     return true;
+}
+
+FILE* conker::lockstep::create_file(const std::filesystem::path& path) {
+#if defined(_WIN32)
+    return _wfopen(path.c_str(), L"wb");
+#else
+    return std::fopen(path.c_str(), "wb");
+#endif
 }
 
 void conker::lockstep::end(netplay::Reason reason, const char* why) {
@@ -743,11 +1379,14 @@ const std::string& conker::lockstep::why_ended() {
 
 void conker::lockstep::leave() {
     std::scoped_lock lock(session_mutex);
+    print_waits();
+    if (catching_up) set_catching_up(false);
     if (session != nullptr && !left) {
         session->leave(Reason::quit);
         left = true;
     }
     ended = true;
+    publish();
 }
 
 void conker::lockstep::finish() {

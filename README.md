@@ -40,7 +40,8 @@ yourself instead, read on.
   stays out of walls, camera turning speed and inversion, and a Field of View
   setting.
 - An aiming **Reticle**, a green ring like Live & Reloaded's, and **Swap Sticks**
-  and **Lock-On** options for aiming.
+  and **Lock-On** options for aiming. With Swap Sticks, Conker walks while aiming,
+  the sniper scope included (zooming with the D-pad or the mouse wheel).
 - Full audio: music, sound effects and the voice acting, each with a volume of its
   own (Music, Sound Effects and Speech, under the Main Volume).
 - Saving (EEPROM), stored per user.
@@ -268,8 +269,9 @@ the settings' Quit prompt: the program restarts at the launcher.
   and B goes back.
 - Default keyboard controls: move with WASD, A = Space, B = E, Z = left click,
   R = right click, L = Enter (skips cutscenes), Start = Tab, C buttons = IJKL,
-  D-pad = arrow keys. Everything can be remapped in Controls, and **Reset to
-  defaults** there brings these back for a profile made before they changed.
+  D-pad = arrow keys (up and down also on the mouse wheel). Everything can be
+  remapped in Controls, and **Reset to defaults** there brings these back for a
+  profile made before they changed.
 - **Presets and profiles** (Controls tab): **Load preset** puts a ready-made
   layout in the profile: for controllers **Standard** (the defaults), **Modern**
   (LT = R to aim, RT = Z, and Aiming: Swap Sticks on) and **Old Skool** (the

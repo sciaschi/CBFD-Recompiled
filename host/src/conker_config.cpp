@@ -147,8 +147,10 @@ namespace {
         set_game_input_description(GameInput::C_LEFT, "Rotates the camera.");
         set_game_input_description(GameInput::C_RIGHT, "Rotates the camera.");
         const char* dpad = "Unused in the main game. Mods may use it.";
-        set_game_input_description(GameInput::DPAD_UP, dpad);
-        set_game_input_description(GameInput::DPAD_DOWN, dpad);
+        set_game_input_description(GameInput::DPAD_UP, "Zooms the sniper scope in, with Aiming: Swap Sticks on (the stick walks then). "
+            "Otherwise unused in the main game; mods may use it.");
+        set_game_input_description(GameInput::DPAD_DOWN, "Zooms the sniper scope out, with Aiming: Swap Sticks on (the stick walks then). "
+            "Otherwise unused in the main game; mods may use it.");
         set_game_input_description(GameInput::DPAD_LEFT, dpad);
         set_game_input_description(GameInput::DPAD_RIGHT, dpad);
     }
@@ -205,8 +207,8 @@ namespace {
             { GameInput::C_DOWN, { key(SDL_SCANCODE_DOWN) } },
             { GameInput::DPAD_LEFT, { key(SDL_SCANCODE_J) } },
             { GameInput::DPAD_RIGHT, { key(SDL_SCANCODE_L) } },
-            { GameInput::DPAD_UP, { key(SDL_SCANCODE_I) } },
-            { GameInput::DPAD_DOWN, { key(SDL_SCANCODE_K) } },
+            { GameInput::DPAD_UP, { key(SDL_SCANCODE_I), InputField::mouse(InputField::mouse_wheel_up) } },
+            { GameInput::DPAD_DOWN, { key(SDL_SCANCODE_K), InputField::mouse(InputField::mouse_wheel_down) } },
         }, nullptr });
     }
 }
@@ -235,6 +237,9 @@ void conker::init_config() {
     conker::local_achievements::add_options(general_config);
     conker::save_states::add_options(general_config);
     conker::texture_packs::add_notification_options(general_config);
+#if defined(CONKER_NETPLAY)
+    conker::netplay_status::add_options(general_config);
+#endif
     {
         static const std::vector<recomp::config::ConfigOptionEnumOption> choices = {
             {StartDirectly::Off, "Off", "Off"},

@@ -3,7 +3,7 @@
 // launcher; the connecting is lockstep's (lockstep.hpp), a step at each of the menu's updates, so a
 // refusal (another build, ROM or settings, a full match) is said here and the player can try again.
 //
-// A match started from here doesn't quit when it ends (a desync, a player leaving): the game stops taking
+// A match started from here doesn't quit when it ends (a desync, the host leaving): the game stops taking
 // input and a prompt says why, with Quit.
 //
 // The host's join code is made, once hosting, from the address the host gives and the match's random key:

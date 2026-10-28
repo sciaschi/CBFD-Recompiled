@@ -464,6 +464,15 @@ order drawn. In RT64:
   through `RT64::setInterpolationPaused`). The blur blends each frame with a
   copy of the last; blended on the frames drawn between the game's, that copy
   was only a fraction of a frame old, and the blur was all but gone (issue #77).
+- a split screen's views stay apart (`GameFrame::isSceneCompatible` and the
+  scenes' pairing): each player's view is its own scene, paired with last frame's
+  in the same part of the frame (their scissors overlap), and a scene with no
+  scissor only with another without one. The views' cameras look alike to RT64
+  (the same projection, the camera in the model matrices), so they were grouped
+  and paired across players: the frames between were drawn from between two
+  players' cameras, the level culled for one of them, and the split screen
+  flickered; then a scene drawing nothing scissored took player 2's place, and
+  player 2's camera jittered.
 
 A character's shadow (`func_15186794`) is the ground under it, clipped anew
 every frame and drawn with the shadow's texture projected onto it from the
@@ -544,6 +553,17 @@ back into the game's memory from the graphics thread, whenever that thread gets
 to the display list, so a window run differed from a headless one (which has no
 renderer) from the second read, and the copies raced the game. RT64 still draws
 everything; only the copy back is skipped.
+
+RT64 can present its last frame again (`Application::presentAgain`, for
+netplay: while the game waits for the others, it makes no frame, and the UI
+drawn over the last one would stay as it was). It repeats the last present,
+paused, as its debugger's pause does, but not the workload: nothing of the
+game's is drawn again. A repeated present (`Present::repeated`) shows the
+frame once, not the frames interpolated before it again, and counts the frames
+as presented as a present of one frame does (left alone, a workload could wait
+on them for ever).
+ultramodern's renderer interface has it as `present_again` (RecompFrontend's
+RT64 context calls RT64's); the runtime queues one at a time.
 
 RecompFrontend (`recompfrontend.patch`): mouse buttons can be bound, with the
 keyboard's controls (and in single player with the controller's too, as both are
@@ -651,6 +671,17 @@ third-person shooter:
 - With the shotgun, R alone shows the laser sight and the gun-up walk, as R and
   Z do: +0x8A of +0x31C |= 0x20, D_800CC2B0 = 1, +0x1B4 |= 4, and the walk 0x224
   played as 0x31B (`conker_shotgun_laser`, `conker_shotgun_laser_walk`).
+- With the sniper scope he walks any way, and the D-pad zooms. Scoped (state
+  0x80), the scope's camera (`func_15126378`) zooms with C-Up and C-Down, and
+  `func_1504CB98` walks him by the C-buttons through its table of 16 directions
+  (`D_8009917C`) but masks them to C-Left and C-Right (0x1504DD18): strafing only.
+  With Swap Sticks on, scoped, all four go through (`conker_scope_walk`), and the
+  zoom goes by D-pad Up and Down instead (`conker_scope_zoom`, at 0x15127054).
+  Both read only the game's buttons, and in a netplay match each player's own
+  Swap Sticks (their Controls, by their character's object index, the first four
+  objects being the players). D-pad Up and Down default to I and K, and
+  to the mouse wheel: RecompFrontend binds the wheel as two more mouse inputs
+  (Wheel Up, Wheel Down, ids 33 and 34), each notch held 100 ms with a gap.
 
 Aiming: Lock-On (on by default, as the original) can turn off the game's lock-on:
 `func_15063A38` turns the aim by the stick, or, while an enemy is there to lock on

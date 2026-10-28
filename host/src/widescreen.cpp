@@ -304,6 +304,7 @@ extern "C" void conker_frame_dl_begin(uint8_t* rdram, recomp_context* ctx) {
     conker::shadows::game_frame();
     conker::look_aim::leap_frame(rdram);
     conker::sound_volumes::game_frame(rdram);
+    conker::sound_volumes::sound_mode_frame(rdram, ctx);
 #if defined(CONKER_RT64)
     conker::local_achievements::game_frame(rdram);
 #endif

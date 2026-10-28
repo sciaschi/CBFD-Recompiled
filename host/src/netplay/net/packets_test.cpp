@@ -58,11 +58,24 @@ int main() {
     CHECK(round_trips(Welcome{ 0x0E, 4 }, 7));      // three players on one machine
     CHECK(round_trips(Refuse{ Reason::rom }, 6));
     CHECK(round_trips(some_inputs(), 155));
-    CHECK(round_trips(Hash{ 4000000000u, 0xFEDCBA9876543210ull }, 17));
+    CHECK(round_trips(Hash{ 4000000000u, 0xFEDCBA9876543210ull }, 274));
+    Hash regions{ 30, 1 };
+    for (int i = 0; i < memory_regions; i++) regions.regions[i] = (uint16_t)(0x0101 * i + 7);
+    regions.long_waits = 30;
+    CHECK(round_trips(regions, 274));
+    const std::vector<uint8_t> hash = bytes_of(regions);
+    CHECK(hash[17] == 7 && hash[18] == 0 && hash[19] == 8 && hash[20] == 1 && hash[271] == 0x86 && hash[272] == 0x7F && hash[273] == 30);
     CHECK(round_trips(Bye{ Reason::desync }, 6));
     CHECK(round_trips(Start{ 3, 0 }, 9));
     CHECK(round_trips(Start{ 4, 1, max_delay }, 9));
     CHECK(round_trips(Start{ 4, 1, 2, 0x0C }, 9));
+    CHECK(round_trips(Gone{ 3, 4000000000u }, 11));
+    CHECK(round_trips(Gone{ 1, 5, 1 }, 11));
+    const std::vector<uint8_t> gone = bytes_of(Gone{ 2, 0x01020304, 1 });
+    CHECK(gone[4] == 8 && gone[5] == 2 && gone[6] == 4 && gone[9] == 1 && gone[10] == 1);
+    CHECK(round_trips(Delay{ max_delay, 4000000000u }, 10));
+    const std::vector<uint8_t> delay = bytes_of(Delay{ 5, 0x01020304 });
+    CHECK(delay[4] == 9 && delay[5] == 5 && delay[6] == 4 && delay[9] == 1);
 
     // The layout: header, then little-endian fields.
     const std::vector<uint8_t> hello = bytes_of(Hello{ 0x0807060504030201ull, 0, 0, 0x1112131415161718ull, 0x2122232425262728ull, 2 });
@@ -93,6 +106,8 @@ int main() {
     CHECK(bytes_of(Start{ 2, 0, max_delay + 1 }).empty());
     CHECK(bytes_of(Start{ 3, 1, 0, 0x08 }).empty()); // a pair past the players
     CHECK(bytes_of(Start{ 4, 1, 0, 0x07 }).empty()); // an odd number of ports in pairs
+    CHECK(bytes_of(Delay{ max_delay + 1, 30 }).empty());
+    CHECK(bytes_of(Gone{ 1, 30, 2 }).empty());
 
     CHECK(bytes_of(Refuse{ (Reason)0 }).empty());
     CHECK(bytes_of(Bye{ (Reason)(last_reason + 1) }).empty());
@@ -136,6 +151,15 @@ int main() {
     // The same, arriving as bytes.
     std::vector<uint8_t> data = bytes_of(Welcome{ 0x02, 2 });
     data[5] = 0x03;
+    CHECK(!decodes(data));
+    data = gone;
+    data[5] = 0;                                    // the host's port
+    CHECK(!decodes(data));
+    data = gone;
+    data[5] = 4;
+    CHECK(!decodes(data));
+    data = gone;
+    data[10] = 2;                                   // silent is 0 or 1
     CHECK(!decodes(data));
     data = hello;
     data[45] = 4;
@@ -182,7 +206,7 @@ int main() {
     data = hello;
     data[0] = 'X';
     CHECK(!decodes(data));
-    for (int kind : { 0, 8, 255 }) {
+    for (int kind : { 0, 10, 255 }) {
         data = hello;
         data[4] = (uint8_t)kind;
         CHECK(!decodes(data));

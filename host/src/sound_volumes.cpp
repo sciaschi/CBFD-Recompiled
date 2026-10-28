@@ -31,6 +31,7 @@
 #include <cstdint>
 #include <string>
 #include <variant>
+#include <vector>
 
 #include "recomp.h"
 #include "librecomp/config.hpp"
@@ -43,6 +44,25 @@ namespace {
         const std::string music_volume = "music_volume";
         const std::string effects_volume = "effects_volume";
         const std::string speech_volume = "speech_volume";
+        const std::string sound_mode = "sound_mode";
+    }
+
+    // Sound Mode (issue #159), the game's own Options setting, here too. The game keeps it in its options (the
+    // save's first block, also at 0x800E0BDE while playing): the byte at 0x800E0BE9, 0 Stereo, 1 Headphones, 2
+    // Mono (found by changing only it in the game's menu: the save changed at that byte and its checksum). Its
+    // menu applies a change with func_151E7E9C, which gives func_10017870 the synthesizer's output mode (2 Stereo,
+    // 4 Headphones, 1 Mono: flags at D_800428C0 to C2 that func_10017944 works the channels' out from, all in
+    // memory), as the save's settings are applied as it loads.
+    enum class SoundMode : uint32_t { Stereo, Mono, Headphones };
+    constexpr uint32_t game_sound_mode = 0x800E0BE9;
+    extern "C" void func_151E7E9C(uint8_t* rdram, recomp_context* ctx);
+
+    int8_t game_byte(SoundMode mode) {
+        return mode == SoundMode::Mono ? 2 : mode == SoundMode::Headphones ? 1 : 0;
+    }
+
+    SoundMode from_game_byte(int8_t value) {
+        return value == 2 ? SoundMode::Mono : value == 1 ? SoundMode::Headphones : SoundMode::Stereo;
     }
 
     // The volumes, 0 to 1, from game_frame.
@@ -137,7 +157,54 @@ void conker::sound_volumes::add_options(recomp::config::Config& config) {
         "voice bits during play among them.", 100.0);
     config.add_percent_number_option(options::speech_volume, "Speech Volume",
         "The volume of the characters' <recomp-color primary>spoken lines</recomp-color> in cutscenes.", 100.0);
+    static const std::vector<recomp::config::ConfigOptionEnumOption> mode_choices = {
+        {SoundMode::Stereo, "Stereo", "Stereo"},
+        {SoundMode::Mono, "Mono", "Mono"},
+        {SoundMode::Headphones, "Headphones", "Headphones"},
+    };
+    config.add_enum_option(options::sound_mode, "Sound Mode",
+        "How the game mixes its sound, the same setting as the game's own Options menu (it follows that menu, and is "
+        "saved with your game as the game saves it). <recomp-color primary>Stereo</recomp-color> for speakers, "
+        "<recomp-color primary>Mono</recomp-color> for a single speaker, and <recomp-color primary>Headphones"
+        "</recomp-color> for headphones.",
+        mode_choices, SoundMode::Stereo);
     options_added = true;
+}
+
+// Sound Mode, from the game thread at the start of each frame's display list ($ctx: that hook's, for calling the
+// game). Kept the same both ways: a change here is written to the game's setting and applied as its menu does
+// (func_151E7E9C, on a stack of its own below the hook's); a change the game made (its menu, a save loaded) is
+// shown here. The game only changes it in its own menu or as a save loads, while this menu is closed.
+void conker::sound_volumes::sound_mode_frame(uint8_t* rdram, recomp_context* ctx) {
+    // The netplay settings profile: the game's own (its memory is the same on every machine).
+    if (!options_added || conker::netplay_profile::active()) {
+        return;
+    }
+    static bool synced = false;
+    static SoundMode last_setting = SoundMode::Stereo;
+    static int8_t last_game = 0;
+    recomp::config::Config& config = recompui::config::get_config(recompui::config::sound::id);
+    const SoundMode setting = static_cast<SoundMode>(std::get<uint32_t>(config.get_option_value(options::sound_mode)));
+    const int8_t game = (int8_t)MEM_B(0, (gpr)(int32_t)game_sound_mode);
+    if (synced && setting != last_setting) {
+        // Changed here: the game's setting, applied.
+        MEM_B(0, (gpr)(int32_t)game_sound_mode) = game_byte(setting);
+        recomp_context call = *ctx;
+        call.r29 = ADD32(ctx->r29, -0x40);
+        func_151E7E9C(rdram, &call);
+        last_setting = setting;
+        last_game = game_byte(setting);
+        return;
+    }
+    if (!synced || game != last_game) {
+        // Changed in the game (or the first frame): shown here.
+        last_game = game;
+        last_setting = from_game_byte(game);
+        synced = true;
+        if (setting != last_setting) {
+            config.update_option_value(options::sound_mode, static_cast<uint32_t>(last_setting));
+        }
+    }
 }
 
 void conker::sound_volumes::game_frame(uint8_t* rdram) {
