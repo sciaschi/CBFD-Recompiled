@@ -618,6 +618,20 @@ func = "func_15126378"
 before_vram = 0x15126EA0
 text = "{ extern void conker_aim_stick(uint8_t*, recomp_context*); conker_aim_stick(rdram, ctx); }"
 
+# Aiming: Swap Sticks with the sniper scope (issue #84, host/src/look_aim.cpp): the scope zooms with C-Up and C-Down,
+# its buttons loaded into $t3 by 0x15127054; with Swap Sticks those are walking, and the zoom goes by D-pad Up and Down.
+[[patches.hook]]
+func = "func_15126378"
+before_vram = 0x15127054
+text = "{ extern void conker_scope_zoom(uint8_t*, recomp_context*); conker_scope_zoom(rdram, ctx); }"
+
+# The same: Conker's movement (func_1504CB98) has just put the held buttons through the C-buttons it walks by ($a0
+# by 0x1504DD1C), C-Left and C-Right alone while scoped; with Swap Sticks all four go through.
+[[patches.hook]]
+func = "func_1504CB98"
+before_vram = 0x1504DD1C
+text = "{ extern void conker_scope_walk(uint8_t*, recomp_context*); conker_scope_walk(rdram, ctx); }"
+
 # Camera: Invert Turning and Turning Speed (host/src/look_aim.cpp). func_1512D390 turns the
 # follow camera with C-Left and C-Right (by default also the right stick). It stores the direction,
 # 1 or -1, at $s0 + 0x6B0 (0x1512D3E8 or 0x1512D3EC); both paths meet at 0x1512D3F0, before the

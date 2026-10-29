@@ -301,7 +301,8 @@ void conker::look_aim::add_camera_options(recomp::config::Config& config) {
     config.add_enum_option(options::stick_camera, "Right Stick: Free Camera",
         "A modern third-person camera in single player: the right stick turns the camera around Conker and tilts it up "
         "and down, instead of pressing the C-buttons, and the left stick moves Conker. The C-buttons' other controls "
-        "stay: by default C-Up (first person) on the right stick's click and C-Down on RB. <recomp-color primary>Off</recomp-color> matches the "
+        "stay: by default C-Up (first person) on the right stick's click; C-Down can be bound to a button in Controls. "
+        "<recomp-color primary>Off</recomp-color> matches the "
         "original game. Only the normal camera: in R-Look, aiming and cutscenes, the right stick is the C-buttons as usual.",
         toggle, Toggle::Off);
     config.add_number_option(options::camera_fov, "Camera: Field of View",
@@ -554,12 +555,89 @@ bool conker::look_aim::swap_sticks_now(int player) {
     return since >= 0 && std::chrono::steady_clock::duration(since) < aim_linger;
 }
 
+// Aiming: Swap Sticks with the sniper scope (issue #84): walking in any direction while scoped, zooming with the
+// D-pad. Scoped, Conker's object is in state 0x80, and the scope's camera (func_15126378) zooms with C-Up and C-Down
+// (+0x1A4: C-Up in, C-Down out, while held). Conker's movement (func_1504CB98) walks him by the C-buttons through a
+// table of 16 directions (D_8009917C, by which of them are held, at 34 a frame and with the game's own collision),
+// but only the ones a mask lets through (0x1504DD18): all four in some states, C-Left and C-Right alone while scoped,
+// so he could strafe but not walk forward or back (logged: the store at 0x1504DE5C setting his moving angle to his
+// facing plus 0x4000 or 0xC000). The left stick (or W, A, S, D) is the C-buttons with Swap Sticks, so with it on,
+// scoped, all four go through, and the zoom takes D-pad Up and Down instead (D-pad Up in), which Controls can bind to
+// anything (the mouse wheel by default). Both read only the game's own buttons and, in a netplay match, each player's
+// own Swap Sticks from their Controls, so every machine does the same.
+namespace {
+    constexpr uint8_t scoped_state = 0x80;
+    constexpr uint32_t c_buttons = 0x000F;
+    constexpr uint32_t c_up = 0x0008, c_down = 0x0004, d_up = 0x0800, d_down = 0x0400;
+    constexpr uint32_t game_objects = 0x800CC2D0, object_size = 0x32C;
+
+    // A player's character: one of the first four objects, the player's port its index (-1 for any other).
+    int character_player(gpr character) {
+        const uint32_t object = (uint32_t)character;
+        if (object < game_objects || object >= game_objects + 4 * object_size || (object - game_objects) % object_size != 0) {
+            return -1;
+        }
+        return (int)((object - game_objects) / object_size);
+    }
+
+    // In a netplay match each player's own Swap Sticks, from their Controls (the same on every machine); otherwise
+    // the setting, in single player.
+    bool scope_walks(uint8_t* rdram, gpr character) {
+        const int player = character_player(character);
+        if (player < 0 || MEM_BU(0x4, character) != scoped_state) {
+            return false;
+        }
+        if (per_player()) {
+            return conker::motion::swap_sticks(conker::motion::controls(player));
+        }
+        return option<Toggle>(options::aim_swap_sticks) == Toggle::On && recompinput::players::is_single_player_mode();
+    }
+}
+
+// func_1504CB98 at 0x1504DD1C: $a0 is the held buttons ($a1) through the mask ($v0), about to pick the way he walks;
+// $s0 is his object. A player's character (the first four objects) that's scoped takes all four C-buttons.
+extern "C" void conker_scope_walk(uint8_t* rdram, recomp_context* ctx) {
+    if (scope_walks(rdram, ctx->r16)) {
+        ctx->r4 = ctx->r5 & c_buttons;
+    }
+}
+
+// func_15126378 at 0x15127054: $t3 is the buttons its zoom goes by (0x98($sp)), just loaded; $s0 is the camera. With
+// Swap Sticks, scoped, C-Up and C-Down are walking: the zoom goes by D-pad Up and Down instead.
+extern "C" void conker_scope_zoom(uint8_t* rdram, recomp_context* ctx) {
+    const gpr character = (gpr)(int32_t)MEM_W(0x3D0, ctx->r16);
+    if (!scope_walks(rdram, character)) {
+        return;
+    }
+    const uint32_t held = (uint32_t)ctx->r11;
+    ctx->r11 = (held & ~(c_up | c_down)) | ((held & d_up) ? c_up : 0) | ((held & d_down) ? c_down : 0);
+}
+
 bool conker::look_aim::z_turns_aim(int player) {
     return (player >= 0) && (player < aim_players) && shotgun_aiming[player].load();
 }
 
 bool conker::look_aim::stick_free_camera() {
     return option<Toggle>(options::stick_camera) == Toggle::On && recompinput::players::is_single_player_mode();
+}
+
+void conker::look_aim::set_swap_sticks(bool on) {
+    if (recomp::config::Config* config = recompui::config::find_option_config(options::aim_swap_sticks)) {
+        config->update_option_value(options::aim_swap_sticks, static_cast<uint32_t>(on ? Toggle::On : Toggle::Off));
+    }
+}
+
+void conker::look_aim::turn_on_mouse_camera() {
+    const std::string& sensitivity = recompui::config::general::options::mouse_sensitivity;
+    if (recomp::config::Config* config = recompui::config::find_option_config(sensitivity)) {
+        // A sensitivity already chosen is kept: only the mouse turned off (0) is turned on, at the middle.
+        if (std::get<double>(config->get_option_value(sensitivity)) <= 0.0) {
+            config->update_option_value(sensitivity, 50.0);
+        }
+    }
+    if (recomp::config::Config* config = recompui::config::find_option_config(options::mouse_camera)) {
+        config->update_option_value(options::mouse_camera, static_cast<uint32_t>(Toggle::On));
+    }
 }
 
 // The bank robbery's slow motion leaps (issue #85): standing on a B pad, B leaps (func_15065A5C, 0x15066FC4: the bank,

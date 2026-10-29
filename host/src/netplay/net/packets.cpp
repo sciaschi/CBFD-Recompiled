@@ -12,10 +12,13 @@
 //              (s16 mouse x, y, s16 gyro x, y, s8 wheel, u32 controls: only
 //              valid_controls: a field of view code up to fov_codes, no bit past 16); the unused ones zero, and the last read not past
 //              2^32 - 1
-//   5 Hash     u32 read, u64 hash                                                     17 bytes
+//   5 Hash     u32 read, u64 hash, 128 u16 region hashes, u8 long waits              274 bytes
 //   6 Bye      u8 reason                                                               6 bytes
 //   7 Start    u8 players (2 to 4), u8 own view (0 or 1), u8 delay (0 to 8), u8 pairs  9 bytes
 //              (ports below players, an even number of them)
+//   8 Gone     u8 port (1 to 3: never the host's 0), u32 from read,                    11 bytes
+//              u8 silent (0 or 1: stopped answering)
+//   9 Delay    u8 delay (0 to 8), u32 from read                                        10 bytes
 // A packet of any other size, version or kind, or with any field out of range, is refused.
 
 #include "packets.hpp"
@@ -25,7 +28,7 @@
 
 namespace conker::netplay {
     namespace {
-        enum Kind : uint8_t { hello = 1, welcome, refuse, inputs, hash, bye, start };
+        enum Kind : uint8_t { hello = 1, welcome, refuse, inputs, hash, bye, start, gone, delay };
         constexpr size_t header_size = 5;
         constexpr size_t pad_size = 5;
         constexpr size_t motion_size = 13;
@@ -36,13 +39,15 @@ namespace conker::netplay {
                 case welcome: return header_size + 2;
                 case refuse: return header_size + 1;
                 case inputs: return header_size + 6 + input_window * (pad_size + motion_size);
-                case hash: return header_size + 12;
+                case hash: return header_size + 12 + 2 * memory_regions + 1;
                 case bye: return header_size + 1;
                 case start: return header_size + 4;
+                case gone: return header_size + 6;
+                case delay: return header_size + 5;
             }
             return 0;
         }
-        static_assert(size_of(inputs) <= max_packet_size);
+        static_assert(size_of(inputs) <= max_packet_size && size_of(hash) <= max_packet_size);
 
         bool valid_reason(Reason reason) {
             return (uint8_t)reason >= 1 && (uint8_t)reason <= last_reason;
@@ -78,6 +83,12 @@ namespace conker::netplay {
         }
         bool valid_fields(const Bye& p) {
             return valid_reason(p.reason);
+        }
+        bool valid_fields(const Gone& p) {
+            return p.port >= 1 && p.port < max_players && p.silent <= 1;
+        }
+        bool valid_fields(const Delay& p) {
+            return p.delay <= max_delay;
         }
         bool valid_fields(const Start& p) {
             return p.players >= 2 && p.players <= max_players && p.own_view <= 1 && p.delay <= max_delay &&
@@ -178,6 +189,19 @@ namespace conker::netplay {
             else if constexpr (std::is_same_v<T, Hash>) {
                 w.u32(p.read);
                 w.u64(p.hash);
+                for (uint16_t region : p.regions) {
+                    w.u16(region);
+                }
+                w.u8(p.long_waits);
+            }
+            else if constexpr (std::is_same_v<T, Gone>) {
+                w.u8(p.port);
+                w.u32(p.from_read);
+                w.u8(p.silent);
+            }
+            else if constexpr (std::is_same_v<T, Delay>) {
+                w.u8(p.delay);
+                w.u32(p.from_read);
             }
             else if constexpr (std::is_same_v<T, Start>) {
                 w.u8(p.players);
@@ -248,6 +272,10 @@ namespace conker::netplay {
                 Hash p;
                 p.read = r.u32();
                 p.hash = r.u64();
+                for (uint16_t& region : p.regions) {
+                    region = r.u16();
+                }
+                p.long_waits = r.u8();
                 packet = p;
                 break;
             }
@@ -264,6 +292,21 @@ namespace conker::netplay {
                     packet = p;
                 }
                 break;
+            case gone: {
+                Gone p;
+                p.port = r.u8();
+                p.from_read = r.u32();
+                p.silent = r.u8();
+                packet = p;
+                break;
+            }
+            case delay: {
+                Delay p;
+                p.delay = r.u8();
+                p.from_read = r.u32();
+                packet = p;
+                break;
+            }
         }
         if (!valid_packet(packet)) {
             return std::nullopt;

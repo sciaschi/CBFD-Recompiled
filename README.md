@@ -40,7 +40,8 @@ yourself instead, read on.
   stays out of walls, camera turning speed and inversion, and a Field of View
   setting.
 - An aiming **Reticle**, a green ring like Live & Reloaded's, and **Swap Sticks**
-  and **Lock-On** options for aiming.
+  and **Lock-On** options for aiming. With Swap Sticks, Conker walks while aiming,
+  the sniper scope included (zooming with the D-pad or the mouse wheel).
 - Full audio: music, sound effects and the voice acting, each with a volume of its
   own (Music, Sound Effects and Speech, under the Main Volume).
 - Saving (EEPROM), stored per user.
@@ -263,13 +264,22 @@ the settings' Quit prompt: the program restarts at the launcher.
   [docs/save-states.md](docs/save-states.md). **Save State Notifications** on the
   General tab turns off the line in the corner saying a state was saved or loaded,
   or another slot picked (one saying it couldn't be still shows).
-- **Remember Cheat Codes** on the General tab keeps the codes entered in the
-  game's Cheats menu on every time you play, instead of typing them in again
-  after the game is closed (the original game forgets them). Turning it off
-  forgets them. It's off in netplay matches.
-- Default keyboard controls: move with WASD, A = Space, B = Left Shift,
-  Z = Q, L = E, R = R, Start = Enter, C buttons = arrow keys, D-pad = IJKL.
-  Everything can be remapped in Controls.
+- Default controller controls: A = A, B = B, Z = either trigger, L = LB,
+  R = RB, C buttons = right stick (C-Up on its click too), in the menus A accepts
+  and B goes back.
+- Default keyboard controls: move with WASD, A = Space, B = E, Z = left click,
+  R = right click, L = Enter (skips cutscenes), Start = Tab, C buttons = IJKL,
+  D-pad = arrow keys (up and down also on the mouse wheel). Everything can be
+  remapped in Controls, and **Reset to defaults** there brings these back for a
+  profile made before they changed.
+- **Presets and profiles** (Controls tab): **Load preset** puts a ready-made
+  layout in the profile: for controllers **Standard** (the defaults), **Modern**
+  (LT = R to aim, RT = Z, and Aiming: Swap Sticks on) and **Old Skool** (the
+  N64-style layout from before, B on X); for the keyboard **Standard** (which
+  also turns the mouse camera on, at Mouse: Sensitivity 50 if it was off) and
+  **Classic** (the old keyboard layout). **New profile** makes your own, a copy
+  of the one in use that you can name and remap; the **Profile** list at the top
+  picks which one you play with, for the controller and the keyboard each.
 - N64 pads and adapters for real N64 controllers (raphnet-tech's, Mayflash,
   Hyperkin, the NSO and 8BitDo 64 controllers) are mapped from
   `assets/controllerdb.txt`, with the C buttons as the right stick. A controller

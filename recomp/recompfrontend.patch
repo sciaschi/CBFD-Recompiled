@@ -1,5 +1,45 @@
+diff --git a/recompinput/include/recompinput/input_mapping.h b/recompinput/include/recompinput/input_mapping.h
+index eed283d..bf39b92 100644
+--- a/recompinput/include/recompinput/input_mapping.h
++++ b/recompinput/include/recompinput/input_mapping.h
+@@ -1,6 +1,10 @@
+ #ifndef __RECOMP_INPUT_MAPPING_H__
+ #define __RECOMP_INPUT_MAPPING_H__
+ 
++#include <functional>
++#include <string>
++#include <unordered_map>
++#include <vector>
+ #include "input_types.h"
+ #include "SDL.h"
+ 
+@@ -58,6 +62,24 @@ namespace recompinput {
+ ```
+     */
+     void set_default_mapping_for_keyboard(GameInput input, const std::vector<InputField>& fields);
++
++    /**
++     * A preset: a named layout the Controls tab can load into a profile. It's the device's defaults with `changes`
++     * on top (an input listed there gets exactly those bindings, an empty list unbinds it), and `on_apply` (if any)
++     * runs once it's loaded, for the game's own settings that go with it.
++     */
++    struct InputPreset {
++        std::string name;
++        InputDevice device;
++        default_game_input_device_mapping changes;
++        std::function<void()> on_apply;
++    };
++
++    // Adds a preset, listed for its device in the order added.
++    void add_input_preset(InputPreset preset);
++    const std::vector<InputPreset>& get_input_presets();
++    // The preset's bindings for an input: its own change, or the default.
++    const std::vector<InputField>& get_preset_mapping_for_input(const InputPreset& preset, GameInput input);
+ }
+ 
+ #endif
 diff --git a/recompinput/include/recompinput/input_types.h b/recompinput/include/recompinput/input_types.h
-index f5ed6c0..bbfb829 100644
+index f5ed6c0..2f20eaf 100644
 --- a/recompinput/include/recompinput/input_types.h
 +++ b/recompinput/include/recompinput/input_types.h
 @@ -37,10 +37,19 @@ namespace recompinput {
@@ -23,7 +63,23 @@ index f5ed6c0..bbfb829 100644
  
      #define DEFINE_INPUT(name, value, readable) name,
      // - Enum containing every recomp input.
-@@ -127,6 +136,7 @@ namespace recompinput {
+@@ -79,6 +88,15 @@ namespace recompinput {
+             return InputField{ InputType::Keyboard, static_cast<int32_t>(key) };
+         }
+ 
++        // The mouse wheel, bound as two more mouse "buttons" past SDL's (1 to 32): each notch holds one for a
++        // moment (input_state.cpp).
++        static constexpr int32_t mouse_wheel_up = 33;
++        static constexpr int32_t mouse_wheel_down = 34;
++
++        static InputField mouse(int32_t button) {
++            return InputField{ InputType::Mouse, button };
++        }
++
+         static InputField controller_digital(SDL_GameControllerButton button) {
+             return InputField{ InputType::ControllerDigital, static_cast<int32_t>(button) };
+         }
+@@ -127,6 +145,7 @@ namespace recompinput {
  
      bool get_game_input_clearable(GameInput input);
      bool get_game_input_is_menu(GameInput input);
@@ -31,11 +87,56 @@ index f5ed6c0..bbfb829 100644
  
      const std::string& get_game_input_enum_name(GameInput input);
  }
+diff --git a/recompinput/include/recompinput/profiles.h b/recompinput/include/recompinput/profiles.h
+index 45bedd1..5adb110 100644
+--- a/recompinput/include/recompinput/profiles.h
++++ b/recompinput/include/recompinput/profiles.h
+@@ -57,8 +57,22 @@ namespace recompinput {
+         std::string get_mp_keyboard_profile_key(int player_index);
+         std::string get_mp_keyboard_profile_name(int player_index);
+         void initialize_input_bindings();
++        // The profiles single player plays with: Controller (SP) and Keyboard (SP), or a custom profile picked for
++        // either on the Controls tab (set_sp_profile_index, saved with the controls).
+         int get_sp_controller_profile_index();
+         int get_sp_keyboard_profile_index();
++        // Controller (SP) or Keyboard (SP) themselves, whichever single player uses.
++        int get_default_sp_profile_index(InputDevice device);
++        void set_sp_profile_index(InputDevice device, int profile_index);
++        // A custom profile for a device, with the bindings of `copy_from` (another profile of that device), or the
++        // defaults' if it's -1. Returns its index.
++        int create_custom_profile(InputDevice device, const std::string &name, int copy_from);
++        // Deletes a custom profile. What used it (single player, a player, a controller) uses its device's
++        // Controller (SP) or Keyboard (SP) instead. The indices of the profiles after it go down by one.
++        void delete_custom_profile(int profile_index);
++        void rename_input_profile(int profile_index, const std::string &name);
++        // Replaces a profile's bindings with a preset's, then runs the preset's on_apply.
++        void apply_input_preset(int profile_index, const InputPreset &preset);
+         int get_or_create_mp_keyboard_profile_index(int player_index);
+         std::string get_string_from_controller_guid(ControllerGUID guid);
+         bool get_n64_input(int player_index, uint16_t* buttons_out, float* x_out, float* y_out);
 diff --git a/recompinput/src/input_events.cpp b/recompinput/src/input_events.cpp
-index c76a1dc..e17c26f 100644
+index c76a1dc..e651d94 100644
 --- a/recompinput/src/input_events.cpp
 +++ b/recompinput/src/input_events.cpp
-@@ -238,6 +238,21 @@ bool sdl_event_filter(void* userdata, SDL_Event* event) {
+@@ -117,7 +117,16 @@ bool sdl_event_filter(void* userdata, SDL_Event* event) {
+     case SDL_EventType::SDL_MOUSEWHEEL:
+     {
+         SDL_MouseWheelEvent* wheel_event = &event->wheel;
+-        recompinput::add_mouse_wheel_delta(wheel_event->y * (wheel_event->direction == SDL_MOUSEWHEEL_FLIPPED ? -1 : 1));
++        const int32_t notches = wheel_event->y * (wheel_event->direction == SDL_MOUSEWHEEL_FLIPPED ? -1 : 1);
++        // The wheel is bound like the mouse's buttons (see SDL_MOUSEBUTTONDOWN), as Wheel Up or Wheel Down.
++        if (binding::is_binding()) {
++            const InputDevice device = binding::get_scanning_device();
++            if (notches != 0 && (device == InputDevice::Keyboard || (device == InputDevice::Controller && players::is_single_player_mode()))) {
++                binding::set_scanned_input(InputField::mouse(notches > 0 ? InputField::mouse_wheel_up : InputField::mouse_wheel_down));
++            }
++            break;
++        }
++        recompinput::add_mouse_wheel_delta(notches);
+     }
+     queue_if_enabled(event);
+     break;
+@@ -238,6 +247,21 @@ bool sdl_event_filter(void* userdata, SDL_Event* event) {
          // Always queue button up events to avoid missing them during binding.
          recompui::queue_event(*event);
          break;
@@ -58,10 +159,47 @@ index c76a1dc..e17c26f 100644
          queue_if_enabled(event);
          break;
 diff --git a/recompinput/src/input_mapping.cpp b/recompinput/src/input_mapping.cpp
-index bfcfef4..2f551d7 100644
+index bfcfef4..4a1d47f 100644
 --- a/recompinput/src/input_mapping.cpp
 +++ b/recompinput/src/input_mapping.cpp
-@@ -31,7 +31,12 @@ namespace recompinput {
+@@ -5,22 +5,22 @@ namespace recompinput {
+ 
+     using default_game_input_device_mapping = std::unordered_map<GameInput, std::vector<InputField>>;
+ 
++    // The defaults (issue #149): a modern PC layout, with Z and R on the mouse buttons for aiming and firing.
+     default_game_input_device_mapping default_n64_mappings_keyboard = {
+         { GameInput::A,              { InputField::keyboard(SDL_SCANCODE_SPACE) } },
+-        { GameInput::B,              { InputField::keyboard(SDL_SCANCODE_LSHIFT) } },
+-        { GameInput::L,              { InputField::keyboard(SDL_SCANCODE_E) } },
+-        { GameInput::B,              { InputField::keyboard(SDL_SCANCODE_LSHIFT) } },
+-        { GameInput::R,              { InputField::keyboard(SDL_SCANCODE_R) } },
+-        { GameInput::Z,              { InputField::keyboard(SDL_SCANCODE_Q) } },
+-        { GameInput::START,          { InputField::keyboard(SDL_SCANCODE_RETURN) } },
+-        { GameInput::C_LEFT,         { InputField::keyboard(SDL_SCANCODE_LEFT) } },
+-        { GameInput::C_RIGHT,        { InputField::keyboard(SDL_SCANCODE_RIGHT) } },
+-        { GameInput::C_UP,           { InputField::keyboard(SDL_SCANCODE_UP) } },
+-        { GameInput::C_DOWN,         { InputField::keyboard(SDL_SCANCODE_DOWN) } },
+-        { GameInput::DPAD_LEFT,      { InputField::keyboard(SDL_SCANCODE_J) } },
+-        { GameInput::DPAD_RIGHT,     { InputField::keyboard(SDL_SCANCODE_L) } },
+-        { GameInput::DPAD_UP,        { InputField::keyboard(SDL_SCANCODE_I) } },
+-        { GameInput::DPAD_DOWN,      { InputField::keyboard(SDL_SCANCODE_K) } },
++        { GameInput::B,              { InputField::keyboard(SDL_SCANCODE_E) } },
++        { GameInput::L,              { InputField::keyboard(SDL_SCANCODE_RETURN) } },
++        { GameInput::R,              { InputField{ InputType::Mouse, SDL_BUTTON_RIGHT } } },
++        { GameInput::Z,              { InputField{ InputType::Mouse, SDL_BUTTON_LEFT } } },
++        { GameInput::START,          { InputField::keyboard(SDL_SCANCODE_TAB) } },
++        { GameInput::C_LEFT,         { InputField::keyboard(SDL_SCANCODE_J) } },
++        { GameInput::C_RIGHT,        { InputField::keyboard(SDL_SCANCODE_L) } },
++        { GameInput::C_UP,           { InputField::keyboard(SDL_SCANCODE_I) } },
++        { GameInput::C_DOWN,         { InputField::keyboard(SDL_SCANCODE_K) } },
++        { GameInput::DPAD_LEFT,      { InputField::keyboard(SDL_SCANCODE_LEFT) } },
++        { GameInput::DPAD_RIGHT,     { InputField::keyboard(SDL_SCANCODE_RIGHT) } },
++        { GameInput::DPAD_UP,        { InputField::keyboard(SDL_SCANCODE_UP), InputField::mouse(InputField::mouse_wheel_up) } },
++        { GameInput::DPAD_DOWN,      { InputField::keyboard(SDL_SCANCODE_DOWN), InputField::mouse(InputField::mouse_wheel_down) } },
+         { GameInput::X_AXIS_NEG,     { InputField::keyboard(SDL_SCANCODE_A) } },
+         { GameInput::X_AXIS_POS,     { InputField::keyboard(SDL_SCANCODE_D) } },
+         { GameInput::Y_AXIS_POS,     { InputField::keyboard(SDL_SCANCODE_W) } },
+@@ -31,20 +31,28 @@ namespace recompinput {
          { GameInput::BACK_MENU,      { InputField::keyboard(SDL_SCANCODE_F15) } },
          { GameInput::APPLY_MENU,     { InputField::keyboard(SDL_SCANCODE_F) } },
          { GameInput::TAB_LEFT_MENU,  { InputField::keyboard(SDL_SCANCODE_F16) } },
@@ -74,12 +212,75 @@ index bfcfef4..2f551d7 100644
 +        { GameInput::TOGGLE_TEXTURE_PACK, { InputField::keyboard(SDL_SCANCODE_F8) } }
      };
  
++    // The defaults (issue #149): the buttons as their names say (A is A, B is B), the C buttons on the right stick (C-Up
++    // on its click too, for Right Stick: Free Camera),
++    // Z on both triggers, and A and B to accept and go back in the menus, as N64 pads and adapters map them too.
      default_game_input_device_mapping default_n64_mappings_controller = {
+         { GameInput::A,              { InputField::controller_digital(SDL_CONTROLLER_BUTTON_SOUTH) } },
+-        { GameInput::B,              { InputField::controller_digital(SDL_CONTROLLER_BUTTON_WEST) } },
++        { GameInput::B,              { InputField::controller_digital(SDL_CONTROLLER_BUTTON_EAST) } },
+         { GameInput::L,              { InputField::controller_digital(SDL_CONTROLLER_BUTTON_LEFTSHOULDER) } },
+-        { GameInput::R,              { InputField::controller_analog( SDL_CONTROLLER_AXIS_TRIGGERRIGHT, true) } },
+-        { GameInput::Z,              { InputField::controller_analog( SDL_CONTROLLER_AXIS_TRIGGERLEFT, true) } },
++        { GameInput::R,              { InputField::controller_digital(SDL_CONTROLLER_BUTTON_RIGHTSHOULDER) } },
++        { GameInput::Z,              { InputField::controller_analog( SDL_CONTROLLER_AXIS_TRIGGERLEFT, true), InputField::controller_analog( SDL_CONTROLLER_AXIS_TRIGGERRIGHT, true) } },
+         { GameInput::START,          { InputField::controller_digital(SDL_CONTROLLER_BUTTON_START) } },
+-        { GameInput::C_LEFT,         { InputField::controller_analog( SDL_CONTROLLER_AXIS_RIGHTX, false), InputField::controller_digital(SDL_CONTROLLER_BUTTON_NORTH) } },
+-        { GameInput::C_RIGHT,        { InputField::controller_analog( SDL_CONTROLLER_AXIS_RIGHTX, true),  InputField::controller_digital(SDL_CONTROLLER_BUTTON_EAST) } },
++        { GameInput::C_LEFT,         { InputField::controller_analog( SDL_CONTROLLER_AXIS_RIGHTX, false) } },
++        { GameInput::C_RIGHT,        { InputField::controller_analog( SDL_CONTROLLER_AXIS_RIGHTX, true) } },
+         { GameInput::C_UP,           { InputField::controller_analog( SDL_CONTROLLER_AXIS_RIGHTY, false), InputField::controller_digital(SDL_CONTROLLER_BUTTON_RIGHTSTICK) } },
+-        { GameInput::C_DOWN,         { InputField::controller_analog( SDL_CONTROLLER_AXIS_RIGHTY, true),  InputField::controller_digital(SDL_CONTROLLER_BUTTON_RIGHTSHOULDER) } },
++        { GameInput::C_DOWN,         { InputField::controller_analog( SDL_CONTROLLER_AXIS_RIGHTY, true) } },
+         { GameInput::DPAD_LEFT,      { InputField::controller_digital(SDL_CONTROLLER_BUTTON_DPAD_LEFT) } },
+         { GameInput::DPAD_RIGHT,     { InputField::controller_digital(SDL_CONTROLLER_BUTTON_DPAD_RIGHT) } },
+         { GameInput::DPAD_UP,        { InputField::controller_digital(SDL_CONTROLLER_BUTTON_DPAD_UP) } },
+@@ -56,7 +64,7 @@ namespace recompinput {
+ 
+         { GameInput::TOGGLE_MENU,    { InputField::controller_digital(SDL_CONTROLLER_BUTTON_BACK) } },
+         { GameInput::ACCEPT_MENU,    { InputField::controller_digital(SDL_CONTROLLER_BUTTON_SOUTH) } },
+-        { GameInput::BACK_MENU,      { InputField::controller_digital(SDL_CONTROLLER_BUTTON_WEST) } },
++        { GameInput::BACK_MENU,      { InputField::controller_digital(SDL_CONTROLLER_BUTTON_EAST) } },
+         { GameInput::APPLY_MENU,     { InputField::controller_digital(SDL_CONTROLLER_BUTTON_NORTH), InputField::controller_digital(SDL_CONTROLLER_BUTTON_START) } },
+         { GameInput::TAB_LEFT_MENU,  { InputField::controller_digital(SDL_CONTROLLER_BUTTON_LEFTSHOULDER) } },
+         { GameInput::TAB_RIGHT_MENU, { InputField::controller_digital(SDL_CONTROLLER_BUTTON_RIGHTSHOULDER) } },
+@@ -96,4 +104,22 @@ namespace recompinput {
+         }
+         default_n64_mappings_keyboard[input] = fields;
+     }
++
++    static std::vector<InputPreset> input_presets;
++
++    void add_input_preset(InputPreset preset) {
++        input_presets.emplace_back(std::move(preset));
++    }
++
++    const std::vector<InputPreset>& get_input_presets() {
++        return input_presets;
++    }
++
++    const std::vector<InputField>& get_preset_mapping_for_input(const InputPreset& preset, GameInput input) {
++        auto it = preset.changes.find(input);
++        if (it != preset.changes.end()) {
++            return it->second;
++        }
++        return get_default_mapping_for_input(preset.device, input);
++    }
+ }
 diff --git a/recompinput/src/input_state.cpp b/recompinput/src/input_state.cpp
-index 03ed871..d6e76c9 100644
+index 03ed871..aebc9c0 100644
 --- a/recompinput/src/input_state.cpp
 +++ b/recompinput/src/input_state.cpp
-@@ -18,6 +18,7 @@ static struct {
+@@ -2,6 +2,8 @@
+ #include <mutex>
+ #include <span>
+ #include <atomic>
++#include <chrono>
++#include <cstdlib>
+ 
+ #include "recompinput/recompinput.h"
+ #include "recompinput/input_state.h"
+@@ -18,6 +20,7 @@ static struct {
      const Uint8* keys = nullptr;
      SDL_Keymod keymod = SDL_Keymod::KMOD_NONE;
      int numkeys = 0;
@@ -87,27 +288,68 @@ index 03ed871..d6e76c9 100644
      std::atomic_int32_t mouse_wheel_pos = 0;
      std::mutex controllers_mutex;
      std::vector<SDL_GameController*> detected_controllers{};
-@@ -34,6 +35,7 @@ static struct {
+@@ -31,9 +34,44 @@ static struct {
+     InputArray<bool> rumble_active{};
+ } InputState;
+ 
++// The mouse wheel bound as an input (InputField::mouse_wheel_up, mouse_wheel_down): each notch holds it for
++// wheel_press, then lets go for wheel_gap before the next notch's press, so a bound button sees one press a notch
++// (notches scrolled faster wait their turn). Turned by the events (add_mouse_wheel_delta), read each poll.
++namespace {
++    constexpr std::chrono::milliseconds wheel_press{ 100 };
++    constexpr std::chrono::milliseconds wheel_gap{ 34 };
++    constexpr int max_pending_notches = 16;
++    struct WheelInput {
++        int pending = 0;
++        std::chrono::steady_clock::time_point press_end{};
++        std::chrono::steady_clock::time_point gap_end{};
++        bool held = false;
++    };
++    std::mutex wheel_mutex;
++    WheelInput wheel_inputs[2]; // up, down
++
++    void poll_wheel() {
++        const auto now = std::chrono::steady_clock::now();
++        std::lock_guard lock{ wheel_mutex };
++        for (WheelInput& wheel : wheel_inputs) {
++            if (wheel.held && now >= wheel.press_end) {
++                wheel.held = false;
++                wheel.gap_end = now + wheel_gap;
++            }
++            if (!wheel.held && wheel.pending > 0 && now >= wheel.gap_end) {
++                wheel.pending--;
++                wheel.held = true;
++                wheel.press_end = now + wheel_press;
++            }
++        }
++    }
++}
++
  void recompinput::poll_inputs() {
      InputState.keys = SDL_GetKeyboardState(&InputState.numkeys);
      InputState.keymod = SDL_GetModState();
 +    InputState.mouse_buttons = SDL_GetMouseState(nullptr, nullptr);
++    poll_wheel();
      static bool first_poll = true;
  
      {
-@@ -215,6 +217,11 @@ bool recompinput::should_override_keystate(SDL_Scancode key, SDL_Keymod mod) {
+@@ -215,6 +253,15 @@ bool recompinput::should_override_keystate(SDL_Scancode key, SDL_Keymod mod) {
      return false;
  }
  
 +// Mouse buttons are numbered as SDL numbers them (SDL_BUTTON_LEFT is 1).
 +static bool mouse_button_state(int button) {
++    if (button == recompinput::InputField::mouse_wheel_up || button == recompinput::InputField::mouse_wheel_down) {
++        std::lock_guard lock{ wheel_mutex };
++        return wheel_inputs[button == recompinput::InputField::mouse_wheel_up ? 0 : 1].held;
++    }
 +    return button >= 1 && button <= 32 && (InputState.mouse_buttons & SDL_BUTTON(button)) != 0;
 +}
 +
  float recompinput::get_input_analog(int controller_num, const InputField& field) {
      switch (field.input_type) {
      case InputType::Keyboard:
-@@ -230,8 +237,7 @@ float recompinput::get_input_analog(int controller_num, const InputField& field)
+@@ -230,8 +277,7 @@ float recompinput::get_input_analog(int controller_num, const InputField& field)
      case InputType::ControllerAnalog:
          return controller_axis_state(controller_num, field.input_id, true);
      case InputType::Mouse:
@@ -117,7 +359,7 @@ index 03ed871..d6e76c9 100644
      case InputType::None:
          return false;
      }
-@@ -261,8 +267,7 @@ bool recompinput::get_input_digital(int controller_num, const InputField& field)
+@@ -261,8 +307,7 @@ bool recompinput::get_input_digital(int controller_num, const InputField& field)
          // TODO adjustable threshold
          return controller_axis_state(controller_num, field.input_id, true) >= recompinput::axis_digital_threshold;
      case InputType::Mouse:
@@ -127,8 +369,18 @@ index 03ed871..d6e76c9 100644
      case InputType::None:
          return false;
      }
+@@ -413,4 +458,9 @@ void recompinput::add_mouse_deltas(float delta_x, float delta_y) {
+ }
+ void recompinput::add_mouse_wheel_delta(int32_t delta) {
+     InputState.mouse_wheel_pos.fetch_add(delta);
++    if (delta != 0) {
++        std::lock_guard lock{ wheel_mutex };
++        WheelInput& wheel = wheel_inputs[delta > 0 ? 0 : 1];
++        wheel.pending = std::min(wheel.pending + std::abs(delta), max_pending_notches);
++    }
+ }
 diff --git a/recompinput/src/input_types.cpp b/recompinput/src/input_types.cpp
-index c6786e6..833b9a3 100644
+index c6786e6..2e249f8 100644
 --- a/recompinput/src/input_types.cpp
 +++ b/recompinput/src/input_types.cpp
 @@ -23,6 +23,10 @@ constexpr std::array<std::string, num_game_inputs> get_default_game_input_descri
@@ -161,7 +413,7 @@ index c6786e6..833b9a3 100644
  const std::string& get_game_input_enum_name(GameInput input) {
      return game_input_enum_names.at(static_cast<size_t>(input));
  }
-@@ -250,6 +266,29 @@ static std::string controller_axis_to_string(int axis) {
+@@ -250,6 +266,33 @@ static std::string controller_axis_to_string(int axis) {
      }
  }
  
@@ -183,6 +435,10 @@ index c6786e6..833b9a3 100644
 +        return PF_MOUSE_7;
 +    case 8:
 +        return PF_MOUSE_8;
++    case recompinput::InputField::mouse_wheel_up:
++        return PF_MOUSE_SCROLL_UP;
++    case recompinput::InputField::mouse_wheel_down:
++        return PF_MOUSE_SCROLL_DOWN;
 +    default:
 +        return recompinput::unknown_device_input;
 +    }
@@ -191,7 +447,7 @@ index c6786e6..833b9a3 100644
  std::string recompinput::InputField::to_string() const {
      switch (input_type) {
      case InputType::None:
-@@ -260,6 +299,8 @@ std::string recompinput::InputField::to_string() const {
+@@ -260,6 +303,8 @@ std::string recompinput::InputField::to_string() const {
          return controller_axis_to_string(input_id);
      case InputType::Keyboard:
          return keyboard_input_to_string((SDL_Scancode)input_id);
@@ -200,6 +456,180 @@ index c6786e6..833b9a3 100644
      default:
          return recompinput::unknown_device_input;
      }
+diff --git a/recompinput/src/profiles.cpp b/recompinput/src/profiles.cpp
+index c89956e..0f6034f 100644
+--- a/recompinput/src/profiles.cpp
++++ b/recompinput/src/profiles.cpp
+@@ -34,6 +34,10 @@ static std::unordered_map<uint64_t, int> controller_hash_index_map{};
+ 
+ static int keyboard_sp_profile_index = -1;
+ static int controller_sp_profile_index = -1;
++// The profiles single player plays with when not Controller (SP) and Keyboard (SP): custom ones picked on the
++// Controls tab, or -1.
++static int controller_sp_selected_index = -1;
++static int keyboard_sp_selected_index = -1;
+ 
+ static const std::string keyboard_sp_profile_key = "keyboard_sp";
+ static const std::string controller_sp_profile_key = "controller_sp";
+@@ -43,6 +47,8 @@ static const std::string controller_sp_profile_name = "Controller (SP)";
+ static const std::string keyboard_mp_profile_key = "keyboard_mp_player_"; // + player index
+ static const std::string keyboard_mp_profile_name = "Keyboard "; // + "(player number)"
+ 
++static const std::string custom_profile_key = "custom_"; // + a number no other custom profile's key has
++
+ // Make the button value array, which maps a button index to its bit field.
+ #define DEFINE_INPUT(name, value, readable) uint16_t(value##u),
+ static const std::array n64_button_values = {
+@@ -346,11 +352,119 @@ namespace recompinput {
+     }
+ 
+     int profiles::get_sp_controller_profile_index() {
+-        return controller_sp_profile_index;
++        return controller_sp_selected_index >= 0 ? controller_sp_selected_index : controller_sp_profile_index;
+     }
+ 
+     int profiles::get_sp_keyboard_profile_index() {
+-        return keyboard_sp_profile_index;
++        return keyboard_sp_selected_index >= 0 ? keyboard_sp_selected_index : keyboard_sp_profile_index;
++    }
++
++    int profiles::get_default_sp_profile_index(InputDevice device) {
++        return device == InputDevice::Keyboard ? keyboard_sp_profile_index : controller_sp_profile_index;
++    }
++
++    void profiles::set_sp_profile_index(InputDevice device, int profile_index) {
++        if (profile_index < 0 || profile_index >= get_input_profile_count() || input_profiles[profile_index].device != device) {
++            return;
++        }
++        int selected = profile_index == get_default_sp_profile_index(device) ? -1 : profile_index;
++        if (device == InputDevice::Keyboard) {
++            keyboard_sp_selected_index = selected;
++        } else {
++            controller_sp_selected_index = selected;
++        }
++        // Player 1's too, which binding and the menus' buttons use in single player.
++        profiles::set_input_profile_for_player(0, profile_index, device);
++    }
++
++    int profiles::create_custom_profile(InputDevice device, const std::string &name, int copy_from) {
++        int number = 1;
++        while (input_profile_key_index_map.contains(custom_profile_key + std::to_string(number))) {
++            number++;
++        }
++        int profile_index = profiles::add_input_profile(custom_profile_key + std::to_string(number), name, device, true);
++        for (size_t i = 0; i < recompinput::num_game_inputs; i++) {
++            GameInput input = static_cast<GameInput>(i);
++            const std::vector<InputField> &defaults = recompinput::get_default_mapping_for_input(device, input);
++            for (size_t binding_index = 0; binding_index < recompinput::num_bindings_per_input; binding_index++) {
++                InputField field{};
++                if (copy_from >= 0 && copy_from < profile_index) {
++                    field = profiles::get_input_binding(copy_from, input, binding_index);
++                } else if (binding_index < defaults.size()) {
++                    field = defaults[binding_index];
++                }
++                profiles::set_input_binding(profile_index, input, binding_index, field);
++            }
++        }
++        return profile_index;
++    }
++
++    void profiles::delete_custom_profile(int profile_index) {
++        if (profile_index < 0 || profile_index >= get_input_profile_count() || !input_profiles[profile_index].custom) {
++            return;
++        }
++        // Controller (SP) and Keyboard (SP) are made first, so their indices stay the same. Whatever used the
++        // deleted profile uses its device's one instead: a player's or controller's profile is always one of its
++        // own device's.
++        const int fallback = get_default_sp_profile_index(input_profiles[profile_index].device);
++        auto update = [profile_index, fallback](int &index) {
++            if (index == profile_index) {
++                index = fallback;
++            } else if (index > profile_index) {
++                index--;
++            }
++        };
++        auto update_selected = [profile_index](int &index) {
++            if (index == profile_index) {
++                index = -1;
++            } else if (index > profile_index) {
++                index--;
++            }
++        };
++
++        input_profiles.erase(input_profiles.begin() + profile_index);
++        input_profile_key_index_map.clear();
++        for (auto &indices : input_profile_custom_indices) {
++            indices.clear();
++        }
++        for (int i = 0; i < (int)(input_profiles.size()); i++) {
++            input_profile_key_index_map.emplace(input_profiles[i].key, i);
++            if (input_profiles[i].custom) {
++                input_profile_custom_indices[input_profiles[i].device == InputDevice::Keyboard ? 1 : 0].emplace_back(i);
++            }
++        }
++        for (Controller &controller : controllers) {
++            update(controller.profile_index);
++        }
++        for (auto &player : players_input_profile_indices) {
++            update(player.first);
++            update(player.second);
++        }
++        update_selected(controller_sp_selected_index);
++        update_selected(keyboard_sp_selected_index);
++    }
++
++    void profiles::rename_input_profile(int profile_index, const std::string &name) {
++        if (profile_index >= 0 && profile_index < get_input_profile_count() && !name.empty()) {
++            input_profiles[profile_index].name = name;
++        }
++    }
++
++    void profiles::apply_input_preset(int profile_index, const InputPreset &preset) {
++        if (profile_index < 0 || profile_index >= get_input_profile_count()) {
++            return;
++        }
++        for (size_t i = 0; i < recompinput::num_game_inputs; i++) {
++            GameInput input = static_cast<GameInput>(i);
++            const std::vector<InputField> &mapping = recompinput::get_preset_mapping_for_input(preset, input);
++            for (size_t binding_index = 0; binding_index < recompinput::num_bindings_per_input; binding_index++) {
++                profiles::set_input_binding(profile_index, input, binding_index,
++                    binding_index < mapping.size() ? mapping[binding_index] : InputField{});
++            }
++        }
++        if (preset.on_apply) {
++            preset.on_apply();
++        }
+     }
+ 
+     int profiles::get_or_create_mp_keyboard_profile_index(int player_index) {
+@@ -445,6 +559,11 @@ namespace recompinput {
+             }
+         }
+ 
++        config_json["sp_profiles"] = {
++            { "controller", profiles::get_input_profile_key(profiles::get_sp_controller_profile_index()) },
++            { "keyboard", profiles::get_input_profile_key(profiles::get_sp_keyboard_profile_index()) },
++        };
++
+         json &controllers = config_json["controllers"];
+         for (int i = 0; i < controller_count; i++) {
+             json &controller = controllers[i];
+@@ -545,6 +664,15 @@ namespace recompinput {
+                 }
+             }
+ 
++            // The profiles single player plays with.
++            auto sp_profiles = config_json.find("sp_profiles");
++            if (sp_profiles != config_json.end() && sp_profiles->is_object()) {
++                profiles::set_sp_profile_index(InputDevice::Controller,
++                    profiles::get_input_profile_by_key(sp_profiles->value("controller", std::string())));
++                profiles::set_sp_profile_index(InputDevice::Keyboard,
++                    profiles::get_input_profile_by_key(sp_profiles->value("keyboard", std::string())));
++            }
++
+             auto controllers = config_json.find("controllers");
+             if (controllers == config_json.end() || !controllers->is_array()) {
+                 return false;
 diff --git a/recompui/include/recompui/config.h b/recompui/include/recompui/config.h
 index 38b84f5..6908bea 100644
 --- a/recompui/include/recompui/config.h
@@ -264,6 +694,18 @@ index 30c463b..986bb50 100644
      bool get_cursor_visible();
      void set_cursor_visible(bool visible);
      void update_supported_options();
+diff --git a/recompui/include/recompui/renderer.h b/recompui/include/recompui/renderer.h
+index 33f79ab..0a3ae42 100644
+--- a/recompui/include/recompui/renderer.h
++++ b/recompui/include/recompui/renderer.h
+@@ -29,6 +29,7 @@ namespace recompui {
+             void send_dl(const OSTask *task) override;
+             void send_dummy_workload(uint32_t fb_address) override;
+             void update_screen() override;
++            void present_again() override;
+             void shutdown() override;
+             uint32_t get_display_framerate() const override;
+             float get_resolution_scale() const override;
 diff --git a/recompui/src/base/ui_state.cpp b/recompui/src/base/ui_state.cpp
 index 277a421..549dc29 100644
 --- a/recompui/src/base/ui_state.cpp
@@ -394,6 +836,28 @@ index 02455fd..35a9952 100644
          recomp::mods::scan_mods();
      }
      mod_details = recomp::mods::get_all_mod_details(game_mod_id);
+diff --git a/recompui/src/composites/ui_player_card.cpp b/recompui/src/composites/ui_player_card.cpp
+index 7a75884..38da47c 100644
+--- a/recompui/src/composites/ui_player_card.cpp
++++ b/recompui/src/composites/ui_player_card.cpp
+@@ -90,13 +90,13 @@ PlayerCard::PlayerCard(
+ 
+         if (has_controller) {
+             options.emplace_back(
+-                recompinput::profiles::get_input_profile_name(recompinput::profiles::get_sp_controller_profile_index()),
+-                std::to_string(recompinput::profiles::get_sp_controller_profile_index())
++                recompinput::profiles::get_input_profile_name(recompinput::profiles::get_default_sp_profile_index(recompinput::InputDevice::Controller)),
++                std::to_string(recompinput::profiles::get_default_sp_profile_index(recompinput::InputDevice::Controller))
+             );
+         } else {
+             options.emplace_back(
+-                recompinput::profiles::get_input_profile_name(recompinput::profiles::get_sp_keyboard_profile_index()),
+-                std::to_string(recompinput::profiles::get_sp_keyboard_profile_index())
++                recompinput::profiles::get_input_profile_name(recompinput::profiles::get_default_sp_profile_index(recompinput::InputDevice::Keyboard)),
++                std::to_string(recompinput::profiles::get_default_sp_profile_index(recompinput::InputDevice::Keyboard))
+             );
+         }
+ 
 diff --git a/recompui/src/composites/ui_prompt.cpp b/recompui/src/composites/ui_prompt.cpp
 index 56a0b70..c0bde80 100644
 --- a/recompui/src/composites/ui_prompt.cpp
@@ -589,10 +1053,18 @@ index 86428c9..39f7d0e 100644
          this->set_option_value(this->option_id, v);
      });
 diff --git a/recompui/src/config/ui_config_page_controls.cpp b/recompui/src/config/ui_config_page_controls.cpp
-index f379a6f..d18745d 100644
+index f379a6f..25273b2 100644
 --- a/recompui/src/config/ui_config_page_controls.cpp
 +++ b/recompui/src/config/ui_config_page_controls.cpp
-@@ -190,6 +190,7 @@ void ConfigPageControls::create_game_input_contexts() {
+@@ -6,6 +6,7 @@
+ #include "elements/ui_container.h"
+ #include "elements/ui_binding_button.h"
+ #include "elements/ui_select.h"
++#include "elements/ui_text_input.h"
+ #include "recompinput/profiles.h"
+ #include "recompui/config.h"
+ 
+@@ -190,6 +191,7 @@ void ConfigPageControls::create_game_input_contexts() {
      game_input_sections.n64.contexts.clear();
      game_input_sections.menu.contexts.clear();
      game_input_sections.other.clear();
@@ -600,7 +1072,7 @@ index f379a6f..d18745d 100644
  
      for (int i = 0; i < static_cast<int>(recompinput::GameInput::COUNT); i++) {
          recompinput::GameInput input = static_cast<recompinput::GameInput>(i);
-@@ -206,10 +207,15 @@ void ConfigPageControls::create_game_input_contexts() {
+@@ -206,10 +208,15 @@ void ConfigPageControls::create_game_input_contexts() {
  
          if (recompinput::get_game_input_is_menu(input)) {
              game_input_sections.menu.contexts.push_back(input_ctx);
@@ -616,6 +1088,218 @@ index f379a6f..d18745d 100644
  
      // TODO: fetch other (e.g. mod) inputs to game_input_sections.other
  }
+@@ -227,8 +234,14 @@ void ConfigPageControls::process_event(const Event &e) {
+         }
+         if (last_update_index != update_index) {
+             last_update_index = update_index;
++            queue_profile_render = false;
+             render_all();
+         }
++        if (queue_profile_render) {
++            queue_profile_render = false;
++            render_profile_header();
++            render_footer_right();
++        }
+         queue_update();
+         break;
+     default:
+@@ -260,7 +273,7 @@ void ConfigPageControls::render_header() {
+     // Header attempts to not re-render elements if not necessary, instead swapping visibility / updating text.
+ 
+     if (!multiplayer_enabled) {
+-        hide_header();
++        render_profile_header();
+         return;
+     }
+ 
+@@ -479,18 +492,150 @@ void ConfigPageControls::render_footer() {
+             keyboard_toggle->add_checked_callback([this](bool checked) {
+                 this->single_player_show_keyboard_mappings = checked;
+                 this->update_control_mappings();
++                // The device's own profiles and presets.
++                this->queue_profile_render = true;
+             });
+         }
+     }
+-    {
+-        auto footer_right = footer->get_right();
+-        footer_right->clear_children();
+-        auto reset_to_defaults_button = context.create_element<Button>(footer_right, "Reset to defaults", ButtonStyle::Warning);
+-        reset_to_defaults_button->add_pressed_callback([this]() {
+-            recompinput::profiles::reset_profile_bindings(this->selected_profile_index, this->get_player_input_device());
+-            this->update_control_mappings();
++    render_footer_right();
++}
++
++void ConfigPageControls::render_footer_right() {
++    if (multiplayer_enabled && !multiplayer_view_mappings) {
++        return;
++    }
++
++    recompui::ContextId context = get_current_context();
++    auto footer_right = footer->get_right();
++    footer_right->clear_children();
++
++    // Single player: a preset to load into the profile (issue #149).
++    if (!multiplayer_enabled) {
++        const std::vector<recompinput::InputPreset> &presets = recompinput::get_input_presets();
++        const recompinput::InputDevice device = get_player_input_device();
++        std::vector<SelectOption> preset_options;
++        bool selected_found = false;
++        for (size_t i = 0; i < presets.size(); i++) {
++            if (presets[i].device == device) {
++                preset_options.emplace_back(presets[i].name, std::to_string(i));
++                selected_found = selected_found || (int)i == selected_preset_index;
++            }
++        }
++        if (!preset_options.empty()) {
++            if (!selected_found) {
++                selected_preset_index = std::stoi(preset_options[0].value);
++            }
++            auto preset_wrapper = context.create_element<Element>(footer_right, 0, "div", false);
++            preset_wrapper->set_width(240.0f);
++            auto preset_select = context.create_element<Select>(preset_wrapper, preset_options, std::to_string(selected_preset_index));
++            preset_select->add_change_callback([this](SelectOption &option, int option_index) {
++                this->selected_preset_index = std::stoi(option.value);
++            });
++            auto load_preset_button = context.create_element<Button>(footer_right, "Load preset", ButtonStyle::Secondary);
++            load_preset_button->add_pressed_callback([this]() {
++                const std::vector<recompinput::InputPreset> &presets = recompinput::get_input_presets();
++                if (this->selected_preset_index >= 0 && this->selected_preset_index < (int)presets.size()) {
++                    recompinput::profiles::apply_input_preset(this->selected_profile_index, presets[this->selected_preset_index]);
++                    this->update_control_mappings();
++                }
++            });
++        }
++    }
++
++    auto reset_to_defaults_button = context.create_element<Button>(footer_right, "Reset to defaults", ButtonStyle::Warning);
++    reset_to_defaults_button->add_pressed_callback([this]() {
++        recompinput::profiles::reset_profile_bindings(this->selected_profile_index, this->get_player_input_device());
++        this->update_control_mappings();
++    });
++}
++
++void ConfigPageControls::render_profile_header() {
++    recompui::ContextId context = get_current_context();
++    add_header();
++    header->set_as_navigation_container(NavigationType::Horizontal);
++
++    const recompinput::InputDevice device = get_player_input_device();
++    const int default_index = recompinput::profiles::get_default_sp_profile_index(device);
++    const int current_index = device == recompinput::InputDevice::Keyboard
++        ? recompinput::profiles::get_sp_keyboard_profile_index()
++        : recompinput::profiles::get_sp_controller_profile_index();
++    const bool current_custom = recompinput::profiles::is_input_profile_custom(current_index);
++
++    auto header_left = header->get_left();
++    header_left->clear_children();
++    context.create_element<Label>(header_left, "Profile", LabelStyle::Normal);
++
++    std::vector<SelectOption> profile_options;
++    profile_options.emplace_back("Default", std::to_string(default_index));
++    for (int profile_index : recompinput::profiles::get_indices_for_custom_profiles(device)) {
++        profile_options.emplace_back(recompinput::profiles::get_input_profile_name(profile_index), std::to_string(profile_index));
++    }
++    auto profile_wrapper = context.create_element<Element>(header_left, 0, "div", false);
++    profile_wrapper->set_width(280.0f);
++    auto profile_select = context.create_element<Select>(profile_wrapper, profile_options, std::to_string(current_index));
++    profile_select->add_change_callback([this](SelectOption &option, int option_index) {
++        this->on_select_sp_profile(std::stoi(option.value));
++    });
++
++    // A custom profile's name, renamed as it's typed (the list shows it once it's done).
++    if (current_custom) {
++        auto name_input = context.create_element<TextInput>(header_left);
++        name_input->set_width(240.0f);
++        name_input->set_text(recompinput::profiles::get_input_profile_name(current_index));
++        name_input->add_text_changed_callback([current_index](const std::string &text) {
++            recompinput::profiles::rename_input_profile(current_index, text);
++        });
++        name_input->set_focus_callback([this](bool active) {
++            if (!active) {
++                this->queue_profile_render = true;
++            }
+         });
+     }
++
++    auto header_right = header->get_right();
++    header_right->clear_children();
++    auto new_button = context.create_element<Button>(header_right, "New profile", ButtonStyle::Secondary, ButtonSize::Medium);
++    new_button->add_pressed_callback([this]() {
++        this->on_new_profile();
++    });
++    auto delete_button = context.create_element<Button>(header_right, "Delete profile", ButtonStyle::Danger, ButtonSize::Medium);
++    delete_button->set_enabled(current_custom);
++    delete_button->add_pressed_callback([this]() {
++        this->on_delete_profile();
++    });
++}
++
++void ConfigPageControls::on_select_sp_profile(int profile_index) {
++    recompinput::profiles::set_sp_profile_index(get_player_input_device(), profile_index);
++    update_control_mappings();
++    queue_profile_render = true;
++}
++
++void ConfigPageControls::on_new_profile() {
++    // A copy of the profile in use, named after the first number free.
++    const recompinput::InputDevice device = get_player_input_device();
++    const std::vector<int> custom_indices = recompinput::profiles::get_indices_for_custom_profiles(device);
++    std::string name;
++    for (int number = 1; name.empty(); number++) {
++        std::string candidate = "Profile " + std::to_string(number);
++        bool taken = false;
++        for (int profile_index : custom_indices) {
++            taken = taken || recompinput::profiles::get_input_profile_name(profile_index) == candidate;
++        }
++        if (!taken) {
++            name = candidate;
++        }
++    }
++    int profile_index = recompinput::profiles::create_custom_profile(device, name, selected_profile_index);
++    on_select_sp_profile(profile_index);
++}
++
++void ConfigPageControls::on_delete_profile() {
++    if (recompinput::profiles::is_input_profile_custom(selected_profile_index)) {
++        recompinput::profiles::delete_custom_profile(selected_profile_index);
++        update_control_mappings();
++        queue_profile_render = true;
++    }
+ }
+ 
+ void ConfigPageControls::render_control_mappings() {
+diff --git a/recompui/src/config/ui_config_page_controls.h b/recompui/src/config/ui_config_page_controls.h
+index dd8ff24..20794ef 100644
+--- a/recompui/src/config/ui_config_page_controls.h
++++ b/recompui/src/config/ui_config_page_controls.h
+@@ -108,6 +108,12 @@ protected:
+ 
+     bool queue_first_game_input_row_focus = false;
+     bool queue_selected_player_profile_edit_focus = false;
++    // Single player's profile bar and presets, rendered again at the next update (not from their own callbacks,
++    // which would delete the element calling them).
++    bool queue_profile_render = false;
++    // The preset picked in the footer: its index in recompinput::get_input_presets(), or -1 for the first of the
++    // device's.
++    int selected_preset_index = -1;
+ 
+     struct {
+         GameInputSection n64 = GameInputSection("");
+@@ -193,6 +199,12 @@ private:
+     void render_body_mappings();
+     void render_control_mappings();
+     void render_footer();
++    void render_footer_right();
++    // Single player: the profile bar in the header (which profile plays, new, delete, its name).
++    void render_profile_header();
++    void on_select_sp_profile(int profile_index);
++    void on_new_profile();
++    void on_delete_profile();
+ 
+     bool should_show_mappings();
+ 
 diff --git a/recompui/src/config/ui_config_tab_general.cpp b/recompui/src/config/ui_config_tab_general.cpp
 index 296ce0e..193466d 100644
 --- a/recompui/src/config/ui_config_tab_general.cpp
@@ -747,3 +1431,18 @@ index 2c5dc52..9b175f4 100644
      set_as_navigation_container(NavigationType::Horizontal);
  }
  
+diff --git a/recompui/src/renderer/rt64_render_context.cpp b/recompui/src/renderer/rt64_render_context.cpp
+index a7954c7..74c3683 100644
+--- a/recompui/src/renderer/rt64_render_context.cpp
++++ b/recompui/src/renderer/rt64_render_context.cpp
+@@ -360,6 +360,10 @@ void renderer::RT64Context::update_screen() {
+     app->updateScreen();
+ }
+ 
++void renderer::RT64Context::present_again() {
++    app->presentAgain();
++}
++
+ void renderer::RT64Context::shutdown() {
+     if (app != nullptr) {
+         app->end();

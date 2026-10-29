@@ -321,27 +321,74 @@ namespace {
         return XXH3_64bits_digest(&state);
     }
 
-    void dump_memory(uint64_t read) {
-        const std::string path = hash_log_path + "." + std::to_string(read) + ".bin";
-        FILE* file = std::fopen(path.c_str(), "wb");
+    // Writes `memory` (game memory in the runtime's order) to `path`, with what's left out zeroed in `zero`.
+    bool write_memory(const std::filesystem::path& path, const uint8_t* memory, const std::vector<Range>& zero) {
+        FILE* file = conker::lockstep::create_file(path);
         if (file == nullptr) {
-            std::fprintf(stderr, "[harness] %s: couldn't create it\n", path.c_str());
-            return;
+            std::fprintf(stderr, "[harness] %s: couldn't create it\n", (const char*)path.u8string().c_str());
+            return false;
         }
         // The runtime keeps each 32-bit word of game memory in the host's order; the dump has the N64's.
         std::vector<uint8_t> image(recomp::save_states::game_memory_size);
         for (size_t i = 0; i < image.size(); i += 4) {
-            image[i + 0] = rdram[i + 3];
-            image[i + 1] = rdram[i + 2];
-            image[i + 2] = rdram[i + 1];
-            image[i + 3] = rdram[i + 0];
+            image[i + 0] = memory[i + 3];
+            image[i + 1] = memory[i + 2];
+            image[i + 2] = memory[i + 1];
+            image[i + 3] = memory[i + 0];
         }
-        for (const Range& skip : left_out()) {
+        for (const Range& skip : zero) {
             std::fill_n(image.begin() + skip.offset, skip.size, 0);
         }
-        std::fwrite(image.data(), 1, image.size(), file);
-        std::fclose(file);
-        std::printf("[harness] read %llu: memory written to %s\n", (unsigned long long)read, path.c_str());
+        const bool written = std::fwrite(image.data(), 1, image.size(), file) == image.size();
+        return std::fclose(file) == 0 && written;
+    }
+
+    void dump_memory(uint64_t read) {
+        const std::string path = hash_log_path + "." + std::to_string(read) + ".bin";
+        if (write_memory(path, rdram, left_out())) {
+            std::printf("[harness] read %llu: memory written to %s\n", (unsigned long long)read, path.c_str());
+        }
+    }
+
+    // The game's memory as lockstep last compared it (keep_memory), for a desync report: a desync is found
+    // a few reads after the read it's at, once the others' hashes arrive, so the last two are kept. In the
+    // runtime's order, with what's left out zeroed.
+    struct Kept {
+        uint64_t read = UINT64_MAX;
+        std::vector<uint8_t> memory;
+    };
+    std::array<Kept, 2> kept;
+    size_t next_kept = 0;
+
+    std::array<uint64_t, conker::netplay::memory_regions> keep_memory(uint64_t read) {
+        static_assert((uint64_t)conker::netplay::memory_regions * conker::netplay::memory_region_size ==
+            recomp::save_states::game_memory_size);
+        // Reads start again in another match: copies from before are no longer its.
+        for (Kept& old : kept) {
+            if (old.read != UINT64_MAX && old.read >= read) old.read = UINT64_MAX;
+        }
+        Kept& copy = kept[next_kept];
+        next_kept = (next_kept + 1) % kept.size();
+        copy.read = read;
+        copy.memory.assign(rdram, rdram + recomp::save_states::game_memory_size);
+        for (const Range& skip : left_out()) {
+            std::fill_n(copy.memory.begin() + skip.offset, skip.size, 0);
+        }
+        std::array<uint64_t, conker::netplay::memory_regions> regions;
+        for (int i = 0; i < conker::netplay::memory_regions; i++) {
+            regions[i] = XXH3_64bits(copy.memory.data() + (size_t)i * conker::netplay::memory_region_size,
+                conker::netplay::memory_region_size);
+        }
+        return regions;
+    }
+
+    bool dump_kept(uint64_t read, const std::filesystem::path& path) {
+        for (const Kept& copy : kept) {
+            if (copy.read == read && !copy.memory.empty()) {
+                return write_memory(path, copy.memory.data(), {});
+            }
+        }
+        return false;
     }
 
     // At a safe point (a delivery point, on the idle thread), with a --state-test save or load asked for.
@@ -490,7 +537,8 @@ namespace {
             }
         }
 
-        if (conker::lockstep::active() && !conker::lockstep::on_read(read, pads, motions, local_input, memory_hash, rdram)) {
+        const conker::lockstep::Memory memory{ memory_hash, keep_memory, dump_kept };
+        if (conker::lockstep::active() && !conker::lockstep::on_read(read, pads, motions, local_input, memory, rdram)) {
             match_over = true;
             for (int i = 0; i < max_pads; i++) {
                 pads[i] = { 0, 0, 0, pads[i].err_no };

@@ -18,14 +18,14 @@
 
 namespace conker::netplay {
     // Changes whenever any packet's layout or meaning does: peers with another one are refused.
-    constexpr uint16_t protocol_version = 9;
+    constexpr uint16_t protocol_version = 14;
     // The game's controller ports.
     constexpr int max_players = 4;
     // The most reads an Inputs packet carries: a peer catching up can send several at once. (Inputs are
     // sent reliably, so none is lost: lockstep can't go on without every one.)
     constexpr int input_window = 8;
     // The largest packet, to size buffers.
-    constexpr size_t max_packet_size = 160;
+    constexpr size_t max_packet_size = 288;
     // The most reads a peer's own pads are sent ahead of the game (the input delay).
     constexpr int max_delay = 8;
 
@@ -120,10 +120,18 @@ namespace conker::netplay {
         std::array<Motion, input_window> motions{};
         bool operator==(const Inputs&) const = default;
     };
-    // The XXH3-64 of the game's memory as the sender made read `read`.
+    // The game's memory in regions of this size for the desync check: a Hash names the regions, so a desync
+    // says where the games went different ways (8 MB in 128).
+    constexpr uint32_t memory_region_size = 64 * 1024;
+    constexpr int memory_regions = 128;
+    // The XXH3-64 of the game's memory as the sender made read `read`, and each region's, cut to its low 16
+    // bits (enough to tell which differ, once the whole hash says something does), and how many of the sender's
+    // reads since its last Hash waited long for the others (lockstep.cpp's long_wait_ms: the host's auto delay).
     struct Hash {
         uint32_t read = 0;
         uint64_t hash = 0;
+        std::array<uint16_t, memory_regions> regions{};
+        uint8_t long_waits = 0;
         bool operator==(const Hash&) const = default;
     };
     // Host to everyone, once every port is taken: the match starts, with this many players, whether every
@@ -142,8 +150,29 @@ namespace conker::netplay {
         Reason reason = Reason::quit;
         bool operator==(const Bye&) const = default;
     };
+    // Host to the joiners still in: a player has left (their machine said goodbye or stopped answering), and
+    // from read `from_read` their port gets no input (an idle pad: nothing pressed, nothing moved). Sent once
+    // every input of theirs the host had is passed on, so it's the read after the last of them for everyone.
+    // `silent`: they stopped answering (1: a crash, a lost connection) rather than saying goodbye (0), so the
+    // others can tell the players they may have quit.
+    struct Gone {
+        uint8_t port = 0;
+        uint32_t from_read = 0;
+        uint8_t silent = 0;
+        bool operator==(const Gone&) const = default;
+    };
 
-    using Packet = std::variant<Hello, Welcome, Refuse, Inputs, Hash, Bye, Start>;
+    // Host to the joiners: the input delay becomes `delay` (0 to max_delay) from read `from_read`, as the
+    // connection changes. Every peer switches at that read, which is past any a joiner can be at as it
+    // arrives; the reads a raised delay skips get each player's last pad again, and a lowered one's live
+    // pads for the reads already sent aren't sent (lockstep.cpp).
+    struct Delay {
+        uint8_t delay = 0;
+        uint32_t from_read = 0;
+        bool operator==(const Delay&) const = default;
+    };
+
+    using Packet = std::variant<Hello, Welcome, Refuse, Inputs, Hash, Bye, Start, Gone, Delay>;
 
     // Writes `packet` into `out` and returns its size, or 0 if the packet isn't valid (the same checks
     // as decode's), so nothing invalid is ever sent.

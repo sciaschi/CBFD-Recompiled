@@ -24,11 +24,20 @@
 #              of a match of two must match its solo replay
 #   jittery    the same with input delay 0 and random sleeps (--jitter 500) on the joiner, so the two
 #              are out of step and wait for each other all the time
-#   desync     the host changes a byte of its memory at read 300: both must stop for a desync
+#   leave      the mouse match, the second joiner quitting at read 1500: the host and the first joiner play on,
+#              port 3 idle from the read the host says (both must say the same), and must match a solo replay
+#              of the recording with port 3 idle from there
+#   leave-crash the same with the second joiner killed at about read 1500 (no goodbye): the host notices it stopped
+#              answering, and the two play on as above
+#   leave-couch the couch match with ports 2 and 3 on a joiner that quits at read 1500: the host plays on, both
+#              ports idle from the same read, and must match a solo replay so
+#   desync     the host changes a byte of its memory at read 300: both must stop for a desync, and each
+#              write a desync report naming the region changed (64, at 0x80400000) with its memory, which
+#              compare_desyncs.py must find the byte in
 # It exits 0 if all is as it should be, 1 if not. The logs are kept in --out; without it they're in a
 # temporary folder, deleted if all passed. The data folders it makes for the copies (about 1 GB in all) are
 # always deleted. As in check.sh, a run is judged by what it prints and then stopped. It uses UDP ports
-# 27310 to 27316 on 127.0.0.1.
+# 27310 to 27319 on 127.0.0.1.
 set -u
 
 cd "$(dirname "$0")/../.."
@@ -46,7 +55,7 @@ while [ $# -gt 0 ]; do
         --seed) SEED=$2; shift 2 ;;
         --timeout) TIMEOUT=$2; shift 2 ;;
         --out) OUT=$2; shift 2 ;;
-        -h|--help) sed -n '2,31p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -h|--help) sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "unknown option: $1" >&2; exit 2 ;;
     esac
 done
@@ -59,65 +68,7 @@ KEEP=1
 [ -n "$OUT" ] || { OUT=$(mktemp -d "${TMPDIR:-/tmp}/netplay-lockstep.XXXXXX"); KEEP=0; }
 mkdir -p "$OUT"
 OUT=$(cd "$OUT" && pwd)
-# However the check ends (Ctrl-C too): the copies still running are stopped, and the data folders this
-# made deleted (only those: one already in an --out folder is left alone).
-made=
-pids=
-cleanup() {
-    for pid in $pids; do kill -9 "$pid" 2>/dev/null; done
-    for name in $made; do rm -rf "$OUT/data-$name"; done
-}
-trap cleanup EXIT
-trap 'exit 130' INT TERM
-
-# scramble <recording> <other> <ports> <prefix>: <prefix><n>.pads for each port n (from 1), the recording
-# with every other port's pads and movement taken from <other> (the same length, from another seed).
-scramble() {
-    python3 - "$@" <<'PY'
-import sys
-real_path, other_path, ports, prefix = sys.argv[1], sys.argv[2], int(sys.argv[3]), sys.argv[4]
-real = open(real_path, "rb").read()
-other = open(other_path, "rb").read()
-assert len(real) == len(other)
-header, read_size, pad_size, motion_size = 40, 73, 5, 13   # version 4 (harness.cpp)
-for own in range(ports):
-    scrambled = bytearray(real)
-    for port in range(ports):
-        if port == own:
-            continue
-        for start in range(header, len(real), read_size):
-            pad = start + 1 + port * pad_size
-            motion = start + 1 + 4 * pad_size + port * motion_size
-            scrambled[pad:pad + pad_size] = other[pad:pad + pad_size]
-            scrambled[motion:motion + motion_size] = other[motion:motion + motion_size]
-    assert scrambled != real
-    open(f"{prefix}{own + 1}.pads", "wb").write(scrambled)
-PY
-}
-
-# scramble_own <recording> <other> <ports> <out> <own>: <out>, the recording with every port but those in
-# <own> (port numbers from 1, e.g. 12) scrambled from <other>, for a copy playing several ports.
-scramble_own() {
-    python3 - "$@" <<'PY'
-import sys
-real_path, other_path, ports, out, own = sys.argv[1], sys.argv[2], int(sys.argv[3]), sys.argv[4], sys.argv[5]
-real = open(real_path, "rb").read()
-other = open(other_path, "rb").read()
-assert len(real) == len(other)
-header, read_size, pad_size, motion_size = 40, 73, 5, 13   # version 4 (harness.cpp)
-scrambled = bytearray(real)
-for port in range(ports):
-    if str(port + 1) in own:
-        continue
-    for start in range(header, len(real), read_size):
-        pad = start + 1 + port * pad_size
-        motion = start + 1 + 4 * pad_size + port * motion_size
-        scrambled[pad:pad + pad_size] = other[pad:pad + pad_size]
-        scrambled[motion:motion + motion_size] = other[motion:motion + motion_size]
-assert scrambled != real
-open(out, "wb").write(scrambled)
-PY
-}
+. tools/netplay/lib.sh
 
 # The recordings say everyone sees only their own view, as the matches below are (the host's rule by default),
 # so the solo replays have the same culls.
@@ -143,85 +94,6 @@ python3 tools/netplay/make_match.py "$OUT/tall-other.pads" --mode deathmatch --p
 scramble "$OUT/tall.pads" "$OUT/tall-other.pads" 2 "$OUT/tall-" || exit 2
 TALL_READS=$(( ($(wc -c < "$OUT/tall.pads") - 40) / 73 ))
 
-# start <name> [options...]: one copy in the background, with its own data folder, its hash log in
-# $OUT/<name>.log and its output in $OUT/<name>.out; its PID is added to $pids.
-# The recording is $OUT/inputs.pads, or $OUT/$pads if that's set.
-start() {
-    name=$1; shift
-    rm -f "$OUT/$name.log" "$OUT/$name.out"
-    [ -e "$OUT/data-$name" ] || made="$made $name"
-    "$EXE" --headless --rom "$ROM" --data "$OUT/data-$name" --fast --replay "$OUT/${pads:-inputs.pads}" \
-        --hash-log "$OUT/$name.log" "$@" > "$OUT/$name.out" 2>&1 &
-    pids="$pids $!"
-}
-
-# code_of <name>: the join code the hosting copy <name> printed (its key is random each time), once it has.
-code_of() {
-    i=0
-    while [ $i -lt 600 ]; do
-        code=$(sed -n 's/^\[netplay\] join code \([^ ]*\).*/\1/p' "$OUT/$1.out" 2>/dev/null)
-        [ -n "$code" ] && { echo "$code"; return; }
-        sleep 0.1
-        i=$((i + 1))
-    done
-    echo "no-code-from-$1"
-}
-
-# finish <pattern> <name...>: waits until each named copy prints <pattern> (true), or one quits or the
-# time runs out first (false); then kills the copies started.
-finish() {
-    pattern=$1; shift
-    began=$(date +%s)
-    result=
-    while [ -z "$result" ]; do
-        all=1
-        for name in "$@"; do
-            grep -q "$pattern" "$OUT/$name.out" 2>/dev/null || all=0
-        done
-        if [ $all -eq 1 ]; then
-            result=done
-        elif [ $(( $(date +%s) - began )) -ge "$TIMEOUT" ]; then
-            result="not done in $TIMEOUT s"
-        else
-            for pid in $pids; do
-                kill -0 "$pid" 2>/dev/null || result="a copy quit early"
-            done
-            sleep 0.2
-        fi
-    done
-    sleep 0.3
-    for pid in $pids; do
-        kill -9 "$pid" 2>/dev/null
-        wait "$pid" 2>/dev/null
-    done
-    pids=
-    if [ "$result" != done ]; then
-        echo "  $result"
-        for name in "$@"; do
-            echo "  -- $name.out (last lines)"
-            grep -v '^\[rt64\]' "$OUT/$name.out" | tail -n 8 | sed 's/^/    /'
-        done
-        return 1
-    fi
-    echo "  in $(( $(date +%s) - began )) s"
-}
-
-# same <name> [<solo> <reads>]: whether <name>'s hash log is solo's (or <solo>'s, of <reads> reads).
-same() {
-    ref=${2:-solo}
-    reads=${3:-$READS}
-    if result=$(python3 tools/netplay/compare_hashes.py "$OUT/$ref.log" "$OUT/$1.log"); then
-        lines=$(wc -l < "$OUT/$1.log")
-        if [ "$lines" -eq "$reads" ]; then
-            echo "  $1 same as $ref: $result"
-            return 0
-        fi
-        echo "  $1 has $lines reads, not $reads"
-        return 1
-    fi
-    echo "  $1 NOT the same as $ref: $result"
-    return 1
-}
 
 failed=0
 echo "solo"
@@ -263,6 +135,126 @@ if finish "was the last: quitting" mouse-host mouse-join1 mouse-join2; then
     for name in mouse-host mouse-join1 mouse-join2; do
         same $name mouse-solo "$MOUSE_READS" || failed=1
     done
+else
+    failed=1
+fi
+
+# idle_from <recording> <out> <ports> <read>: <out>, the recording with each of <ports> (port numbers from 1, e.g.
+# 23) idle from <read> on, as a match gives a player that left: nothing pressed or moved, their last Controls.
+idle_from() {
+    python3 - "$@" <<'PY'
+import sys
+src, out, ports, first = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
+data = bytearray(open(src, "rb").read())
+header, read_size, pad_size, motion_size = 40, 73, 5, 13   # version 4 (harness.cpp)
+reads = (len(data) - header) // read_size
+assert 0 < first <= reads
+for port in (int(p) - 1 for p in ports):
+    last = header + (first - 1) * read_size + 1 + 4 * pad_size + port * motion_size
+    controls = data[last + 9:last + 13]
+    for start in range(header + first * read_size, len(data), read_size):
+        pad = start + 1 + port * pad_size
+        motion = start + 1 + 4 * pad_size + port * motion_size
+        data[pad:pad + pad_size] = bytes(pad_size)
+        data[motion:motion + motion_size] = bytes(9) + controls
+open(out, "wb").write(data)
+PY
+}
+
+# left_at <name> <port>: the read from which <name> said port <port> plays no more.
+left_at() {
+    sed -n "s/^\[netplay\] port $2 plays no more: no input from read \([0-9]*\).*/\1/p" "$OUT/$1.out" | head -n 1
+}
+
+echo "leave"
+# The same 3-player match, the second joiner (port 3) quitting at read 1500: the host and the first joiner play on
+# with port 3 idle from the read the host says, and must match a solo replay of the recording so.
+pads=mouse-1.pads start leave-host --netplay-host 27317 --netplay-address 127.0.0.1 --players 3
+code=$(code_of leave-host)
+pads=mouse-2.pads start leave-join1 --netplay-join "$code"
+i=0
+while ! grep -q "in, on port 2" "$OUT/leave-join1.out" 2>/dev/null && [ $i -lt 300 ]; do sleep 0.1; i=$((i + 1)); done
+pads=mouse-3.pads start leave-join2 --netplay-join "$code" --stop-after 1500
+if finish "was the last: quitting" leave-host leave-join1 leave-join2; then
+    from=$(left_at leave-host 3)
+    if [ -z "$from" ] || [ "$(left_at leave-join1 3)" != "$from" ]; then
+        echo "  the host and the first joiner don't say the same read for port 3 leaving ('$from', '$(left_at leave-join1 3)')"
+        failed=1
+    else
+        echo "  port 3 idle from read $from"
+        idle_from "$OUT/mouse.pads" "$OUT/leave-solo.pads" 3 "$from" || exit 2
+        pads=leave-solo.pads start leave-solo
+        if finish "was the last: quitting" leave-solo; then
+            same leave-host leave-solo "$MOUSE_READS" || failed=1
+            same leave-join1 leave-solo "$MOUSE_READS" || failed=1
+            # Port 3 idle must make a difference, or this shows nothing.
+            if python3 tools/netplay/compare_hashes.py "$OUT/mouse-solo.log" "$OUT/leave-host.log" > /dev/null; then
+                echo "  leave-host is the same as mouse-solo: port 3 leaving changed nothing"
+                failed=1
+            fi
+        else
+            failed=1
+        fi
+    fi
+else
+    failed=1
+fi
+
+echo "leave-couch"
+# Two players on one joiner (ports 2 and 3) leaving together at read 1500: the host plays on alone.
+pads=couch-1.pads start leave-couch-host --netplay-host 27318 --netplay-address 127.0.0.1 --players 3
+pads=couch-23.pads start leave-couch-join --netplay-join "$(code_of leave-couch-host)" --local-players 2 --stop-after 1500
+if finish "was the last: quitting" leave-couch-host leave-couch-join; then
+    from=$(left_at leave-couch-host 2)
+    if [ -z "$from" ] || [ "$(left_at leave-couch-host 3)" != "$from" ]; then
+        echo "  ports 2 and 3 didn't leave at the same read"
+        failed=1
+    else
+        echo "  ports 2 and 3 idle from read $from"
+        idle_from "$OUT/couch-solo23.pads" "$OUT/leave-couch-solo.pads" 23 "$from" || exit 2
+        pads=leave-couch-solo.pads start leave-couch-solo
+        if finish "was the last: quitting" leave-couch-solo; then
+            same leave-couch-host leave-couch-solo "$MOUSE_READS" || failed=1
+        else
+            failed=1
+        fi
+    fi
+else
+    failed=1
+fi
+
+echo "leave-crash"
+# The 3-player match again, the second joiner killed at read 1500 (no goodbye): the host notices it stopped answering
+# (in about 10 s), and the two play on, as above.
+pads=mouse-1.pads start crash-host --netplay-host 27319 --netplay-address 127.0.0.1 --players 3
+code=$(code_of crash-host)
+pads=mouse-2.pads start crash-join1 --netplay-join "$code"
+i=0
+while ! grep -q "in, on port 2" "$OUT/crash-join1.out" 2>/dev/null && [ $i -lt 300 ]; do sleep 0.1; i=$((i + 1)); done
+pads=mouse-3.pads start crash-join2 --netplay-join "$code"
+crashed=${pids##* }
+i=0
+while [ "$(cat "$OUT/crash-join2.log" 2>/dev/null | wc -l)" -lt 1500 ] && [ $i -lt 1200 ]; do sleep 0.1; i=$((i + 1)); done
+kill -9 "$crashed" 2>/dev/null
+wait "$crashed" 2>/dev/null
+# It isn't waited for to finish.
+procs=$(echo "$procs" | tr ' ' '\n' | grep -v '^crash-join2:' | tr '\n' ' ')
+if finish "was the last: quitting" crash-host crash-join1; then
+    from=$(left_at crash-host 3)
+    if [ -z "$from" ] || [ "$(left_at crash-join1 3)" != "$from" ]; then
+        echo "  the host and the first joiner don't say the same read for port 3 ('$from', '$(left_at crash-join1 3)')"
+        failed=1
+    else
+        echo "  port 3 stopped answering; idle from read $from"
+        idle_from "$OUT/mouse.pads" "$OUT/crash-solo.pads" 3 "$from" || exit 2
+        pads=crash-solo.pads start crash-solo
+        if finish "was the last: quitting" crash-solo; then
+            same crash-host crash-solo "$MOUSE_READS" || failed=1
+            same crash-join1 crash-solo "$MOUSE_READS" || failed=1
+        else
+            failed=1
+        fi
+    fi
 else
     failed=1
 fi
@@ -322,7 +314,25 @@ if finish "the netplay match is over" desync-host desync-join; then
             echo "  $name stopped, but not for a desync"
             failed=1
         fi
+        # Its report: the changed byte is half way into game memory, region 64.
+        report=$(ls "$OUT/data-$name/netplay-desyncs/"desync-*.json 2>/dev/null | head -n 1)
+        if [ -z "$report" ]; then
+            echo "  $name wrote no desync report"
+            failed=1
+        elif ! python3 -c 'import json, sys; r = json.load(open(sys.argv[1])); sys.exit(r["differing_regions"] != [64] or not r["memory"])' "$report"; then
+            echo "  $name's report doesn't name region 64 alone, or has no memory: $report"
+            failed=1
+        fi
     done
+    reports=$(ls "$OUT"/data-desync-host/netplay-desyncs/desync-*.json "$OUT"/data-desync-join/netplay-desyncs/desync-*.json 2>/dev/null)
+    # shellcheck disable=SC2086
+    if python3 tools/netplay/compare_desyncs.py $reports > "$OUT/desync-compare.out" 2>&1 &&
+        grep -q '^regions that differ: 1$' "$OUT/desync-compare.out" && grep -q '^  0x80400003-0x80400003 (' "$OUT/desync-compare.out"; then
+        echo "  the reports compare: $(grep -A1 '^ranges of memory that differ' "$OUT/desync-compare.out" | tail -n 1 | sed 's/^ *//')"
+    else
+        echo "  the reports don't compare as they should (desync-compare.out)"
+        failed=1
+    fi
 else
     failed=1
 fi
