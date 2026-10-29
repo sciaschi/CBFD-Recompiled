@@ -253,6 +253,12 @@ namespace conker {
         bool is_pack(const std::string& mod_id);
     }
 
+    // more_bots.cpp: Multiplayer Characters, more bots in a multiplayer game (discussion #105).
+    namespace more_bots {
+        // The option, on the General tab.
+        void add_options(recomp::config::Config& config);
+    }
+
     // rumble.cpp: the Rumble Pak, sent to each port's controller.
     namespace rumble {
         // Its settings (motor, style), on the General tab.
