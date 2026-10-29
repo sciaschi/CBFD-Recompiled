@@ -280,6 +280,16 @@ the settings' Quit prompt: the program restarts at the launcher.
   **Classic** (the old keyboard layout). **New profile** makes your own, a copy
   of the one in use that you can name and remap; the **Profile** list at the top
   picks which one you play with, for the controller and the keyboard each.
+- **Players' controllers** (Controls tab, issue #160): controllers take players
+  1-4 in the order they first press a button. **Assign controllers** picks the
+  order instead (each player presses a button on theirs, in turn), until the game
+  is closed. The **Player** list beside the profile picks each player's own
+  controller profile, or **Same as Player 1** (the default). The keyboard and
+  mouse are always player 1's. Beside the keyboard switch at the bottom, **Swap
+  Sticks** and **Free Camera** are the picked player's own Aiming: Swap Sticks
+  and Right Stick: Free Camera (player 1's are the Camera tab's), so in split
+  screen each player can have them on or off; the **Modern** preset turns Swap
+  Sticks on for the player it's loaded for.
 - N64 pads and adapters for real N64 controllers (raphnet-tech's, Mayflash,
   Hyperkin, the NSO and 8BitDo 64 controllers) are mapped from
   `assets/controllerdb.txt`, with the C buttons as the right stick. A controller

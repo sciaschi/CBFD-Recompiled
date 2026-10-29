@@ -165,15 +165,15 @@ namespace {
         auto axis = [](SDL_GameControllerAxis a, bool positive) { return InputField::controller_analog(a, positive); };
         auto key = [](SDL_Scancode k) { return InputField::keyboard(k); };
 
-        recompinput::add_input_preset({ "Standard", InputDevice::Controller, {}, [] {
-            conker::look_aim::set_swap_sticks(false);
+        recompinput::add_input_preset({ "Standard", InputDevice::Controller, {}, [](int player) {
+            conker::look_aim::set_swap_sticks(player, false);
         } });
         // A modern third-person shooter's: LT aims (R), RT fires (Z), the right stick aims while aiming.
         recompinput::add_input_preset({ "Modern", InputDevice::Controller, {
             { GameInput::R, { button(SDL_CONTROLLER_BUTTON_RIGHTSHOULDER), axis(SDL_CONTROLLER_AXIS_TRIGGERLEFT, true) } },
             { GameInput::Z, { axis(SDL_CONTROLLER_AXIS_TRIGGERRIGHT, true) } },
-        }, [] {
-            conker::look_aim::set_swap_sticks(true);
+        }, [](int player) {
+            conker::look_aim::set_swap_sticks(player, true);
         } });
         // The defaults before issue #149: the face buttons where an N64 controller has them (B on X, the C-buttons on
         // Y, B, RB and the right stick's click), R on RT and Z on LT.
@@ -186,12 +186,12 @@ namespace {
             { GameInput::C_UP, { axis(SDL_CONTROLLER_AXIS_RIGHTY, false), button(SDL_CONTROLLER_BUTTON_RIGHTSTICK) } },
             { GameInput::C_DOWN, { axis(SDL_CONTROLLER_AXIS_RIGHTY, true), button(SDL_CONTROLLER_BUTTON_RIGHTSHOULDER) } },
             { GameInput::BACK_MENU, { button(recompinput::SDL_CONTROLLER_BUTTON_WEST) } },
-        }, [] {
-            conker::look_aim::set_swap_sticks(false);
+        }, [](int player) {
+            conker::look_aim::set_swap_sticks(player, false);
         } });
 
         // With Z and R on the mouse buttons, the mouse turns the camera too (the C-buttons stay on IJKL).
-        recompinput::add_input_preset({ "Standard", InputDevice::Keyboard, {}, [] {
+        recompinput::add_input_preset({ "Standard", InputDevice::Keyboard, {}, [](int) {
             conker::look_aim::turn_on_mouse_camera();
         } });
         // The keyboard's defaults before issue #149.
@@ -261,6 +261,7 @@ void conker::init_config() {
 
     set_control_descriptions();
     add_control_presets();
+    conker::look_aim::add_player_toggles();
     recompui::config::create_controls_tab();
 
     conker::sound_volumes::add_options(recompui::config::create_sound_tab());

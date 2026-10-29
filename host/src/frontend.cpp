@@ -381,8 +381,9 @@ void conker::frontend::on_vi() {
 // 1, with the keyboard, the next player 2, and so on. A controller that disconnects
 // gives up its port, and the ones after it move up. As many ports as there are
 // controllers report as plugged in (at least one), so the game sees player 2's port
-// from the start; it gets that controller's input once it presses a button. Every
-// controller uses the single-player controller bindings.
+// from the start; it gets that controller's input once it presses a button. Controls'
+// Assign controllers sets the order instead, until the game is closed, and each port
+// plays with the controller profile picked for it there, player 1's by default (#160).
 namespace {
     constexpr int max_ports = 4;
 
@@ -437,6 +438,18 @@ namespace {
             *connected = std::min((int)open.size(), max_ports);
         }
         return count;
+    }
+
+    // Controls' Assign controllers (issue #160): the controllers, in the order they pressed a button there, take
+    // ports 1-4. The others take the ports after them as they press one, as before.
+    void assign_ports(const std::vector<SDL_GameController*>& assigned) {
+        std::lock_guard lock{ port_mutex };
+        port_order.clear();
+        for (SDL_GameController* controller : assigned) {
+            if (controller != nullptr && (int)port_order.size() < max_ports) {
+                port_order.push_back(SDL_JoystickInstanceID(SDL_GameControllerGetJoystick(controller)));
+            }
+        }
     }
 
     // The stick axis read for an axis bound: with swap (Aiming: Swap Sticks, issue #84), the left stick's
@@ -555,11 +568,12 @@ namespace {
         return axis == SDL_CONTROLLER_AXIS_RIGHTX || axis == SDL_CONTROLLER_AXIS_RIGHTY;
     }
 
-    // One controller (or none) and/or the keyboard and mouse, through the single-player bindings.
+    // One controller (or none), through the controller profile `cont_profile`, and/or the keyboard and mouse, through
+    // the single-player keyboard profile.
     // With free_stick (Right Stick: Free Camera, while the stick turns the camera), the controller's
     // right stick presses no button: it turns the camera instead (mouse_camera.cpp). With swap_sticks
     // (Aiming: Swap Sticks, while aiming), the controller's two sticks are read the other way round.
-    void read_port(SDL_GameController* controller, bool keyboard, bool free_stick, bool swap_sticks, bool z_turns_aim, uint16_t* buttons, float* x, float* y) {
+    void read_port(SDL_GameController* controller, int cont_profile, bool keyboard, bool free_stick, bool swap_sticks, bool z_turns_aim, uint16_t* buttons, float* x, float* y) {
         using recompinput::GameInput;
         static constexpr uint16_t button_values[] = {
             0x8000, 0x4000, 0x2000, 0x0020, 0x0010, 0x1000, 0x0008,
@@ -567,7 +581,6 @@ namespace {
         };
         // A..C Right, then the D-pad (N64_BUTTON_COUNT stops at C Right).
         static_assert(std::size(button_values) == (size_t)GameInput::DPAD_RIGHT - (size_t)GameInput::N64_BUTTON_START + 1);
-        const int cont_profile = recompinput::profiles::get_sp_controller_profile_index();
         const int kb_profile = recompinput::profiles::get_sp_keyboard_profile_index();
         auto binding = [](int profile, GameInput input, size_t i) -> const recompinput::InputField& {
             return recompinput::profiles::get_input_binding(profile, input, i);
@@ -710,8 +723,8 @@ namespace {
             // In the bank's leaps with Aiming: Swap Sticks, player 1's right stick moves the crosshair: not the
             // free camera's (which doesn't turn in a leap anyway: mouse_camera.cpp), and swapped.
             const bool leap_swap = port == 0 && conker::look_aim::swap_sticks_in_leap();
-            read_port(port < count ? controllers[port] : nullptr, port == 0,
-                port == 0 && !leap_swap && conker::mouse_camera::stick_turns_camera(),
+            read_port(port < count ? controllers[port] : nullptr, recompinput::profiles::get_sp_port_controller_profile_index(port), port == 0,
+                !leap_swap && conker::mouse_camera::stick_turns_camera(port),
                 leap_swap || conker::look_aim::swap_sticks_now(player), conker::look_aim::z_turns_aim(player), buttons, x, y);
         }
         return true;
@@ -761,6 +774,7 @@ void conker::frontend::init(recomp::GameEntry& game) {
     recompui::register_primary_font("InterVariable.ttf", "Inter Variable");
     recompui::register_ui_exports();
     recompinput::players::set_single_player_mode(true);
+    recompinput::playerassignment::set_single_player_callback(assign_ports);
     conker::init_config();
 
     // Texture packs (texture_packs.cpp).

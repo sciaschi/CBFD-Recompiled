@@ -32,6 +32,8 @@
 #include <cstdint>
 #include <cstring>
 #include <deque>
+#include <filesystem>
+#include <fstream>
 #include <string>
 #include <mutex>
 #include <optional>
@@ -207,6 +209,83 @@ namespace {
         return conker::netplay_profile::active();
     }
 
+    // Players 2-4's own Aiming: Swap Sticks and Right Stick: Free Camera in single player's split screen (issue
+    // #160), set on the Controls tab for the player picked; player 1's are the options themselves. Kept in
+    // player_controls.txt in the config folder, a line each: the setting's id and players 2-4's, 0 or 1.
+    constexpr int local_players = 4;
+    std::atomic<bool> others_swap_sticks[local_players]{};
+    std::atomic<bool> others_free_camera[local_players]{};
+    std::once_flag others_loaded;
+    std::mutex others_save_mutex;
+
+    std::filesystem::path player_controls_path() {
+        return recomp::get_config_path() / "player_controls.txt";
+    }
+
+    void load_player_controls() {
+        std::call_once(others_loaded, [] {
+            std::ifstream file(player_controls_path());
+            std::string id;
+            while (file >> id) {
+                std::atomic<bool>* values = id == "swap_sticks" ? others_swap_sticks : id == "free_camera" ? others_free_camera : nullptr;
+                for (int player = 1; player < local_players; player++) {
+                    int on = 0;
+                    if (!(file >> on)) {
+                        return;
+                    }
+                    if (values != nullptr) {
+                        values[player] = on != 0;
+                    }
+                }
+            }
+        });
+    }
+
+    void save_player_controls() {
+        std::lock_guard lock{ others_save_mutex };
+        std::ofstream file(player_controls_path());
+        auto line = [&](const char* id, const std::atomic<bool>* values) {
+            file << id;
+            for (int player = 1; player < local_players; player++) {
+                file << ' ' << (values[player] ? 1 : 0);
+            }
+            file << '\n';
+        };
+        line("swap_sticks", others_swap_sticks);
+        line("free_camera", others_free_camera);
+    }
+
+    void set_toggle_option(const std::string& id, bool on) {
+        if (recomp::config::Config* config = option_config(id)) {
+            config->update_option_value(id, static_cast<uint32_t>(on ? Toggle::On : Toggle::Off));
+        }
+    }
+
+    // A local player's (0 to 3) setting: player 1's option, or the Controls tab's for players 2-4.
+    bool local_setting(int player, const std::string& id, const std::atomic<bool>* others) {
+        if (player <= 0) {
+            return option<Toggle>(id) == Toggle::On;
+        }
+        if (player >= local_players) {
+            return false;
+        }
+        load_player_controls();
+        return others[player];
+    }
+
+    void set_local_setting(int player, const std::string& id, std::atomic<bool>* others, bool on) {
+        if (player <= 0) {
+            set_toggle_option(id, on);
+            return;
+        }
+        if (player >= local_players) {
+            return;
+        }
+        load_player_controls();
+        others[player] = on;
+        save_player_controls();
+    }
+
     // A player's settings: their Controls while the harness is used, otherwise this machine's (player 1's).
     Response stick_response(int player) {
         return per_player() ? (conker::motion::stick_direct(conker::motion::controls(player)) ? Response::Direct : Response::Smooth)
@@ -303,7 +382,8 @@ void conker::look_aim::add_camera_options(recomp::config::Config& config) {
         "and down, instead of pressing the C-buttons, and the left stick moves Conker. The C-buttons' other controls "
         "stay: by default C-Up (first person) on the right stick's click; C-Down can be bound to a button in Controls. "
         "<recomp-color primary>Off</recomp-color> matches the "
-        "original game. Only the normal camera: in R-Look, aiming and cutscenes, the right stick is the C-buttons as usual.",
+        "original game. Only the normal camera: in R-Look, aiming and cutscenes, the right stick is the C-buttons as usual. "
+        "This is player 1's: in split screen, players 2-4 set their own in Controls (pick the player there).",
         toggle, Toggle::Off);
     config.add_number_option(options::camera_fov, "Camera: Field of View",
         "How wide the normal camera sees, as its vertical field of view (the same whatever the aspect ratio). "
@@ -339,7 +419,8 @@ void conker::look_aim::add_camera_options(recomp::config::Config& config) {
         "shotgun, holding R alone shows the laser sight, so you can move and strafe with it; holding Z as well, the left "
         "stick only moves forward and back, as Z makes C-Left and C-Right turn the aim. "
         "Back to normal once you stop aiming. <recomp-color primary>Off</recomp-color> matches the original game, where "
-        "the stick aims and the C-buttons move.",
+        "the stick aims and the C-buttons move. This is player 1's: in split screen, players 2-4 set their own in "
+        "Controls (pick the player there).",
         toggle, Toggle::Off);
     config.add_enum_option(options::aim_lock_on, "Aiming: Lock-On",
         "Whether aiming locks on to enemies, as with the shotgun once the zombies come: the game turns your aim (and the "
@@ -548,7 +629,7 @@ bool conker::look_aim::swap_sticks_now(int player) {
     if (per_player()) {
         return conker::motion::swap_sticks(conker::motion::controls(player)) && conker::motion::aimed_lately(player);
     }
-    if (option<Toggle>(options::aim_swap_sticks) != Toggle::On || !recompinput::players::is_single_player_mode()) {
+    if (!conker::look_aim::swap_sticks_setting(player) || !recompinput::players::is_single_player_mode()) {
         return false;
     }
     const int64_t since = std::chrono::steady_clock::now().time_since_epoch().count() - last_aim_ticks[player].load();
@@ -581,7 +662,7 @@ namespace {
     }
 
     // In a netplay match each player's own Swap Sticks, from their Controls (the same on every machine); otherwise
-    // the setting, in single player.
+    // the player's setting, in single player (issue #160).
     bool scope_walks(uint8_t* rdram, gpr character) {
         const int player = character_player(character);
         if (player < 0 || MEM_BU(0x4, character) != scoped_state) {
@@ -590,7 +671,7 @@ namespace {
         if (per_player()) {
             return conker::motion::swap_sticks(conker::motion::controls(player));
         }
-        return option<Toggle>(options::aim_swap_sticks) == Toggle::On && recompinput::players::is_single_player_mode();
+        return conker::look_aim::swap_sticks_setting(player) && recompinput::players::is_single_player_mode();
     }
 }
 
@@ -617,14 +698,27 @@ bool conker::look_aim::z_turns_aim(int player) {
     return (player >= 0) && (player < aim_players) && shotgun_aiming[player].load();
 }
 
-bool conker::look_aim::stick_free_camera() {
-    return option<Toggle>(options::stick_camera) == Toggle::On && recompinput::players::is_single_player_mode();
+bool conker::look_aim::stick_free_camera(int player) {
+    return local_setting(player, options::stick_camera, others_free_camera) && recompinput::players::is_single_player_mode();
 }
 
-void conker::look_aim::set_swap_sticks(bool on) {
-    if (recomp::config::Config* config = recompui::config::find_option_config(options::aim_swap_sticks)) {
-        config->update_option_value(options::aim_swap_sticks, static_cast<uint32_t>(on ? Toggle::On : Toggle::Off));
-    }
+bool conker::look_aim::swap_sticks_setting(int player) {
+    return local_setting(player, options::aim_swap_sticks, others_swap_sticks);
+}
+
+void conker::look_aim::set_swap_sticks(int player, bool on) {
+    set_local_setting(player, options::aim_swap_sticks, others_swap_sticks, on);
+}
+
+void conker::look_aim::set_stick_free_camera(int player, bool on) {
+    set_local_setting(player, options::stick_camera, others_free_camera, on);
+}
+
+// The Controls tab's toggles for the player picked (issue #160): each player's own Swap Sticks and Free Camera.
+void conker::look_aim::add_player_toggles() {
+    recompinput::add_player_toggle({ "Swap Sticks", swap_sticks_setting, set_swap_sticks });
+    recompinput::add_player_toggle({ "Free Camera",
+        [](int player) { return local_setting(player, options::stick_camera, others_free_camera); }, set_stick_free_camera });
 }
 
 void conker::look_aim::turn_on_mouse_camera() {

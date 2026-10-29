@@ -31,8 +31,8 @@
 // the mouse, or gyro sent as the mouse, moved). The Mouse: Turn the Camera setting
 // (look_aim.cpp) turns the orbit off.
 //
-// Right Stick: Free Camera (look_aim.cpp, issue #65) turns the orbit with player 1's right
-// stick too, as a modern third-person camera: left and right turn it, up and down tilt it, at
+// Right Stick: Free Camera (look_aim.cpp, issue #65) turns the orbit with the player's right
+// stick too (each player's own camera and setting in split screen, issue #160; the mouse is player 1's), as a modern third-person camera: left and right turn it, up and down tilt it, at
 // a rate (degrees per second) the stick's tilt sets. While the orbit could run last frame,
 // the controller's input leaves the right stick off the C-buttons (frontend.cpp), so the
 // game's own turning doesn't fight it. Elsewhere (R-Look, aiming, cutscenes, other cameras)
@@ -159,8 +159,8 @@ namespace {
     // A longer gap between two frames' camera updates (a pause, loading) counts as this long.
     constexpr float max_frame_seconds = 0.1f;
 
-    // Set at the end of each camera update, read by the input thread (frontend.cpp).
-    std::atomic<bool> stick_owns_camera = false;
+    // Set at the end of each camera update, read by the input thread (frontend.cpp): each player's.
+    std::atomic<bool> stick_owns_camera[4] = {};
     // Set at the end of each camera update: it was the normal camera.
     bool was_normal_camera = false;
 
@@ -204,26 +204,26 @@ namespace {
         bool placed = false;            // the orbit placed the eye this frame, at placed_eye
         float placed_eye[3] = {};
     };
-    // Player 1's (outside the harness, only the camera being played: D_800DBFF0), or each player's.
+    // Each player's.
     constexpr int orbit_count = 4;
     Orbit orbits[orbit_count];
-    // The free camera's stick: when it was last read (stick_time), if it has been.
-    bool has_stick_time = false;
-    std::chrono::steady_clock::time_point stick_time;
+    // Each player's free camera stick: when it was last read (stick_time), if it has been.
+    bool has_stick_time[orbit_count] = {};
+    std::chrono::steady_clock::time_point stick_time[orbit_count];
 
     // The orbit of `camera`, or -1 if it has none.
-    // Player 1's is the camera being played, as outside the harness (in multiplayer that's player 1's camera);
-    // the other players' cameras are known by their player (+0x23D).
+    // Player 1's is the camera being played (in multiplayer that's player 1's camera); the other players' cameras
+    // are known by their player (+0x23D). Outside the harness theirs only turn with their right stick (issue #160).
     int orbit_of(uint8_t* rdram, gpr camera) {
         const bool played = (uint32_t)camera == (uint32_t)MEM_W(0, (gpr)(int32_t)current_camera);
-        if (conker::netplay_profile::active()) {
-            const int player = (int)MEM_BU(0x23D, camera);
-            if (player == 0) {
-                return played ? 0 : -1;
-            }
-            return player < orbit_count ? player : -1;
+        if (played && !conker::netplay_profile::active()) {
+            return 0;
         }
-        return played ? 0 : -1;
+        const int player = (int)MEM_BU(0x23D, camera);
+        if (player == 0) {
+            return played ? 0 : -1;
+        }
+        return player < orbit_count ? player : -1;
     }
 
     // The scroll wheel's zoom: zoom_step to the power of -notches, by multiplying (the same on every machine).
@@ -292,32 +292,32 @@ namespace {
 #endif
     }
 
-    bool stick_turns_camera_setting() {
+    bool stick_turns_camera_setting(int which) {
 #if defined(CONKER_RT64)
-        return conker::look_aim::stick_free_camera();
+        return conker::look_aim::stick_free_camera(which);
 #else
         return false;
 #endif
     }
 
-    // The orbit's turn (yaw) and tilt (pitch) from player 1's right stick since the last read, in
-    // radians: its tilt past the deadzone, at Camera: Turning Speed and Invert Turning, for the time
-    // since the last read. Right turns the way the mouse moving right does; up tilts to look up.
-    void read_stick(float& yaw, float& pitch) {
+    // A player's orbit's turn (yaw) and tilt (pitch) from their right stick (their port's controller) since the
+    // last read, in radians: its tilt past the deadzone, at Camera: Turning Speed and Invert Turning, for the
+    // time since the last read. Right turns the way the mouse moving right does; up tilts to look up.
+    void read_stick(int which, float& yaw, float& pitch) {
         yaw = 0.0f;
         pitch = 0.0f;
         const auto now = std::chrono::steady_clock::now();
-        const float seconds = has_stick_time ?
-            std::min(std::chrono::duration<float>(now - stick_time).count(), max_frame_seconds) : 0.0f;
-        stick_time = now;
-        has_stick_time = true;
+        const float seconds = has_stick_time[which] ?
+            std::min(std::chrono::duration<float>(now - stick_time[which]).count(), max_frame_seconds) : 0.0f;
+        stick_time[which] = now;
+        has_stick_time[which] = true;
 #if defined(CONKER_RT64)
         std::array<SDL_GameController*, 4> controllers{};
-        if (conker::frontend::port_controllers(controllers) < 1 || controllers[0] == nullptr) {
+        if (conker::frontend::port_controllers(controllers) <= which || controllers[which] == nullptr) {
             return;
         }
-        const float x = SDL_GameControllerGetAxis(controllers[0], SDL_CONTROLLER_AXIS_RIGHTX) / 32767.0f;
-        const float y = SDL_GameControllerGetAxis(controllers[0], SDL_CONTROLLER_AXIS_RIGHTY) / 32767.0f;
+        const float x = SDL_GameControllerGetAxis(controllers[which], SDL_CONTROLLER_AXIS_RIGHTX) / 32767.0f;
+        const float y = SDL_GameControllerGetAxis(controllers[which], SDL_CONTROLLER_AXIS_RIGHTY) / 32767.0f;
         const float tilt = std::sqrt(x * x + y * y);
         if (tilt <= stick_deadzone) {
             return;
@@ -333,8 +333,8 @@ namespace {
     }
 }
 
-bool conker::mouse_camera::stick_turns_camera() {
-    return stick_owns_camera.load(std::memory_order_relaxed);
+bool conker::mouse_camera::stick_turns_camera(int player) {
+    return player >= 0 && player < orbit_count && stick_owns_camera[player].load(std::memory_order_relaxed);
 }
 
 bool conker::mouse_camera::normal_camera() {
@@ -386,8 +386,9 @@ extern "C" void conker_mouse_camera_follow(uint8_t* rdram, recomp_context* ctx) 
 // its first instruction. The mouse aims there (look_aim.cpp), so the orbit leaves the
 // camera to it: otherwise both turned with the mouse, and the view ran ahead of the aim.
 extern "C" void conker_mouse_camera_look_mode(uint8_t* rdram, recomp_context* ctx) {
-    // $a0 is the camera; outside the harness any camera's look mode counts for player 1's orbit, as it did.
-    const int which = conker::netplay_profile::active() ? orbit_of(rdram, ctx->r4) : 0;
+    // $a0 is the camera; outside the harness any camera's look mode but players 2-4's counts for player 1's orbit,
+    // as it did.
+    const int which = conker::netplay_profile::active() ? orbit_of(rdram, ctx->r4) : std::max(orbit_of(rdram, ctx->r4), 0);
     if (which >= 0) {
         orbits[which].look_mode_ran = true;
     }
@@ -407,8 +408,9 @@ extern "C" void conker_mouse_camera_collide(uint8_t* rdram, recomp_context* ctx)
     Orbit& orbit = orbits[which];
     // While the harness is used: the player's own movement and setting (motion.cpp).
     const bool harness = conker::netplay_profile::active();
-    const bool use_mouse = harness ? conker::motion::mouse_turns_camera(conker::motion::controls(which)) : mouse_turns_camera();
-    const bool use_stick = !harness && stick_turns_camera_setting();
+    // Outside it the mouse is player 1's, and each player's right stick turns their own.
+    const bool use_mouse = harness ? conker::motion::mouse_turns_camera(conker::motion::controls(which)) : (which == 0 && mouse_turns_camera());
+    const bool use_stick = !harness && stick_turns_camera_setting(which);
     // Nor in the bank's slow motion leaps, where the mouse moves the crosshair instead (issue #85, look_aim.cpp).
     if (!orbit.follow_camera_ran || orbit.look_mode_ran || conker::look_aim::leaping_now() || (!use_mouse && !use_stick)) {
         orbit.engaged = false;
@@ -416,8 +418,8 @@ extern "C" void conker_mouse_camera_collide(uint8_t* rdram, recomp_context* ctx)
         orbit.resting = false;
         orbit.has_last = false;
         orbit.smooth_frames = 0;
-        has_stick_time = false;
-        if (!harness) {
+        has_stick_time[which] = false;
+        if (!harness && which == 0) {
             wheel_notches = 0;
         }
         return;
@@ -440,11 +442,11 @@ extern "C" void conker_mouse_camera_collide(uint8_t* rdram, recomp_context* ctx)
             recompinput::get_mouse_deltas(&mouse_x, &mouse_y);
             notches = wheel_notches.exchange(0);
         }
-        else if (!harness) {
+        else if (!harness && which == 0) {
             wheel_notches = 0;
         }
         if (use_stick) {
-            read_stick(stick_yaw, stick_pitch);
+            read_stick(which, stick_yaw, stick_pitch);
         }
         orbit.turned = true;
         orbit.moved = mouse_x != 0.0f || mouse_y != 0.0f || notches != 0 || stick_yaw != 0.0f || stick_pitch != 0.0f;
@@ -657,11 +659,13 @@ extern "C" void conker_mouse_camera(uint8_t* rdram, recomp_context* ctx) {
         }
     }
     orbit.placed = false;
-    // For the controller's input until the next update: whether the stick turns this camera (player 1's).
+    // For the controller's input until the next update: whether the player's stick turns this camera (players 2-4's
+    // only outside the harness, where theirs turn).
     if (which == 0) {
         was_normal_camera = orbit.follow_camera_ran && !orbit.look_mode_ran;
-        stick_owns_camera = was_normal_camera && stick_turns_camera_setting();
     }
+    stick_owns_camera[which] = orbit.follow_camera_ran && !orbit.look_mode_ran && stick_turns_camera_setting(which)
+        && (which == 0 || !conker::netplay_profile::active());
     orbit.was_normal = orbit.follow_camera_ran && !orbit.look_mode_ran;
     // The eye wanted this frame, to tell next frame how far the orbit itself moved.
     orbit.has_target = orbit.engaged;
