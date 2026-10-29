@@ -326,6 +326,15 @@ namespace conker {
     // launcher.
     void return_to_launcher();
 
+    // cheat_codes.cpp: General: Remember Cheat Codes (issue #166), the game's cheat codes kept on from one time it's
+    // played to the next.
+    namespace cheat_codes {
+        // conker_config.cpp: the option, on the General tab.
+        void add_options(recomp::config::Config& config);
+        // From the game thread, as the game starts a frame's display list: the codes entered are kept.
+        void game_frame(uint8_t* rdram);
+    }
+
     // sound_volumes.cpp: the Sound tab's Music, Sound Effects and Speech volumes, and Sound Mode.
     namespace sound_volumes {
         // conker_config.cpp: the options, on the Sound tab.
