@@ -400,9 +400,14 @@ namespace {
     }
 
 #if defined(_WIN32)
-    // An argument quoted as CommandLineToArgvW reads it back.
+    // An argument quoted as CommandLineToArgvW reads it back, after a space unless it's the first. (A space
+    // before the first made the program's name empty, and the path to the program read as a ROM to open:
+    // Return to Launcher closed the game instead.)
     void append_quoted(std::wstring& line, const std::wstring& arg) {
-        line += L" \"";
+        if (!line.empty()) {
+            line += L' ';
+        }
+        line += L'"';
         size_t backslashes = 0;
         for (wchar_t c : arg) {
             if (c == L'\\') {
