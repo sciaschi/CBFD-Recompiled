@@ -27,20 +27,21 @@ index 79dfc38..6467e67 100644
  build_compute_shader(rt64 "src/shaders/HistogramAverageCS.hlsl")
  build_compute_shader(rt64 "src/shaders/HistogramClearCS.hlsl")
 diff --git a/include/rt64_extended_gbi.h b/include/rt64_extended_gbi.h
-index d387090..45aa593 100644
+index d387090..094290e 100644
 --- a/include/rt64_extended_gbi.h
 +++ b/include/rt64_extended_gbi.h
-@@ -80,7 +80,8 @@
+@@ -80,7 +80,9 @@
  #define G_EX_SETVERTEXSEGMENT_V1        0x000031
  #define G_EX_SETTEXCOORDWRAPPOINT_V1    0x000032
  #define G_EX_SETRECTASPECT_V1           0x000033
 -#define G_EX_MAX                        0x000034
 +#define G_EX_CONKERBLURFRAMEBUFFER_V1   0x000034 // Conker: see gEXConkerBlurFramebuffer
-+#define G_EX_MAX                        0x000035
++#define G_EX_CONKERFOCUSPLACED_V1       0x000035 // Conker: see gEXConkerFocusPlaced
++#define G_EX_MAX                        0x000036
  
  #define G_EX_ORIGIN_NONE            0x800
  #define G_EX_ORIGIN_LEFT            0x0
-@@ -113,6 +114,9 @@
+@@ -113,6 +115,9 @@
  #define G_EX_ASPECT_AUTO            0x0
  #define G_EX_ASPECT_STRETCH         0x1
  #define G_EX_ASPECT_ADJUST          0x2
@@ -50,7 +51,7 @@ index d387090..45aa593 100644
  
  #define G_EX_VERTEX_POSITION        0x0
  #define G_EX_VERTEX_VELOCITY        0x1
-@@ -579,4 +583,14 @@ typedef union {
+@@ -579,4 +584,30 @@ typedef union {
          PARAM(aspect, 2, 0) \
      )
  
@@ -62,6 +63,22 @@ index d387090..45aa593 100644
 +    G_EX_COMMAND1(cmd, \
 +        PARAM(RT64_EXTENDED_OPCODE, 8, 24) | PARAM(G_EX_CONKERBLURFRAMEBUFFER_V1, 24, 0), \
 +        PARAM(strength, 8, 24) | PARAM(address, 24, 0) \
++    )
++
++// Conker: netplay's "my view only" redraws each shown view elsewhere in the frame and moves its rectangles with it
++// (rt64_conker_view_focus.h). Some 2D of a view can't simply be moved: the bazooka's tinted copy of the frame, strips
++// copied from where the view is drawn. The display list gives it twice: placed for each place the view may be drawn,
++// and as the game draws it. Until mode 0 (or a display list starts), the rectangles that follow are:
++// - mode 1, placed: for the view at x, y (pixels of the frame, where the game draws it), drawn where it is drawn at
++//   `layouts` (one bit: G_EX_CONKER_FOCUS_WHOLE, _TOP or _BOTTOM). Drawn as they are, only while it's drawn there.
++// - mode 2, the game's own: drawn as ever, unless the view at x, y is drawn at one of `layouts` (bits), the placed ones.
++#define G_EX_CONKER_FOCUS_WHOLE     0x1
++#define G_EX_CONKER_FOCUS_TOP       0x2
++#define G_EX_CONKER_FOCUS_BOTTOM    0x4
++#define gEXConkerFocusPlaced(cmd, mode, layouts, x, y) \
++    G_EX_COMMAND1(cmd, \
++        PARAM(RT64_EXTENDED_OPCODE, 8, 24) | PARAM(G_EX_CONKERFOCUSPLACED_V1, 24, 0), \
++        PARAM(mode, 2, 30) | PARAM(layouts, 3, 24) | PARAM(x, 10, 8) | PARAM(y, 8, 0) \
 +    )
 +
  #endif // RT64_EXTENDED_GBI
@@ -90,10 +107,10 @@ index f79adbf..e40a61d 100644
          int32_t uly;
 diff --git a/src/common/rt64_conker_view_focus.h b/src/common/rt64_conker_view_focus.h
 new file mode 100644
-index 0000000..1d006a6
+index 0000000..168a50c
 --- /dev/null
 +++ b/src/common/rt64_conker_view_focus.h
-@@ -0,0 +1,183 @@
+@@ -0,0 +1,195 @@
 +//
 +// RT64
 +//
@@ -204,6 +221,18 @@ index 0000000..1d006a6
 +            }
 +        }
 +        return ConkerViewPart::Other;
++    }
++
++    // Whether the focused view at x, y (pixels of the frame, where the game draws it) is drawn at one of `layouts`
++    // (gEXConkerFocusPlaced's bits): alone, across the whole frame (1); or the first of two, the top half (2); or
++    // the second, the bottom half (4).
++    inline bool conkerViewDrawnAt(const ConkerViewFocus &f, float x, float y, uint8_t layouts) {
++        int index = 0;
++        if (conkerViewPart(f, x, y, x, y, index) != ConkerViewPart::Focused) {
++            return false;
++        }
++        const uint8_t layout = (f.count == 1) ? 0x1 : (index == 0) ? 0x2 : 0x4;
++        return (layouts & layout) != 0;
 +    }
 +
 +    // A rectangle of the frame's 2D (quarter pixels), moved with its focused view: false if it isn't drawn. Only moved,
@@ -505,10 +534,10 @@ index 69c35d2..bcea8ec 100644
      };
  
 diff --git a/src/gbi/rt64_gbi_extended.cpp b/src/gbi/rt64_gbi_extended.cpp
-index 20c0d4d..819b5a2 100644
+index 20c0d4d..5f0b85d 100644
 --- a/src/gbi/rt64_gbi_extended.cpp
 +++ b/src/gbi/rt64_gbi_extended.cpp
-@@ -331,6 +331,12 @@ namespace RT64 {
+@@ -331,6 +331,16 @@ namespace RT64 {
              state->rdp->setRectAspect(aspect);
          }
  
@@ -518,14 +547,19 @@ index 20c0d4d..819b5a2 100644
 +            state->setConkerBlurFramebuffer(address, strength);
 +        }
 +
++        void conkerFocusPlacedV1(State *state, DisplayList **dl) {
++            state->rdp->setConkerFocusPlaced((*dl)->p1(30, 2), (*dl)->p1(24, 3), (*dl)->p1(8, 10), (*dl)->p1(0, 8));
++        }
++
          void noOpHook(State *state, DisplayList **dl) {
              uint32_t magicNumber = (*dl)->p0(0, 24);
              if (magicNumber == RT64_HOOK_MAGIC_NUMBER) {
-@@ -439,6 +445,7 @@ namespace RT64 {
+@@ -439,6 +449,8 @@ namespace RT64 {
              Map[G_EX_SETVERTEXSEGMENT_V1] = &setVertexSegmentV1;
              Map[G_EX_SETTEXCOORDWRAPPOINT_V1] = &setTexcoordWrapPointV1;
              Map[G_EX_SETRECTASPECT_V1] = &setRectAspectV1;
 +            Map[G_EX_CONKERBLURFRAMEBUFFER_V1] = &conkerBlurFramebufferV1;
++            Map[G_EX_CONKERFOCUSPLACED_V1] = &conkerFocusPlacedV1;
              MapInitialized = true;
          }
      }
@@ -1344,7 +1378,7 @@ index e08b02c..084ccfd 100644
          struct External {
              ApplicationWindow *appWindow = nullptr;
 diff --git a/src/hle/rt64_rdp.cpp b/src/hle/rt64_rdp.cpp
-index a10c11a..f5faa49 100644
+index a10c11a..f6f02d2 100644
 --- a/src/hle/rt64_rdp.cpp
 +++ b/src/hle/rt64_rdp.cpp
 @@ -4,7 +4,10 @@
@@ -1388,7 +1422,26 @@ index a10c11a..f5faa49 100644
          scissorModeStack[scissorStackSize - 1] = mode;
          extended.scissorLeftOriginStack[scissorStackSize - 1] = extAlignment.leftOrigin;
          extended.scissorRightOriginStack[scissorStackSize - 1] = extAlignment.rightOrigin;
-@@ -1192,11 +1218,17 @@ namespace RT64 {
+@@ -1061,6 +1087,10 @@ namespace RT64 {
+         extended.global.rectAspect = aspect;
+     }
+ 
++    void RDP::setConkerFocusPlaced(uint8_t mode, uint8_t layouts, uint16_t x, uint8_t y) {
++        extended.global.conkerPlaced = { mode, layouts, x, y };
++    }
++
+     void RDP::forceUpscale2D(bool force) {
+         extended.drawExtendedFlags.forceUpscale2D = force;
+         state->updateDrawStatusAttribute(DrawAttribute::ExtendedFlags);
+@@ -1083,6 +1113,7 @@ namespace RT64 {
+         extended.global.rect = ExtendedAlignment();
+         extended.global.scissor = ExtendedAlignment();
+         extended.global.rectAspect = G_EX_ASPECT_AUTO;
++        extended.global.conkerPlaced = {};
+     }
+     
+     void RDP::drawTris(uint32_t triCount, const float *pos, const float *tc, const float *col, uint8_t tile, uint8_t levels) {
+@@ -1192,11 +1223,26 @@ namespace RT64 {
              }
          }
  
@@ -1398,15 +1451,50 @@ index a10c11a..f5faa49 100644
              return;
          }
  
-+        // Conker: netplay's "my view only", drawn anew (rt64_conker_view_focus.h): the view's 2D goes with it.
++        // Conker: netplay's "my view only", drawn anew (rt64_conker_view_focus.h): the view's 2D goes with it, or the
++        // display list gives it placed where the view is drawn (gEXConkerFocusPlaced).
 +        const ConkerViewFocus focus = conkerViewFocus();
-+        if (conkerFocusApplies(focus, colorImage.width, colorImage.address) && !conkerMoveRect(focus, usesFillMode, drawRect)) {
++        const bool focusApplies = conkerFocusApplies(focus, colorImage.width, colorImage.address);
++        const auto &placed = extended.global.conkerPlaced;
++        if (placed.mode != 0) {
++            const bool drawnThere = focusApplies && conkerViewDrawnAt(focus, placed.x, placed.y, placed.layouts);
++            if (drawnThere != (placed.mode == 1)) {
++                return;
++            }
++        }
++        if (placed.mode != 1 && focusApplies && !conkerMoveRect(focus, usesFillMode, drawRect)) {
 +            return;
 +        }
 +
          // Check if framebuffer pair must be changed.
          checkFramebufferPair();
  
+diff --git a/src/hle/rt64_rdp.h b/src/hle/rt64_rdp.h
+index 84f4e7c..bd2a810 100644
+--- a/src/hle/rt64_rdp.h
++++ b/src/hle/rt64_rdp.h
+@@ -93,6 +93,13 @@ namespace RT64 {
+                 ExtendedAlignment rect;
+                 ExtendedAlignment scissor;
+                 uint8_t rectAspect;
++                // Conker: gEXConkerFocusPlaced.
++                struct {
++                    uint8_t mode;
++                    uint8_t layouts;
++                    uint16_t x;
++                    uint8_t y;
++                } conkerPlaced;
+             } global;
+ 
+             uint16_t scissorLeftOriginStack[RDP_EXTENDED_STACK_SIZE];
+@@ -196,6 +203,7 @@ namespace RT64 {
+         void setRectAlign(const ExtendedAlignment &extAlignment);
+         void setScissorAlign(const ExtendedAlignment &extAlignment);
+         void setRectAspect(uint8_t aspect);
++        void setConkerFocusPlaced(uint8_t mode, uint8_t layouts, uint16_t x, uint8_t y);
+         void forceUpscale2D(bool force);
+         void forceTrueBilerp(uint8_t mode);
+         void forceScaleLOD(bool force);
 diff --git a/src/hle/rt64_rdp_tmem.cpp b/src/hle/rt64_rdp_tmem.cpp
 index 6051f4e..8f00934 100644
 --- a/src/hle/rt64_rdp_tmem.cpp

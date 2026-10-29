@@ -657,6 +657,10 @@ extern "C" void conker_tint_copy_begin(uint8_t* rdram, recomp_context* ctx) {
     frame_copy_tint = true;
 }
 
+namespace {
+    void place_tint_copy(uint8_t* rdram, gpr start, gpr end);
+}
+
 // At its return: $v0 is the end of what it wrote.
 extern "C" void conker_frame_copy_end(uint8_t* rdram, recomp_context* ctx) {
     gpr start = frame_copy_dl_start;
@@ -702,6 +706,9 @@ extern "C" void conker_frame_copy_end(uint8_t* rdram, recomp_context* ctx) {
     put_command(rdram, dl, (rt64_extended_opcode << 24) | g_ex_setrectaspect_v1, (fills_pause || draws_pause || tint) ? g_ex_aspect_stretch : g_ex_aspect_zoom);
     dl = last_sync;
     put_command(rdram, dl, (rt64_extended_opcode << 24) | g_ex_setrectaspect_v1, g_ex_aspect_auto);
+    if (tint) {
+        place_tint_copy(rdram, start, end);
+    }
     // The copy into the pause's picture: RT64 blurs the picture once it's drawn.
     if (fills_pause && middle_sync != 0 && middle_sync != last_sync) {
         const uint32_t picture = (uint32_t)MEM_W(0, (gpr)(int32_t)pause_picture);
@@ -741,6 +748,19 @@ uint32_t conker::widescreen::dl_ring() {
 void conker::widescreen::set_dl_ring(uint32_t offset) {
     wide_dl_offset = offset < wide_dl_size ? offset & ~7u : 0;
 }
+
+namespace {
+    // `needed` bytes of the ring, for a display list of our own.
+    gpr take_wide_dl(uint32_t needed) {
+        if (wide_dl_offset + needed > wide_dl_size) {
+            wide_dl_offset = 0;
+        }
+        const uint32_t wide_dl = wide_dl_start + wide_dl_offset;
+        wide_dl_offset += (needed + 15) & ~15u;
+        return (gpr)(int32_t)(0x80000000u | wide_dl);
+    }
+}
+
 
 namespace {
 
@@ -842,12 +862,8 @@ extern "C" void conker_iris_end(uint8_t* rdram, recomp_context* ctx) {
     }
 
     uint32_t needed = (1 + (uint32_t)count + quarter_count * 2 + 1) * 8;
-    if (wide_dl_offset + needed > wide_dl_size) {
-        wide_dl_offset = 0;
-    }
-    uint32_t wide_dl = wide_dl_start + wide_dl_offset;
-    wide_dl_offset += (needed + 15) & ~15u;
-    gpr dl = (gpr)(int32_t)(0x80000000u | wide_dl);
+    gpr dl = take_wide_dl(needed);
+    const uint32_t wide_dl = (uint32_t)dl & 0x00FFFFFF;
 
     put_command(rdram, dl, (rt64_hook_opcode << 24) | rt64_hook_magic, (rt64_hook_op_enable << 28) | rt64_extended_opcode);
     for (size_t i = 0; i < setup_count; i++) {
@@ -901,6 +917,170 @@ extern "C" void conker_iris_end(uint8_t* rdram, recomp_context* ctx) {
     // The game's first command branches to ours; the rest of its wipe is skipped.
     gpr game_dl = start;
     put_command(rdram, game_dl, g_dl_branch, wide_dl);
+}
+
+// The bazooka's sight in multiplayer is the tinted copy of the frame (func_151A5170, above) over the aiming player's
+// view of the split screen: strips copied from where the view is, tinted, and drawn back over it. Netplay's "my view
+// only" (netplay/view.cpp) has RT64 draw a view elsewhere, across the whole frame or half of it, and move its 2D with
+// it (rt64.patch's conkerMoveRect): the strips still copied the frame where the view was in the split, which held
+// another part of the view drawn larger, and each was moved by as much as its nearest edge of the view, so they
+// came apart into bands of a shifted picture with the view between them.
+//
+// So the strips are given again, placed: copied from and drawn over where the view is drawn, for each place it may
+// be (rt64.patch's gEXConkerFocusPlaced). RT64 draws the set for where it draws the view, and the game's own strips
+// only when it draws none of them. Where the views are drawn is up to each machine, but this is game memory, the
+// same on every machine (the netplay hash): every place a view may be drawn is given, by what every machine has,
+// the match's view pairs (harness::view_pairs). Alone, a view is drawn across the whole frame; one of a pair, the
+// top or bottom half (view.cpp's halves, a pixel short of the middle). Only in a match or a replay, where "my view
+// only" can be on, and for a view of the split screen.
+//
+// The game's strips are a G_SETTIMG of the frame, G_SETTILE, G_LOADTILE, G_SETTILE, G_SETTILESIZE (as fit_tint_copy
+// left it) and a G_TEXRECT with its two G_RDPHALF words; ours are made from its first strip. The first command of the
+// game's first strip branches to ours, which end with a copy of the game's strips and branch back after them.
+namespace {
+    constexpr uint32_t g_ex_conkerfocusplaced_v1 = 0x000035;
+    constexpr uint32_t focus_whole = 0x1, focus_top = 0x2, focus_bottom = 0x4;
+
+    uint32_t focus_placed(uint32_t mode, uint32_t layouts, int32_t x, int32_t y) {
+        return (mode << 30) | (layouts << 24) | ((uint32_t)std::clamp(x, 0, 1023) << 8) | (uint32_t)std::clamp(y, 0, 255);
+    }
+
+    void place_tint_copy(uint8_t* rdram, gpr start, gpr end) {
+#if defined(CONKER_NETPLAY) && defined(CONKER_RT64)
+        if (!conker::harness::active()) {
+            return;
+        }
+        constexpr int strip_commands = 8;
+        constexpr uint8_t strip_ops[strip_commands] = { 0xFD, 0xF5, 0xF4, 0xF5, 0xF2, 0xE4, 0xE1, 0xF1 };
+        auto is_strip = [&](gpr cmd) {
+            for (int i = 0; i < strip_commands; i++) {
+                if (((uint32_t)MEM_W(i * 8, cmd) >> 24) != strip_ops[i]) {
+                    return false;
+                }
+            }
+            return true;
+        };
+        // The game's strips, and the part of the frame they cover (pixels).
+        gpr first = 0, after = 0;
+        int32_t left = 4096, top = 4096, right = 0, bottom = 0;
+        for (gpr cmd = start; cmd + strip_commands * 8 <= end; cmd += 8) {
+            if (!is_strip(cmd)) {
+                continue;
+            }
+            const uint32_t rect_w0 = (uint32_t)MEM_W(5 * 8, cmd), rect_w1 = (uint32_t)MEM_W(5 * 8 + 4, cmd);
+            left = std::min(left, (int32_t)((rect_w1 >> 12) & 0xFFF) / 4);
+            top = std::min(top, (int32_t)(rect_w1 & 0xFFF) / 4);
+            right = std::max(right, (int32_t)((rect_w0 >> 12) & 0xFFF) / 4);
+            bottom = std::max(bottom, (int32_t)(rect_w0 & 0xFFF) / 4);
+            if (first == 0) {
+                first = cmd;
+            }
+            cmd += (strip_commands - 1) * 8;
+            after = cmd + 8;
+        }
+        // Ours sample their texture from its first texel (G_TEXRECT's s and t of 0) at a texel a pixel.
+        if (first == 0 || right <= left || bottom <= top || (uint32_t)MEM_W(6 * 8 + 4, first) != 0) {
+            return;
+        }
+        const int32_t image_width = (int32_t)((uint32_t)MEM_W(0, first) & 0xFFF) + 1;
+        const float frame_width = (float)MEM_W(0, (gpr)(int32_t)0x800BE620);
+        constexpr float frame_height = 216.0f;
+        if (image_width != (int32_t)frame_width) {
+            return;
+        }
+        // Whose view: the camera whose view the strips are in; one of the split screen's.
+        const uint32_t cameras = (uint32_t)MEM_W(0, cameras_pointer);
+        if (cameras < 0x80000000u || cameras >= 0x80800000u) {
+            return;
+        }
+        const int32_t x = (left + right) / 2, y = (top + bottom) / 2;
+        int port = -1;
+        for (int i = 0; i < 4 && port < 0; i++) {
+            const gpr camera = (gpr)(int32_t)(cameras + i * camera_size);
+            const float view_left = read_float(rdram, camera, camera_left), view_right = read_float(rdram, camera, camera_right);
+            const float view_top = read_float(rdram, camera, camera_top), view_bottom = read_float(rdram, camera, camera_bottom);
+            const bool split = view_right - view_left < 0.97f * frame_width || view_bottom - view_top < 0.97f * frame_height;
+            if (split && x >= view_left && x <= view_right && y >= view_top && y <= view_bottom) {
+                port = i;
+            }
+        }
+        if (port < 0) {
+            return;
+        }
+        struct Place {
+            uint32_t layout;
+            int32_t left, top, right, bottom;
+        };
+        const int32_t w = image_width, h = (int32_t)frame_height;
+        Place places[3] = { { focus_whole, 0, 0, w, h } };
+        int place_count = 1;
+        if ((conker::harness::view_pairs() & (1u << port)) != 0) {
+            places[place_count++] = { focus_top, 0, 0, w, h / 2 - 1 };
+            places[place_count++] = { focus_bottom, 0, h / 2 + 1, w, h };
+        }
+
+        // Strips of the frame's 16-bit texels, each as much as texture memory (4 KB) holds: 256 across, as many rows
+        // as fit, the rest of the width in a column of its own.
+        auto line_words = [](int32_t width) { return (uint32_t)(width * 2 + 7) / 8; };
+        auto rows_for = [&](int32_t width) { return std::max<int32_t>(1, 4096 / (int32_t)(line_words(width) * 8)); };
+        uint32_t strip_count = 0;
+        for (int p = 0; p < place_count; p++) {
+            for (int32_t col = places[p].left; col < places[p].right; col += 256) {
+                const int32_t width = std::min<int32_t>(256, places[p].right - col);
+                const int32_t rows = rows_for(width);
+                strip_count += (uint32_t)((places[p].bottom - places[p].top + rows - 1) / rows);
+            }
+        }
+        const uint32_t game_bytes = (uint32_t)(after - first);
+        const uint32_t needed = (strip_count * strip_commands + place_count + 3) * 8 + game_bytes;
+        if (needed > wide_dl_size / 4) {
+            return;
+        }
+        gpr dl = take_wide_dl(needed);
+        const gpr ours = dl;
+
+        uint32_t strip[strip_commands][2];
+        for (int i = 0; i < strip_commands; i++) {
+            strip[i][0] = (uint32_t)MEM_W(i * 8, first);
+            strip[i][1] = (uint32_t)MEM_W(i * 8 + 4, first);
+        }
+        auto with_line = [](uint32_t settile_w0, uint32_t words) { return (settile_w0 & ~(0x1FFu << 9)) | ((words & 0x1FF) << 9); };
+        for (int p = 0; p < place_count; p++) {
+            const Place& place = places[p];
+            put_command(rdram, dl, (rt64_extended_opcode << 24) | g_ex_conkerfocusplaced_v1, focus_placed(1, place.layout, x, y));
+            for (int32_t col = place.left; col < place.right; col += 256) {
+                const int32_t width = std::min<int32_t>(256, place.right - col);
+                const int32_t rows_each = rows_for(width);
+                for (int32_t row = place.top; row < place.bottom; row += rows_each) {
+                    const int32_t rows = std::min(rows_each, place.bottom - row);
+                    const uint32_t ulx = (uint32_t)col * 4, uly = (uint32_t)row * 4;
+                    const uint32_t lrx = (uint32_t)(col + width) * 4, lry = (uint32_t)(row + rows) * 4;
+                    put_command(rdram, dl, strip[0][0], strip[0][1]);
+                    put_command(rdram, dl, with_line(strip[1][0], line_words(width)), strip[1][1]);
+                    put_command(rdram, dl, (0xF4u << 24) | (ulx << 12) | uly, (strip[2][1] & 0x07000000u) | ((lrx - 4) << 12) | (lry - 4));
+                    put_command(rdram, dl, with_line(strip[3][0], line_words(width)), strip[3][1]);
+                    put_command(rdram, dl, 0xF2u << 24, (strip[4][1] & 0x07000000u) | (((uint32_t)width * 4 - 4) << 12) | ((uint32_t)rows * 4 - 4));
+                    put_command(rdram, dl, (0xE4u << 24) | (lrx << 12) | lry, (strip[5][1] & 0x07000000u) | (ulx << 12) | uly);
+                    put_command(rdram, dl, strip[6][0], strip[6][1]);
+                    put_command(rdram, dl, strip[7][0], strip[7][1]);
+                }
+            }
+        }
+        uint32_t layouts = 0;
+        for (int p = 0; p < place_count; p++) {
+            layouts |= places[p].layout;
+        }
+        put_command(rdram, dl, (rt64_extended_opcode << 24) | g_ex_conkerfocusplaced_v1, focus_placed(2, layouts, x, y));
+        for (gpr cmd = first; cmd < after; cmd += 8) {
+            put_command(rdram, dl, (uint32_t)MEM_W(0, cmd), (uint32_t)MEM_W(4, cmd));
+        }
+        put_command(rdram, dl, (rt64_extended_opcode << 24) | g_ex_conkerfocusplaced_v1, focus_placed(0, 0, 0, 0));
+        put_command(rdram, dl, g_dl_branch, (uint32_t)after & 0x00FFFFFF);
+
+        gpr game_dl = first;
+        put_command(rdram, game_dl, g_dl_branch, (uint32_t)ours & 0x00FFFFFF);
+#endif
+    }
 }
 
 // (Its trigonometry, as the backdrop's below and field_of_view.cpp's, is game_trig.hpp's: in netplay the same
