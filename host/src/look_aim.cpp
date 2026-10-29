@@ -734,6 +734,32 @@ void conker::look_aim::turn_on_mouse_camera() {
     }
 }
 
+// The mouse turned on the first time it's used to play: the keyboard's defaults (Standard) have Z and R on the mouse
+// buttons, but Mouse: Sensitivity starts at 0 (the mouse off, the cursor free), so it neither aimed nor turned the
+// camera until the preset was loaded or the sensitivity raised. Once the mouse has been on (turned on here, by the
+// preset or by hand), mouse_turned_on.txt in the config folder says so, and a sensitivity of 0 is left alone after.
+void conker::look_aim::update_mouse_first_use(bool mouse_used) {
+    static bool done = std::filesystem::exists(recomp::get_config_path() / "mouse_turned_on.txt");
+    if (done) {
+        return;
+    }
+    const std::string& sensitivity = recompui::config::general::options::mouse_sensitivity;
+    recomp::config::Config* config = recompui::config::find_option_config(sensitivity);
+    if (config == nullptr) {
+        return;
+    }
+    const bool on = std::get<double>(config->get_option_value(sensitivity)) > 0.0;
+    if (!on && !mouse_used) {
+        return;
+    }
+    if (!on) {
+        config->update_option_value(sensitivity, 50.0);
+        config->save_config();
+    }
+    std::ofstream(recomp::get_config_path() / "mouse_turned_on.txt") << "1\n";
+    done = true;
+}
+
 // The bank robbery's slow motion leaps (issue #85): standing on a B pad, B leaps (func_15065A5C, 0x15066FC4: the bank,
 // 0x36 in D_800BE9F0, B pressed and +0x2EC of Conker's object 1), and Conker flies across the room in slow motion
 // while the stick aims a crosshair. The leap has no aiming mode or camera of its own: Conker stays in the bank's state

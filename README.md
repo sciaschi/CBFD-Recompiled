@@ -269,7 +269,10 @@ the settings' Quit prompt: the program restarts at the launcher.
   and B goes back.
 - Default keyboard controls: move with WASD, A = Space, B = E, Z = left click,
   R = right click, L = Enter (skips cutscenes), Start = Tab, C buttons = IJKL,
-  D-pad = arrow keys (up and down also on the mouse wheel). Everything can be
+  D-pad = arrow keys (up and down also on the mouse wheel). The mouse starts off
+  (the cursor free), and the first click or scroll while playing turns it on,
+  at Mouse: Sensitivity 50, so it aims and turns the camera; after that, a
+  sensitivity of 0 you set yourself stays. Everything can be
   remapped in Controls, and **Reset to defaults** there brings these back for a
   profile made before they changed.
 - **Presets and profiles** (Controls tab): **Load preset** puts a ready-made
