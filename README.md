@@ -264,9 +264,22 @@ the settings' Quit prompt: the program restarts at the launcher.
   [docs/save-states.md](docs/save-states.md). **Save State Notifications** on the
   General tab turns off the line in the corner saying a state was saved or loaded,
   or another slot picked (one saying it couldn't be still shows).
-- Default keyboard controls: move with WASD, A = Space, B = Left Shift,
-  Z = Q, L = E, R = R, Start = Enter, C buttons = arrow keys, D-pad = IJKL.
-  Everything can be remapped in Controls.
+- Default controller controls: A = A, B = B, Z = either trigger, L = LB,
+  R = RB, C buttons = right stick (C-Up on its click too), in the menus A accepts
+  and B goes back.
+- Default keyboard controls: move with WASD, A = Space, B = E, Z = left click,
+  R = right click, L = Enter (skips cutscenes), Start = Tab, C buttons = IJKL,
+  D-pad = arrow keys (up and down also on the mouse wheel). Everything can be
+  remapped in Controls, and **Reset to defaults** there brings these back for a
+  profile made before they changed.
+- **Presets and profiles** (Controls tab): **Load preset** puts a ready-made
+  layout in the profile: for controllers **Standard** (the defaults), **Modern**
+  (LT = R to aim, RT = Z, and Aiming: Swap Sticks on) and **Old Skool** (the
+  N64-style layout from before, B on X); for the keyboard **Standard** (which
+  also turns the mouse camera on, at Mouse: Sensitivity 50 if it was off) and
+  **Classic** (the old keyboard layout). **New profile** makes your own, a copy
+  of the one in use that you can name and remap; the **Profile** list at the top
+  picks which one you play with, for the controller and the keyboard each.
 - N64 pads and adapters for real N64 controllers (raphnet-tech's, Mayflash,
   Hyperkin, the NSO and 8BitDo 64 controllers) are mapped from
   `assets/controllerdb.txt`, with the C buttons as the right stick. A controller
