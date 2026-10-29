@@ -291,6 +291,9 @@ namespace conker {
         // Turns the mouse camera on (Mouse: Sensitivity 50 if it was 0, and Mouse: Turn the Camera), for the
         // keyboard's Standard preset, which has Z and R on the mouse buttons (conker_config.cpp).
         void turn_on_mouse_camera();
+        // Each frame, on the main thread (frontend.cpp): with `mouse_used` (a mouse button or the wheel in play since
+        // the last frame), turns the mouse on (Mouse: Sensitivity 50) if it has never been on.
+        void update_mouse_first_use(bool mouse_used);
         // Aiming: Swap Sticks (issue #84): whether a player (0 to 3) is aiming now (either aiming mode
         // ran for their camera in the last few frames) with the setting on, so their controller's sticks
         // are swapped (frontend.cpp): the right stick aims and the left moves. Not with recompinput's own
