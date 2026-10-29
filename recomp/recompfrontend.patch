@@ -1,5 +1,5 @@
 diff --git a/recompinput/include/recompinput/input_mapping.h b/recompinput/include/recompinput/input_mapping.h
-index eed283d..bf39b92 100644
+index eed283d..b12ca7d 100644
 --- a/recompinput/include/recompinput/input_mapping.h
 +++ b/recompinput/include/recompinput/input_mapping.h
 @@ -1,6 +1,10 @@
@@ -13,7 +13,7 @@ index eed283d..bf39b92 100644
  #include "input_types.h"
  #include "SDL.h"
  
-@@ -58,6 +62,24 @@ namespace recompinput {
+@@ -58,6 +62,39 @@ namespace recompinput {
  ```
      */
      void set_default_mapping_for_keyboard(GameInput input, const std::vector<InputField>& fields);
@@ -21,13 +21,14 @@ index eed283d..bf39b92 100644
 +    /**
 +     * A preset: a named layout the Controls tab can load into a profile. It's the device's defaults with `changes`
 +     * on top (an input listed there gets exactly those bindings, an empty list unbinds it), and `on_apply` (if any)
-+     * runs once it's loaded, for the game's own settings that go with it.
++     * runs once it's loaded, for the game's own settings that go with it, with the player it was loaded for (in
++     * single player the controller port picked on the Controls tab, 0 for the keyboard).
 +     */
 +    struct InputPreset {
 +        std::string name;
 +        InputDevice device;
 +        default_game_input_device_mapping changes;
-+        std::function<void()> on_apply;
++        std::function<void(int player)> on_apply;
 +    };
 +
 +    // Adds a preset, listed for its device in the order added.
@@ -35,6 +36,20 @@ index eed283d..bf39b92 100644
 +    const std::vector<InputPreset>& get_input_presets();
 +    // The preset's bindings for an input: its own change, or the default.
 +    const std::vector<InputField>& get_preset_mapping_for_input(const InputPreset& preset, GameInput input);
++
++    /**
++     * A game setting each player has their own of, which the Controls tab shows as a toggle for the player picked
++     * (single player's controller view, issue #160). The game keeps the values: `get` and `set` take the player.
++     */
++    struct PlayerToggle {
++        std::string name;
++        std::function<bool(int player)> get;
++        std::function<void(int player, bool on)> set;
++    };
++
++    // Adds a toggle, shown in the order added.
++    void add_player_toggle(PlayerToggle toggle);
++    const std::vector<PlayerToggle>& get_player_toggles();
  }
  
  #endif
@@ -87,11 +102,39 @@ index f5ed6c0..2f20eaf 100644
  
      const std::string& get_game_input_enum_name(GameInput input);
  }
+diff --git a/recompinput/include/recompinput/players.h b/recompinput/include/recompinput/players.h
+index 6c59b61..6c2fa6b 100644
+--- a/recompinput/include/recompinput/players.h
++++ b/recompinput/include/recompinput/players.h
+@@ -1,6 +1,8 @@
+ #ifndef __RECOMP_INPUT_PLAYER_ASSIGNMENT_H__
+ #define __RECOMP_INPUT_PLAYER_ASSIGNMENT_H__
+ 
++#include <functional>
++#include <vector>
+ #include "recompinput.h"
+ 
+ namespace recompinput {
+@@ -40,6 +42,14 @@ namespace recompinput {
+         bool is_player_currently_assigning(int player_index);
+         bool was_keyboard_assigned();
+         std::chrono::steady_clock::duration get_player_time_since_last_button_press(int player_index);
++        // How many players the assign players screen has. In single player mode that's the game's controller
++        // ports, for controllers only (the keyboard and mouse stay player 1's): Confirm hands the controllers,
++        // in player order, to the single player callback instead of assigning players.
++        size_t get_slot_count();
++        void set_single_player_callback(std::function<void(const std::vector<SDL_GameController*>&)> callback);
++        // Whether a controller's button press goes to the assign players screen in single player mode (one not
++        // assigned yet), and not to the menus as well, where it would press the focused button.
++        bool takes_button_press(SDL_JoystickID joystick_id);
+ 
+         void process_sdl_event(SDL_Event* event);
+     }
 diff --git a/recompinput/include/recompinput/profiles.h b/recompinput/include/recompinput/profiles.h
-index 45bedd1..5adb110 100644
+index 45bedd1..a909660 100644
 --- a/recompinput/include/recompinput/profiles.h
 +++ b/recompinput/include/recompinput/profiles.h
-@@ -57,8 +57,22 @@ namespace recompinput {
+@@ -57,8 +57,30 @@ namespace recompinput {
          std::string get_mp_keyboard_profile_key(int player_index);
          std::string get_mp_keyboard_profile_name(int player_index);
          void initialize_input_bindings();
@@ -102,6 +145,14 @@ index 45bedd1..5adb110 100644
 +        // Controller (SP) or Keyboard (SP) themselves, whichever single player uses.
 +        int get_default_sp_profile_index(InputDevice device);
 +        void set_sp_profile_index(InputDevice device, int profile_index);
++        // Single player's controller ports. Each port's controller plays with a profile of its own, or with player
++        // 1's (-1, the default), picked on the Controls tab and saved with the controls. Port 0 is player 1's,
++        // set_sp_profile_index's.
++        constexpr int sp_controller_port_count = 4;
++        int get_sp_port_controller_profile_index(int port);
++        // The profile picked for a port, or -1 for player 1's.
++        int get_sp_port_controller_profile_choice(int port);
++        void set_sp_port_controller_profile_index(int port, int profile_index);
 +        // A custom profile for a device, with the bindings of `copy_from` (another profile of that device), or the
 +        // defaults' if it's -1. Returns its index.
 +        int create_custom_profile(InputDevice device, const std::string &name, int copy_from);
@@ -109,13 +160,13 @@ index 45bedd1..5adb110 100644
 +        // Controller (SP) or Keyboard (SP) instead. The indices of the profiles after it go down by one.
 +        void delete_custom_profile(int profile_index);
 +        void rename_input_profile(int profile_index, const std::string &name);
-+        // Replaces a profile's bindings with a preset's, then runs the preset's on_apply.
-+        void apply_input_preset(int profile_index, const InputPreset &preset);
++        // Replaces a profile's bindings with a preset's, then runs the preset's on_apply for `player`.
++        void apply_input_preset(int profile_index, const InputPreset &preset, int player);
          int get_or_create_mp_keyboard_profile_index(int player_index);
          std::string get_string_from_controller_guid(ControllerGUID guid);
          bool get_n64_input(int player_index, uint16_t* buttons_out, float* x_out, float* y_out);
 diff --git a/recompinput/src/input_events.cpp b/recompinput/src/input_events.cpp
-index c76a1dc..e651d94 100644
+index c76a1dc..7247bb9 100644
 --- a/recompinput/src/input_events.cpp
 +++ b/recompinput/src/input_events.cpp
 @@ -117,7 +117,16 @@ bool sdl_event_filter(void* userdata, SDL_Event* event) {
@@ -136,6 +187,15 @@ index c76a1dc..e651d94 100644
      }
      queue_if_enabled(event);
      break;
+@@ -147,7 +156,7 @@ bool sdl_event_filter(void* userdata, SDL_Event* event) {
+                 binding::set_scanned_input({ InputType::ControllerDigital, button_event->button });
+             }
+         }
+-        else {
++        else if (!playerassignment::takes_button_press(event->cbutton.which)) {
+             queue_if_enabled(event);
+         }
+         break;
 @@ -238,6 +247,21 @@ bool sdl_event_filter(void* userdata, SDL_Event* event) {
          // Always queue button up events to avoid missing them during binding.
          recompui::queue_event(*event);
@@ -159,7 +219,7 @@ index c76a1dc..e651d94 100644
          queue_if_enabled(event);
          break;
 diff --git a/recompinput/src/input_mapping.cpp b/recompinput/src/input_mapping.cpp
-index bfcfef4..4a1d47f 100644
+index bfcfef4..133cb07 100644
 --- a/recompinput/src/input_mapping.cpp
 +++ b/recompinput/src/input_mapping.cpp
 @@ -5,22 +5,22 @@ namespace recompinput {
@@ -244,7 +304,7 @@ index bfcfef4..4a1d47f 100644
          { GameInput::APPLY_MENU,     { InputField::controller_digital(SDL_CONTROLLER_BUTTON_NORTH), InputField::controller_digital(SDL_CONTROLLER_BUTTON_START) } },
          { GameInput::TAB_LEFT_MENU,  { InputField::controller_digital(SDL_CONTROLLER_BUTTON_LEFTSHOULDER) } },
          { GameInput::TAB_RIGHT_MENU, { InputField::controller_digital(SDL_CONTROLLER_BUTTON_RIGHTSHOULDER) } },
-@@ -96,4 +104,22 @@ namespace recompinput {
+@@ -96,4 +104,32 @@ namespace recompinput {
          }
          default_n64_mappings_keyboard[input] = fields;
      }
@@ -257,6 +317,16 @@ index bfcfef4..4a1d47f 100644
 +
 +    const std::vector<InputPreset>& get_input_presets() {
 +        return input_presets;
++    }
++
++    static std::vector<PlayerToggle> player_toggles;
++
++    void add_player_toggle(PlayerToggle toggle) {
++        player_toggles.emplace_back(std::move(toggle));
++    }
++
++    const std::vector<PlayerToggle>& get_player_toggles() {
++        return player_toggles;
 +    }
 +
 +    const std::vector<InputField>& get_preset_mapping_for_input(const InputPreset& preset, GameInput input) {
@@ -456,11 +526,106 @@ index c6786e6..2e249f8 100644
      default:
          return recompinput::unknown_device_input;
      }
+diff --git a/recompinput/src/players.cpp b/recompinput/src/players.cpp
+index 08cb3f3..efda6e2 100644
+--- a/recompinput/src/players.cpp
++++ b/recompinput/src/players.cpp
+@@ -60,6 +60,7 @@ static struct {
+     }
+ 
+     bool queue_close_player_assignment_modal = false;
++    std::function<void(const std::vector<SDL_GameController*>&)> single_player_callback;
+ } PlayerState;
+ 
+ size_t players::get_number_of_assigned_players() {
+@@ -152,6 +153,17 @@ void playerassignment::stop_and_close_modal() {
+ void playerassignment::commit_player_assignment() {
+     stop_and_close_modal();
+ 
++    if (PlayerState.single_player_mode) {
++        std::vector<SDL_GameController*> controllers;
++        for (size_t i = 0; i < PlayerState.temp_players.get_count(); i++) {
++            controllers.push_back(PlayerState.temp_players[i].controller);
++        }
++        if (PlayerState.single_player_callback) {
++            PlayerState.single_player_callback(controllers);
++        }
++        return;
++    }
++
+     PlayerState.players = PlayerState.temp_players;
+     for (int i = 0; i < players::get_number_of_assigned_players(); i++) {
+         Player &player = PlayerState.players[i];
+@@ -204,6 +216,27 @@ std::chrono::steady_clock::duration playerassignment::get_player_time_since_last
+     return ultramodern::time_since_start() - PlayerState.temp_players[player_index].last_button_press_timestamp;
+ }
+ 
++size_t playerassignment::get_slot_count() {
++    return PlayerState.single_player_mode ? PlayerState.max_players : players::get_max_number_of_players();
++}
++
++void playerassignment::set_single_player_callback(std::function<void(const std::vector<SDL_GameController*>&)> callback) {
++    PlayerState.single_player_callback = std::move(callback);
++}
++
++bool playerassignment::takes_button_press(SDL_JoystickID joystick_id) {
++    if (!PlayerState.single_player_mode || !playerassignment::is_active() || PlayerState.temp_players.get_count() >= PlayerState.max_players) {
++        return false;
++    }
++    SDL_GameController* controller = recompinput::get_controller_from_joystick_id(joystick_id);
++    for (size_t i = 0; i < PlayerState.temp_players.get_count(); i++) {
++        if (PlayerState.temp_players[i].controller == controller) {
++            return false;
++        }
++    }
++    return true;
++}
++
+ void playerassignment::process_sdl_event(SDL_Event* event) {
+     if (PlayerState.queue_close_player_assignment_modal) {
+         recompui::AssignPlayersModal::close();
+@@ -225,6 +258,11 @@ void playerassignment::process_sdl_event(SDL_Event* event) {
+         switch (keyevent->keysym.scancode) {
+         case SDL_Scancode::SDL_SCANCODE_ESCAPE:
+             // TODO: Restore previous assignment?
++            if (PlayerState.single_player_mode) {
++                // Leaves the ports as they were.
++                playerassignment::stop_and_close_modal();
++                return;
++            }
+             playerassignment::stop();
+             return;
+         case SDL_Scancode::SDL_SCANCODE_RIGHT:
+@@ -233,6 +271,10 @@ void playerassignment::process_sdl_event(SDL_Event* event) {
+         case SDL_Scancode::SDL_SCANCODE_DOWN:
+             break;
+         default:
++            if (PlayerState.single_player_mode) {
++                // The keyboard is player 1's already.
++                break;
++            }
+             if (playerassignment::was_keyboard_assigned()) {
+                 for (size_t i = 0; i < PlayerState.temp_players.size(); i++) {
+                     if (PlayerState.temp_players[i].keyboard_enabled && PlayerState.temp_players[i].controller == nullptr) {
+@@ -251,7 +293,7 @@ void playerassignment::process_sdl_event(SDL_Event* event) {
+         SDL_JoystickID joystick_id = button_event->which;
+         auto controller = recompinput::get_controller_from_joystick_id(joystick_id);
+ 
+-        bool can_be_mapped = true;
++        bool can_be_mapped = PlayerState.temp_players.get_count() < get_slot_count();
+         for (size_t i = 0; i < PlayerState.temp_players.size(); i++) {
+             if (PlayerState.temp_players[i].controller == controller) {
+                 can_be_mapped = false;
 diff --git a/recompinput/src/profiles.cpp b/recompinput/src/profiles.cpp
-index c89956e..0f6034f 100644
+index c89956e..4699451 100644
 --- a/recompinput/src/profiles.cpp
 +++ b/recompinput/src/profiles.cpp
-@@ -34,6 +34,10 @@ static std::unordered_map<uint64_t, int> controller_hash_index_map{};
+@@ -1,3 +1,4 @@
++#include <array>
+ #include <filesystem>
+ #include <fstream>
+ #include <iomanip>
+@@ -34,6 +35,12 @@ static std::unordered_map<uint64_t, int> controller_hash_index_map{};
  
  static int keyboard_sp_profile_index = -1;
  static int controller_sp_profile_index = -1;
@@ -468,10 +633,12 @@ index c89956e..0f6034f 100644
 +// Controls tab, or -1.
 +static int controller_sp_selected_index = -1;
 +static int keyboard_sp_selected_index = -1;
++// The profiles of the controllers on ports 2-4 in single player, or -1 for player 1's (index 0 isn't used).
++static std::array<int, recompinput::profiles::sp_controller_port_count> controller_sp_port_indices{ -1, -1, -1, -1 };
  
  static const std::string keyboard_sp_profile_key = "keyboard_sp";
  static const std::string controller_sp_profile_key = "controller_sp";
-@@ -43,6 +47,8 @@ static const std::string controller_sp_profile_name = "Controller (SP)";
+@@ -43,6 +50,8 @@ static const std::string controller_sp_profile_name = "Controller (SP)";
  static const std::string keyboard_mp_profile_key = "keyboard_mp_player_"; // + player index
  static const std::string keyboard_mp_profile_name = "Keyboard "; // + "(player number)"
  
@@ -480,7 +647,26 @@ index c89956e..0f6034f 100644
  // Make the button value array, which maps a button index to its bit field.
  #define DEFINE_INPUT(name, value, readable) uint16_t(value##u),
  static const std::array n64_button_values = {
-@@ -346,11 +352,119 @@ namespace recompinput {
+@@ -336,6 +345,13 @@ namespace recompinput {
+         }
+     };
+ 
++    // In single player, players 2-4 bind to their ports' profiles (binding writes to a player's profile).
++    static void update_sp_port_players() {
++        for (int port = 1; port < profiles::sp_controller_port_count; port++) {
++            profiles::set_input_profile_for_player(port, profiles::get_sp_port_controller_profile_index(port), InputDevice::Controller);
++        }
++    }
++
+     void profiles::initialize_input_bindings() {
+         keyboard_sp_profile_index = profiles::add_input_profile(keyboard_sp_profile_key, keyboard_sp_profile_name, recompinput::InputDevice::Keyboard, false);
+         controller_sp_profile_index = profiles::add_input_profile(controller_sp_profile_key, controller_sp_profile_name, recompinput::InputDevice::Controller, false);
+@@ -343,14 +359,158 @@ namespace recompinput {
+         // Set Player 1 to the SP profiles by default.
+         profiles::set_input_profile_for_player(0, keyboard_sp_profile_index, recompinput::InputDevice::Keyboard);
+         profiles::set_input_profile_for_player(0, controller_sp_profile_index, recompinput::InputDevice::Controller);
++        controller_sp_port_indices.fill(-1);
++        update_sp_port_players();
      }
  
      int profiles::get_sp_controller_profile_index() {
@@ -509,6 +695,34 @@ index c89956e..0f6034f 100644
 +        }
 +        // Player 1's too, which binding and the menus' buttons use in single player.
 +        profiles::set_input_profile_for_player(0, profile_index, device);
++        update_sp_port_players();
++    }
++
++    int profiles::get_sp_port_controller_profile_index(int port) {
++        const int choice = get_sp_port_controller_profile_choice(port);
++        return choice >= 0 ? choice : get_sp_controller_profile_index();
++    }
++
++    int profiles::get_sp_port_controller_profile_choice(int port) {
++        if (port <= 0 || port >= sp_controller_port_count) {
++            return -1;
++        }
++        return controller_sp_port_indices[port];
++    }
++
++    void profiles::set_sp_port_controller_profile_index(int port, int profile_index) {
++        if (port == 0) {
++            set_sp_profile_index(InputDevice::Controller, profile_index);
++            return;
++        }
++        if (port < 0 || port >= sp_controller_port_count) {
++            return;
++        }
++        if (profile_index >= get_input_profile_count() || (profile_index >= 0 && input_profiles[profile_index].device != InputDevice::Controller)) {
++            return;
++        }
++        controller_sp_port_indices[port] = profile_index < 0 ? -1 : profile_index;
++        update_sp_port_players();
 +    }
 +
 +    int profiles::create_custom_profile(InputDevice device, const std::string &name, int copy_from) {
@@ -576,6 +790,12 @@ index c89956e..0f6034f 100644
 +        }
 +        update_selected(controller_sp_selected_index);
 +        update_selected(keyboard_sp_selected_index);
++        for (int port = 1; port < sp_controller_port_count; port++) {
++            if (controller_sp_port_indices[port] >= 0) {
++                update(controller_sp_port_indices[port]);
++            }
++        }
++        update_sp_port_players();
 +    }
 +
 +    void profiles::rename_input_profile(int profile_index, const std::string &name) {
@@ -584,7 +804,7 @@ index c89956e..0f6034f 100644
 +        }
 +    }
 +
-+    void profiles::apply_input_preset(int profile_index, const InputPreset &preset) {
++    void profiles::apply_input_preset(int profile_index, const InputPreset &preset, int player) {
 +        if (profile_index < 0 || profile_index >= get_input_profile_count()) {
 +            return;
 +        }
@@ -597,12 +817,12 @@ index c89956e..0f6034f 100644
 +            }
 +        }
 +        if (preset.on_apply) {
-+            preset.on_apply();
++            preset.on_apply(player);
 +        }
      }
  
      int profiles::get_or_create_mp_keyboard_profile_index(int player_index) {
-@@ -445,6 +559,11 @@ namespace recompinput {
+@@ -445,6 +605,18 @@ namespace recompinput {
              }
          }
  
@@ -610,11 +830,18 @@ index c89956e..0f6034f 100644
 +            { "controller", profiles::get_input_profile_key(profiles::get_sp_controller_profile_index()) },
 +            { "keyboard", profiles::get_input_profile_key(profiles::get_sp_keyboard_profile_index()) },
 +        };
++        // Ports 2-4's, empty for player 1's.
++        json &port_profiles = config_json["sp_controller_ports"];
++        port_profiles = json::array();
++        for (int port = 1; port < sp_controller_port_count; port++) {
++            const int choice = profiles::get_sp_port_controller_profile_choice(port);
++            port_profiles.push_back(choice >= 0 ? profiles::get_input_profile_key(choice) : std::string());
++        }
 +
          json &controllers = config_json["controllers"];
          for (int i = 0; i < controller_count; i++) {
              json &controller = controllers[i];
-@@ -545,6 +664,15 @@ namespace recompinput {
+@@ -545,6 +717,24 @@ namespace recompinput {
                  }
              }
  
@@ -625,6 +852,15 @@ index c89956e..0f6034f 100644
 +                    profiles::get_input_profile_by_key(sp_profiles->value("controller", std::string())));
 +                profiles::set_sp_profile_index(InputDevice::Keyboard,
 +                    profiles::get_input_profile_by_key(sp_profiles->value("keyboard", std::string())));
++            }
++            auto port_profiles = config_json.find("sp_controller_ports");
++            if (port_profiles != config_json.end() && port_profiles->is_array()) {
++                for (int port = 1; port < sp_controller_port_count && port - 1 < (int)port_profiles->size(); port++) {
++                    const json &key = (*port_profiles)[port - 1];
++                    if (key.is_string() && !key.get<std::string>().empty()) {
++                        profiles::set_sp_port_controller_profile_index(port, profiles::get_input_profile_by_key(key.get<std::string>()));
++                    }
++                }
 +            }
 +
              auto controllers = config_json.find("controllers");
@@ -744,6 +980,45 @@ index 277a421..549dc29 100644
      recompui::open_choice_prompt(
          "Are you sure you want to quit?",
          "Any progress since your last save will be lost.",
+diff --git a/recompui/src/composites/ui_assign_players_modal.cpp b/recompui/src/composites/ui_assign_players_modal.cpp
+index 5c6b035..42d7142 100644
+--- a/recompui/src/composites/ui_assign_players_modal.cpp
++++ b/recompui/src/composites/ui_assign_players_modal.cpp
+@@ -192,11 +192,11 @@ void AssignPlayersModal::process_event(const Event &e) {
+         return;
+     }
+     if (e.type == EventType::Update) {
+-        if (player_elements.empty() || player_elements.size() != recompinput::players::get_max_number_of_players()) {
++        if (player_elements.empty() || player_elements.size() != recompinput::playerassignment::get_slot_count()) {
+             create_player_elements();
+         }
+ 
+-        for (size_t i = 0; i < recompinput::players::get_max_number_of_players(); i++) {
++        for (size_t i = 0; i < recompinput::playerassignment::get_slot_count(); i++) {
+             player_elements[i]->update_assignment_player_card();
+         }
+ 
+@@ -218,6 +218,11 @@ void AssignPlayersModal::process_event(const Event &e) {
+         auto& action = std::get<EventMenuAction>(e.variant);
+         switch (action.action) {
+             case MenuAction::Back: {
++                if (recompinput::players::is_single_player_mode()) {
++                    // Leaves the ports as they were.
++                    recompinput::playerassignment::stop_and_close_modal();
++                    break;
++                }
+                 ContextId context = get_current_context();
+                 Element *close_as_element = static_cast<Element*>(keep_players_button);
+                 if (context.get_focused_element() == close_as_element) {
+@@ -241,7 +246,7 @@ void AssignPlayersModal::create_player_elements() {
+ 
+     Element *row_wrapper = nullptr;
+ 
+-    int max_players = static_cast<int>(recompinput::players::get_max_number_of_players());
++    int max_players = static_cast<int>(recompinput::playerassignment::get_slot_count());
+ 
+     bool should_scroll = max_players > 12;
+     if (should_scroll) {
 diff --git a/recompui/src/composites/ui_mod_installer.cpp b/recompui/src/composites/ui_mod_installer.cpp
 index 1f98b3c..c91df6f 100644
 --- a/recompui/src/composites/ui_mod_installer.cpp
@@ -1053,7 +1328,7 @@ index 86428c9..39f7d0e 100644
          this->set_option_value(this->option_id, v);
      });
 diff --git a/recompui/src/config/ui_config_page_controls.cpp b/recompui/src/config/ui_config_page_controls.cpp
-index f379a6f..25273b2 100644
+index f379a6f..e8147b1 100644
 --- a/recompui/src/config/ui_config_page_controls.cpp
 +++ b/recompui/src/config/ui_config_page_controls.cpp
 @@ -6,6 +6,7 @@
@@ -1088,7 +1363,7 @@ index f379a6f..25273b2 100644
  
      // TODO: fetch other (e.g. mod) inputs to game_input_sections.other
  }
-@@ -227,8 +234,14 @@ void ConfigPageControls::process_event(const Event &e) {
+@@ -227,8 +234,15 @@ void ConfigPageControls::process_event(const Event &e) {
          }
          if (last_update_index != update_index) {
              last_update_index = update_index;
@@ -1098,12 +1373,13 @@ index f379a6f..25273b2 100644
 +        if (queue_profile_render) {
 +            queue_profile_render = false;
 +            render_profile_header();
++            render_player_toggles();
 +            render_footer_right();
 +        }
          queue_update();
          break;
      default:
-@@ -260,7 +273,7 @@ void ConfigPageControls::render_header() {
+@@ -260,7 +274,7 @@ void ConfigPageControls::render_header() {
      // Header attempts to not re-render elements if not necessary, instead swapping visibility / updating text.
  
      if (!multiplayer_enabled) {
@@ -1112,13 +1388,21 @@ index f379a6f..25273b2 100644
          return;
      }
  
-@@ -479,18 +492,150 @@ void ConfigPageControls::render_footer() {
+@@ -479,18 +493,223 @@ void ConfigPageControls::render_footer() {
              keyboard_toggle->add_checked_callback([this](bool checked) {
                  this->single_player_show_keyboard_mappings = checked;
                  this->update_control_mappings();
 +                // The device's own profiles and presets.
 +                this->queue_profile_render = true;
              });
++            player_toggles_wrapper = context.create_element<Element>(footer_left, 0, "div", false);
++            player_toggles_wrapper->set_display(Display::Flex);
++            player_toggles_wrapper->set_flex_direction(FlexDirection::Row);
++            player_toggles_wrapper->set_align_items(AlignItems::Center);
++            player_toggles_wrapper->set_gap(12.0f);
++            player_toggles_wrapper->set_margin_left(16.0f);
++            player_toggles_wrapper->set_as_navigation_container(NavigationType::Horizontal);
++            render_player_toggles();
          }
      }
 -    {
@@ -1127,7 +1411,6 @@ index f379a6f..25273b2 100644
 -        auto reset_to_defaults_button = context.create_element<Button>(footer_right, "Reset to defaults", ButtonStyle::Warning);
 -        reset_to_defaults_button->add_pressed_callback([this]() {
 -            recompinput::profiles::reset_profile_bindings(this->selected_profile_index, this->get_player_input_device());
--            this->update_control_mappings();
 +    render_footer_right();
 +}
 +
@@ -1166,8 +1449,11 @@ index f379a6f..25273b2 100644
 +            load_preset_button->add_pressed_callback([this]() {
 +                const std::vector<recompinput::InputPreset> &presets = recompinput::get_input_presets();
 +                if (this->selected_preset_index >= 0 && this->selected_preset_index < (int)presets.size()) {
-+                    recompinput::profiles::apply_input_preset(this->selected_profile_index, presets[this->selected_preset_index]);
++                    const int player = this->get_player_input_device() == recompinput::InputDevice::Controller ? this->selected_port : 0;
++                    recompinput::profiles::apply_input_preset(this->selected_profile_index, presets[this->selected_preset_index], player);
 +                    this->update_control_mappings();
++                    // Its settings for the player.
++                    this->queue_profile_render = true;
 +                }
 +            });
 +        }
@@ -1180,30 +1466,79 @@ index f379a6f..25273b2 100644
 +    });
 +}
 +
++void ConfigPageControls::render_player_toggles() {
++    if (player_toggles_wrapper == nullptr) {
++        return;
++    }
++    player_toggles_wrapper->clear_children();
++    if (get_player_input_device() != recompinput::InputDevice::Controller) {
++        return;
++    }
++    recompui::ContextId context = get_current_context();
++    const int player = selected_port;
++    for (const recompinput::PlayerToggle &player_toggle : recompinput::get_player_toggles()) {
++        context.create_element<Label>(player_toggles_wrapper, player_toggle.name, LabelStyle::Normal);
++        auto toggle = context.create_element<Toggle>(player_toggles_wrapper, ToggleSize::Medium);
++        toggle->set_checked(player_toggle.get ? player_toggle.get(player) : false);
++        auto set = player_toggle.set;
++        toggle->add_checked_callback([set, player](bool checked) {
++            if (set) {
++                set(player, checked);
++            }
++        });
++    }
++}
++
 +void ConfigPageControls::render_profile_header() {
 +    recompui::ContextId context = get_current_context();
 +    add_header();
 +    header->set_as_navigation_container(NavigationType::Horizontal);
 +
 +    const recompinput::InputDevice device = get_player_input_device();
++    const bool controller = device == recompinput::InputDevice::Controller;
 +    const int default_index = recompinput::profiles::get_default_sp_profile_index(device);
-+    const int current_index = device == recompinput::InputDevice::Keyboard
-+        ? recompinput::profiles::get_sp_keyboard_profile_index()
-+        : recompinput::profiles::get_sp_controller_profile_index();
-+    const bool current_custom = recompinput::profiles::is_input_profile_custom(current_index);
++    const int current_index = controller
++        ? recompinput::profiles::get_sp_port_controller_profile_index(selected_port)
++        : recompinput::profiles::get_sp_keyboard_profile_index();
++    // Players 2-4 can play with player 1's profile (-1), which their bar then shows but doesn't rename or delete.
++    const int current_choice = controller && selected_port > 0
++        ? recompinput::profiles::get_sp_port_controller_profile_choice(selected_port)
++        : current_index;
++    const bool current_custom = current_choice >= 0 && recompinput::profiles::is_input_profile_custom(current_index);
 +
 +    auto header_left = header->get_left();
 +    header_left->clear_children();
++
++    // Each controller port's own profile (issue #160); the keyboard and mouse are player 1's.
++    if (controller) {
++        std::vector<SelectOption> player_options;
++        for (int port = 0; port < recompinput::profiles::sp_controller_port_count; port++) {
++            player_options.emplace_back("Player " + std::to_string(port + 1), std::to_string(port));
++        }
++        auto player_wrapper = context.create_element<Element>(header_left, 0, "div", false);
++        // Wide enough for the select's own minimum (ui_select.cpp), with a gap before the profile's label.
++        player_wrapper->set_width(192.0f);
++        player_wrapper->set_margin_right(16.0f);
++        auto player_select = context.create_element<Select>(player_wrapper, player_options, std::to_string(selected_port));
++        player_select->add_change_callback([this](SelectOption &option, int option_index) {
++            this->selected_port = std::stoi(option.value);
+             this->update_control_mappings();
++            this->queue_profile_render = true;
++        });
++    }
 +    context.create_element<Label>(header_left, "Profile", LabelStyle::Normal);
 +
 +    std::vector<SelectOption> profile_options;
++    if (controller && selected_port > 0) {
++        profile_options.emplace_back("Same as Player 1", "-1");
++    }
 +    profile_options.emplace_back("Default", std::to_string(default_index));
 +    for (int profile_index : recompinput::profiles::get_indices_for_custom_profiles(device)) {
 +        profile_options.emplace_back(recompinput::profiles::get_input_profile_name(profile_index), std::to_string(profile_index));
 +    }
 +    auto profile_wrapper = context.create_element<Element>(header_left, 0, "div", false);
-+    profile_wrapper->set_width(280.0f);
-+    auto profile_select = context.create_element<Select>(profile_wrapper, profile_options, std::to_string(current_index));
++    profile_wrapper->set_width(240.0f);
++    auto profile_select = context.create_element<Select>(profile_wrapper, profile_options, std::to_string(current_choice));
 +    profile_select->add_change_callback([this](SelectOption &option, int option_index) {
 +        this->on_select_sp_profile(std::stoi(option.value));
 +    });
@@ -1220,11 +1555,20 @@ index f379a6f..25273b2 100644
 +            if (!active) {
 +                this->queue_profile_render = true;
 +            }
-         });
-     }
++        });
++    }
 +
 +    auto header_right = header->get_right();
 +    header_right->clear_children();
++    // Which controller is which player: each presses a button in turn (issue #160).
++    if (controller) {
++        auto assign_button = context.create_element<Button>(header_right, "Assign controllers", ButtonStyle::Primary, ButtonSize::Medium);
++        assign_button->set_debug_id("AssignControllersButton");
++        assign_button->add_pressed_callback([]() {
++            recompinput::playerassignment::start();
++            recompui::AssignPlayersModal::open();
+         });
+     }
 +    auto new_button = context.create_element<Button>(header_right, "New profile", ButtonStyle::Secondary, ButtonSize::Medium);
 +    new_button->add_pressed_callback([this]() {
 +        this->on_new_profile();
@@ -1237,7 +1581,11 @@ index f379a6f..25273b2 100644
 +}
 +
 +void ConfigPageControls::on_select_sp_profile(int profile_index) {
-+    recompinput::profiles::set_sp_profile_index(get_player_input_device(), profile_index);
++    if (get_player_input_device() == recompinput::InputDevice::Controller) {
++        recompinput::profiles::set_sp_port_controller_profile_index(selected_port, profile_index);
++    } else {
++        recompinput::profiles::set_sp_profile_index(recompinput::InputDevice::Keyboard, profile_index);
++    }
 +    update_control_mappings();
 +    queue_profile_render = true;
 +}
@@ -1270,11 +1618,36 @@ index f379a6f..25273b2 100644
  }
  
  void ConfigPageControls::render_control_mappings() {
+@@ -564,13 +783,14 @@ void ConfigPageControls::set_current_profile_index() {
+     if (!multiplayer_enabled) {
+         selected_profile_index = single_player_show_keyboard_mappings
+             ? recompinput::profiles::get_sp_keyboard_profile_index()
+-            : recompinput::profiles::get_sp_controller_profile_index();
++            : recompinput::profiles::get_sp_port_controller_profile_index(selected_port);
+     }
+ }
+ 
+ void ConfigPageControls::update_control_mappings() {
+     if (!multiplayer_enabled) {
+-        selected_player = 0;
++        // Binding writes to this player's profile: the port's, for a controller.
++        selected_player = single_player_show_keyboard_mappings ? 0 : selected_port;
+         set_current_profile_index();
+     } else if (!multiplayer_view_mappings) {
+         return;
 diff --git a/recompui/src/config/ui_config_page_controls.h b/recompui/src/config/ui_config_page_controls.h
-index dd8ff24..20794ef 100644
+index dd8ff24..79e6a33 100644
 --- a/recompui/src/config/ui_config_page_controls.h
 +++ b/recompui/src/config/ui_config_page_controls.h
-@@ -108,6 +108,12 @@ protected:
+@@ -102,12 +102,20 @@ protected:
+     bool multiplayer_view_mappings;
+ 
+     bool single_player_show_keyboard_mappings = false;
++    // The controller port whose profile single player's profile bar picks and edits (issue #160).
++    int selected_port = 0;
+ 
+     bool awaiting_binding = false;
+     bool awaiting_binding_for_menu_action_button = false;
  
      bool queue_first_game_input_row_focus = false;
      bool queue_selected_player_profile_edit_focus = false;
@@ -1287,13 +1660,23 @@ index dd8ff24..20794ef 100644
  
      struct {
          GameInputSection n64 = GameInputSection("");
-@@ -193,6 +199,12 @@ private:
+@@ -151,6 +159,8 @@ protected:
+     std::vector<GameInputRowsWrapper*> rows_wrappers;
+     std::vector<GameInputRow*> game_input_rows;
+     IconToggle *keyboard_toggle;
++    // The game's settings for the player picked (recompinput::get_player_toggles), beside keyboard_toggle.
++    Element *player_toggles_wrapper = nullptr;
+     Element *description_container = nullptr;
+     on_player_bind_callback on_player_bind;
+     Element *nav_up_element = nullptr;
+@@ -193,6 +203,13 @@ private:
      void render_body_mappings();
      void render_control_mappings();
      void render_footer();
 +    void render_footer_right();
 +    // Single player: the profile bar in the header (which profile plays, new, delete, its name).
 +    void render_profile_header();
++    void render_player_toggles();
 +    void on_select_sp_profile(int profile_index);
 +    void on_new_profile();
 +    void on_delete_profile();
