@@ -198,7 +198,11 @@ and, at the read where they first differ, the memory itself:
 - **What players should know:** the join code is the host's IP address and port, so it's for people the
   host trusts, and joining shows the host the joiner's IP address (the menu says so). A room code holds
   no address, and relay-only (the default) nobody learns another's address; with direct connections
-  allowed, the players may. The connections
+  allowed, the players may. `conker.log` (written when the output would go nowhere, and posted with bug
+  reports) holds no join code, no private room's code and no address: the library's messages are logged
+  with each IP address made `<address>`, and the codes are printed only to a terminal or a redirected
+  output. The player id (`netplay.json`) is random but long-lived: the same name in every match and on
+  every server, until **New name** (Settings) makes another. The connections
   are encrypted, but not authenticated: there's no certificate authority, so someone on the network path
   between two players could pose as the host. Joining by a code from someone you know keeps that to
   people who can already see your traffic.

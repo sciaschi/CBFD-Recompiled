@@ -1,5 +1,5 @@
 #!/bin/sh
-# Tests the netplay transport from a build of this folder (CMakeLists.txt): the packets' and join codes'
+# Tests the netplay transport from a build of this folder (CMakeLists.txt): the packets', join codes' and log lines'
 # tests, then matches between copies of netplay_probe over loopback (2 players; 3 with 20% of packets
 # lost once the match starts, which also tests the host passing inputs on; 3 and 4 with two players on
 # the host or on a joiner, also lossy; a joiner with more players than ports left, which must be
@@ -27,6 +27,7 @@ failed=0
 "$bin/turn_credentials_test" || failed=1
 "$bin/lan_packets_test" || failed=1
 "$bin/stun_test" || failed=1
+"$bin/log_text_test" || failed=1
 
 # The join code a host printed in <file> (its key is random), once it has.
 code_of() {

@@ -92,6 +92,9 @@ FetchContent_MakeAvailable(GameNetworkingSockets)
 add_library(conker_netplay_net STATIC session.cpp signalling.cpp lan.cpp connection_test.cpp)
 target_link_libraries(conker_netplay_net PUBLIC conker_netplay_packets conker_netplay_stun GameNetworkingSockets::static)
 
+add_executable(log_text_test log_text_test.cpp)
+target_link_libraries(log_text_test PRIVATE conker_netplay_net)
+
 add_executable(netplay_probe probe.cpp)
 target_link_libraries(netplay_probe PRIVATE conker_netplay_net)
 

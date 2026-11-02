@@ -9,6 +9,7 @@
 #include <chrono>
 #include <thread>
 #include <cstdio>
+#include <cctype>
 #include <cstring>
 
 #if defined(_WIN32)
@@ -145,7 +146,7 @@ namespace conker::netplay {
         }
 
         void debug_output(ESteamNetworkingSocketsDebugOutputType, const char* message) {
-            std::fprintf(stderr, "[netplay] %s\n", message);
+            std::fprintf(stderr, "[netplay] %s\n", netplay::without_addresses(message).c_str());
         }
 
         // The reason a connection was closed for: ours if the peer gave one, otherwise the library's.
@@ -533,6 +534,49 @@ namespace conker::netplay {
         return out;
     }
 
+    std::string without_addresses(const std::string& text) {
+        // Each run of the characters an address is made of, if the library reads it as one: IPv4 (three dots),
+        // or IPv6 (a "::" or seven colons), with a port or not. A time (12:34:56) or a C++ name (A::b) isn't.
+        const auto in_address = [](char c) {
+            return std::isxdigit((unsigned char)c) || c == '.' || c == ':' || c == '%' || c == '[' || c == ']';
+        };
+        std::string out;
+        size_t i = 0;
+        while (i < text.size()) {
+            // Nor a single colon starting the run: the library names a peer by "ip:<address>".
+            if (!in_address(text[i]) || (text[i] == ':' && (i + 1 == text.size() || text[i + 1] != ':'))) {
+                out += text[i++];
+                continue;
+            }
+            size_t j = i;
+            while (j < text.size() && in_address(text[j])) j++;
+            const std::string run = text.substr(i, j - i);
+            // A sentence's full stop or colon after it isn't the address's, nor a bracket closing around it.
+            size_t end = run.size();
+            while (end > 0 && (run[end - 1] == '.' || run[end - 1] == ':' ||
+                (run[end - 1] == ']' && std::count(run.begin(), run.begin() + end, ']') >
+                    std::count(run.begin(), run.begin() + end, '[')))) {
+                end--;
+            }
+            const std::string candidate = run.substr(0, end);
+            const bool ipv4 = std::count(candidate.begin(), candidate.end(), '.') >= 3;
+            const bool ipv6 = candidate.find("::") != std::string::npos ||
+                std::count(candidate.begin(), candidate.end(), ':') >= 7;
+            // A word on its own, not the end and start of a name's (Base::Connection).
+            const auto in_word = [](char c) { return std::isalnum((unsigned char)c) || c == '_'; };
+            const bool alone = (i == 0 || !in_word(text[i - 1])) && (j == text.size() || !in_word(text[j]));
+            SteamNetworkingIPAddr address;
+            if (alone && (ipv4 || ipv6) && address.ParseString(candidate.c_str())) {
+                out += "<address>" + run.substr(end);
+            }
+            else {
+                out += run;
+            }
+            i = j;
+        }
+        return out;
+    }
+
     std::string Session::route(int port) const {
         for (const Peer& peer : peers) {
             if (is_host ? (peer.ports & (1u << port)) == 0 : port != 0) {
@@ -542,13 +586,9 @@ namespace conker::netplay {
             if (!SteamNetworkingSockets()->GetConnectionInfo(peer.connection, &info)) {
                 return "?";
             }
-            // Through ICE, not the address (the library gives the peer's own on a direct route: not for logs).
-            if (signaller != nullptr || info.m_addrRemote.IsIPv6AllZeros()) {
-                return info.m_szConnectionDescription;
-            }
-            char address[SteamNetworkingIPAddr::k_cchMaxString];
-            info.m_addrRemote.ToString(address, sizeof(address), true);
-            return std::string(address) + " (" + info.m_szConnectionDescription + ")";
+            // Never the peer's address (for logs, which get posted): on a direct route the library's
+            // description holds it ("UDP <address>").
+            return netplay::without_addresses(info.m_szConnectionDescription);
         }
         return "?";
     }

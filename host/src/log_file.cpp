@@ -97,3 +97,7 @@ void conker::log_file::check() {
     reopen(nowhere, "wb", stderr);
     logging = false;
 }
+
+bool conker::log_file::active() {
+    return logging;
+}

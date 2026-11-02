@@ -448,6 +448,9 @@ namespace conker {
         void start(const std::filesystem::path& folder, const std::filesystem::path& otherwise);
         // As the frontend updates: a log past its most stops there.
         void check();
+        // Whether stdout and stderr go to conker.log: a file players post with bug reports, so nothing that
+        // lets someone in (a join or room code) or says where a player is (an address) is printed then.
+        bool active();
     }
     namespace notices {
         // From any thread. With replace, it's shown at once in place of what's shown (and of an earlier one to

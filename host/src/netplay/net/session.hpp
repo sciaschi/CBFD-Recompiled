@@ -48,6 +48,10 @@
 
 namespace conker::netplay {
     class Signaller;
+
+    // `text` with every IP address (and its port) in it made "<address>": for the log, which players post
+    // with bug reports. The library's messages name a direct connection by the peer's address.
+    std::string without_addresses(const std::string& text);
 }
 
 namespace conker::netplay {
@@ -196,8 +200,8 @@ namespace conker::netplay {
         // another machine's port): the host's to every joiner's ports; a joiner's to the host, on port 0 (it
         // can't tell which other ports are the host's, and the other joiners' pads come through the host).
         std::array<int, max_players> round_trips_by_port() const;
-        // How the connection to `port`'s machine goes, for the log: the address this end sends to (not through
-        // ICE, where it may be the peer's own) and the library's description. A joiner's only peer is the host.
+        // How the connection to `port`'s machine goes, for the log: the library's description, without the
+        // peer's address (without_addresses). A joiner's only peer is the host.
         std::string route(int port) const;
         // Host: the joiners in (machines, not players: one may have several ports).
         int joiners() const;

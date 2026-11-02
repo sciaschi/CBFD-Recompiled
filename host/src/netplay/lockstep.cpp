@@ -3225,7 +3225,9 @@ bool conker::lockstep::begin(const netplay::Hello& me, std::string& error) {
             server_option.c_str(), local_option);
     }
     else if (!join_where.empty() && signaller != nullptr) {
-        std::printf("[netplay] joining room %s on %s\n", join_where.c_str(), server_option.c_str());
+        // By its name, not its code: a private room's code lets anyone in, and the log may be posted.
+        const std::optional<uint64_t> room = netplay::decode_room_code(join_where);
+        std::printf("[netplay] joining room %s on %s\n", room ? netplay::room_name(*room).c_str() : "?", server_option.c_str());
     }
     else if (hosting) {
         std::printf("[netplay] hosting a match of %d on UDP port %d, %d of them here: waiting for the players\n",
@@ -3236,7 +3238,14 @@ bool conker::lockstep::begin(const netplay::Hello& me, std::string& error) {
                 std::fprintf(stderr, "[netplay] %s isn't an address: no join code\n", host_address.c_str());
             }
             else {
-                std::printf("[netplay] join code %s (the others join with it: it holds the match's key)\n", code.c_str());
+                // Not into conker.log, which players post with bug reports: the code holds this computer's address
+                // and the match's key. The menu shows it; a terminal (or a test's redirected output) gets it here.
+                if (conker::log_file::active()) {
+                    std::printf("[netplay] join code made (it holds this computer's address and the match's key: not logged)\n");
+                }
+                else {
+                    std::printf("[netplay] join code %s (the others join with it: it holds the match's key)\n", code.c_str());
+                }
                 std::fflush(stdout);
             }
         }
@@ -3698,8 +3707,15 @@ conker::lockstep::Progress conker::lockstep::poll_connect(std::string& status) {
     if (rendezvous == Rendezvous::creating && signaller->room() != 0) {
         rendezvous = Rendezvous::none;
         room_text = netplay::encode_room_code(signaller->room());
-        std::printf("[netplay] room code %s (the others join with it%s): waiting for the players\n", room_text.c_str(),
-            public_option ? (", or find it as " + netplay::room_name(signaller->room()) + " in the public list").c_str() : "");
+        // A private room's code lets anyone in: not into conker.log (players post it), as join codes.
+        if (conker::log_file::active() && !public_option) {
+            std::printf("[netplay] room %s made (its code lets anyone in: not logged): waiting for the players\n",
+                netplay::room_name(signaller->room()).c_str());
+        }
+        else {
+            std::printf("[netplay] room code %s (the others join with it%s): waiting for the players\n", room_text.c_str(),
+                public_option ? (", or find it as " + netplay::room_name(signaller->room()) + " in the public list").c_str() : "");
+        }
         std::fflush(stdout);
         list_room();
     }
