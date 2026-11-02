@@ -318,6 +318,99 @@ namespace {
         });
     }
 
+    // The launcher's leaves, drifting in from the sides: where (percent of the window from its own side,
+    // and from the top), how tall (dp), turned how far, which and how faint. Each is a picture of its
+    // own, so a window of any shape keeps them leaf-shaped (recompui stretches an SVG to its box).
+    struct LauncherLeaf {
+        bool right;
+        float side, top, height, degrees;
+        const char* picture;
+        float opacity;
+    };
+    constexpr LauncherLeaf launcher_leaves[] = {
+        { false, 5.5f, 11.0f, 112.0f, -30.0f, "launcher/leaf_orange.svg", 0.55f },
+        { false, 14.0f, 26.0f, 77.0f, 25.0f, "launcher/leaf_rust.svg", 0.45f },
+        { false, 3.5f, 47.0f, 91.0f, 70.0f, "launcher/leaf_amber.svg", 0.35f },
+        { false, 9.5f, 73.0f, 126.0f, -60.0f, "launcher/leaf_orange.svg", 0.4f },
+        { false, 26.0f, 5.0f, 56.0f, 110.0f, "launcher/leaf_amber.svg", 0.25f },
+        { true, 6.0f, 14.0f, 105.0f, 40.0f, "launcher/leaf_amber.svg", 0.5f },
+        { true, 13.0f, 34.0f, 70.0f, -20.0f, "launcher/leaf_orange.svg", 0.4f },
+        { true, 3.0f, 54.0f, 98.0f, -75.0f, "launcher/leaf_rust.svg", 0.45f },
+        { true, 9.0f, 76.0f, 119.0f, 15.0f, "launcher/leaf_orange.svg", 0.35f },
+        { true, 25.0f, 4.0f, 63.0f, -120.0f, "launcher/leaf_orange.svg", 0.25f },
+    };
+
+    // The launcher's look, in the game's autumn colours: a backdrop of warm browns
+    // (assets/launcher/background.svg, stretched over any window shape) with leaves, a title of
+    // its own in place of recompui's and the options as pills, the focused one ringed in orange.
+    void style_launcher(recompui::LauncherMenu* menu, recompui::GameOptionsMenu* options) {
+        using namespace recompui;
+        const Color cream{ 255, 233, 199, 255 };
+        const Color cream_dim{ 236, 210, 176, 190 };
+        const Color orange{ 240, 140, 40, 255 };
+        const Color pill{ 70, 30, 10, 200 };
+        ContextId context = get_current_context();
+
+        Svg* backdrop = context.create_element<Svg>(menu->get_background_wrapper(), "launcher/background.svg");
+        backdrop->set_position(Position::Absolute);
+        backdrop->set_inset(0.0f);
+        backdrop->set_width(100.0f, Unit::Percent);
+        backdrop->set_height(100.0f, Unit::Percent);
+        for (const LauncherLeaf& leaf : launcher_leaves) {
+            Svg* picture = context.create_element<Svg>(menu->get_background_wrapper(), leaf.picture);
+            picture->set_position(Position::Absolute);
+            if (leaf.right) {
+                picture->set_right(leaf.side, Unit::Percent);
+            }
+            else {
+                picture->set_left(leaf.side, Unit::Percent);
+            }
+            picture->set_top(leaf.top, Unit::Percent);
+            picture->set_height(leaf.height);
+            picture->set_width(leaf.height * 72.0f / 88.0f); // leaf_*.svg's shape
+            picture->set_rotation(leaf.degrees);
+            picture->set_opacity(leaf.opacity);
+        }
+
+        menu->remove_default_title();
+        Element* title = context.create_element<Element>(menu, 0, "div", false);
+        title->set_position(Position::Absolute);
+        title->set_top(26.0f, Unit::Percent);
+        title->set_left(50.0f, Unit::Percent);
+        title->set_translate_2D(-50.0f, -50.0f, Unit::Percent);
+        title->set_display(Display::Flex);
+        title->set_flex_direction(FlexDirection::Column);
+        title->set_align_items(AlignItems::Center);
+        title->set_gap(6.0f);
+        Label* name = context.create_element<Label>(title, "CONKER'S BAD FUR DAY", theme::Typography::Header1);
+        name->set_color(cream);
+        name->set_white_space(WhiteSpace::Nowrap);
+        Label* recompiled = context.create_element<Label>(title, "RECOMPILED", theme::Typography::LabelMD);
+        recompiled->set_color(orange);
+        recompiled->set_letter_spacing(14.0f);
+
+        options->set_gap(10.0f);
+        for (GameOption* option : options->get_options()) {
+            // (A fixed width: recompui's layout doesn't fit a button's border to its text when it's auto.)
+            option->set_width(440.0f);
+            option->set_padding_top(10.0f);
+            option->set_padding_bottom(10.0f);
+            option->set_padding_left(36.0f);
+            option->set_padding_right(36.0f);
+            option->set_border_radius(40.0f);
+            option->set_border_width(2.0f);
+            option->set_border_color(Color{ 0, 0, 0, 0 });
+            option->set_color(cream_dim);
+            option->get_label()->set_font_size(28.0f);
+            option->hover_style.set_background_color(Color{ 240, 140, 40, 40 });
+            option->hover_style.set_color(cream);
+            // (Its text pulses between the theme's orange and cream while focused: GameOption's update.)
+            option->focus_style.set_background_color(pill);
+            option->focus_style.set_border_color(orange);
+            option->apply_styles();
+        }
+    }
+
     // The launcher's options: RecompFrontend's usual ones, with Version and Add ROM after Start Game.
     void init_launcher(recompui::LauncherMenu* menu) {
         const recomp::GameEntry& game = supported_games[0];
@@ -350,6 +443,7 @@ namespace {
         options->add_settings_option();
         options->add_mods_option();
         options->add_exit_option();
+        style_launcher(menu, options);
         show_version();
     }
 
