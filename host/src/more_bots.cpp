@@ -148,6 +148,11 @@ namespace {
         if (rank <= (uint32_t)game_most) {
             return name;
         }
+        // Only into the page the 8MB layout keeps for them (a rank past 12 needs it today, but not if the
+        // limits change).
+        if ((uint32_t)MEM_W(0, (gpr)(int32_t)heap_end) != rank_names) {
+            return name;
+        }
         const uint32_t shown = std::min<uint32_t>(rank, most);
         const gpr ours = (gpr)(int32_t)(rank_names + (shown - 13) * 4);
         MEM_B(0, ours) = (int8_t)('0' + shown / 10);
