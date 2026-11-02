@@ -290,6 +290,9 @@ the match on their own screen. Everyone needs the same build and the same ROM, w
   default, so nobody sees anyone's address.
 - **The waiting room:** players mark themselves Ready and the host starts; the host can kick a player,
   and anyone can block one. Several players can play on one computer, each with their own controller.
+  Others see you by a name made from a random player id, kept in `netplay.json`. It stays the same in
+  every match and on every server (that's how blocking and coming back to your place work), so players
+  who meet you again can tell it's you. **New name** (Settings) makes a new id.
 - **During a match:** players can leave and come back, and new players or spectators can join a match
   under way. If one game drifts from the host's (a desync), the host sends its game and the match goes on.
   Each player gets their own input delay, sized for their connection; a computer that falls behind
@@ -299,6 +302,7 @@ the match on their own screen. Everyone needs the same build and the same ROM, w
 
 Each run writes `conker.log` next to the game (in your user folder on macOS, or where the game's folder
 can't be written to), and keeps the run before as `conker.prev.log`: attach them to netplay reports.
+They don't hold join codes, private room codes or other players' addresses.
 
 ## ROM hacks
 

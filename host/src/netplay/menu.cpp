@@ -94,7 +94,7 @@ namespace {
         bool directly = true;       // without a server (there's none by default)
         int port = default_port;
         std::string address;
-        bool lan_visible = true;
+        bool lan_visible = false;   // anyone on the network could join: the host chooses it
         int local_players = 1;
         bool spectators = true;
     };
@@ -306,6 +306,7 @@ namespace {
         recompui::Radio* here_radio = nullptr;     // Players on this computer
         recompui::Element* rejoin_row = nullptr;   // Rejoin last match, while there's one to come back to
         recompui::Label* rejoin_label = nullptr;
+        recompui::Label* name_label = nullptr;     // Settings: the name the others see (Your name)
         recompui::Label* clipboard_hint = nullptr; // the code field was filled from the clipboard
         std::string clipboard_code;                // what it was filled with (each code on the clipboard is offered once)
         std::string copied_code;                   // a code this menu put on the clipboard (Copy): not offered back
@@ -520,6 +521,26 @@ namespace {
             about += minutes < 1 ? ", started just now" : minutes == 1 ? ", started a minute ago" :
                 ", started " + std::to_string(minutes) + " minutes ago";
             rejoin_label->set_text(about);
+        }
+
+        // New name: a new player id, so the others (and their block lists) can't link this player to the matches
+        // before. The match joined last goes with the old one: the host gives a place back by the id.
+        void on_new_name() {
+            // Not while connecting: lockstep has the id (begin, set_identity).
+            if (state != State::idle) {
+                return;
+            }
+            uint64_t player = 0;
+            if (!conker::netplay::random_key(player) || player == 0) {
+                set_state(State::idle, "Couldn't make a new name: no random source.");
+                return;
+            }
+            settings.player = player;
+            save();
+            remember_match("", 1);
+            show_rejoin();
+            name_label->set_text(conker::netplay::player_name(player));
+            set_state(State::idle, "Your new name: " + conker::netplay::player_name(player) + ".");
         }
 
         void on_rejoin() {
@@ -1500,6 +1521,18 @@ namespace {
             display_radio->add_index_changed_callback([](uint32_t index) { conker::netplay_view::set_mine_only(index == 1); });
             text(display, "My view only fills the window with your view, unless the host's Screens choose it for everyone.",
                 Typography::Body, color::TextDim);
+            // The name the others see, made from this player's id, and a new one.
+            recompui::Element* identity = column(setup, 8.0f);
+            recompui::Element* identity_row = row(identity);
+            text(identity_row, "Your name", Typography::LabelMD);
+            name_label = text(identity_row, conker::netplay::player_name(settings.player), Typography::Body);
+            recompui::Button* new_name = context.create_element<recompui::Button>(identity_row, "New name",
+                recompui::ButtonStyle::Tertiary);
+            new_name->set_white_space(recompui::WhiteSpace::Nowrap);
+            new_name->add_pressed_callback([this]() { on_new_name(); });
+            text(identity, "Others see this name, made from your player id, in every match and on every server, so players "
+                "who meet you again (or blocked you) know you. A new name is a new id: nobody can tell it's you, but "
+                "Rejoin last match no longer gets your place back.", Typography::Body, color::TextDim);
 
             tabs->set_change_tab_callback([this](int index) {
                 join_section->set_display(index == 0 ? recompui::Display::Flex : recompui::Display::None);
