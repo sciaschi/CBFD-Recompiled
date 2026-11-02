@@ -195,6 +195,8 @@ namespace {
 }
 
 int main(int argc, char** argv) {
+    // A test tool: its output keeps the library's addresses, for the checks of which a peer was told.
+    conker::netplay::keep_addresses_in_log(true);
     if (argc == 4 && std::strcmp(argv[1], "code") == 0) {
         const std::string code = join_code_for(argv[2], std::strtoull(argv[3], nullptr, 16));
         if (code.empty()) {

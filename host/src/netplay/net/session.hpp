@@ -52,6 +52,9 @@ namespace conker::netplay {
     // `text` with every IP address (and its port) in it made "<address>": for the log, which players post
     // with bug reports. The library's messages name a direct connection by the peer's address.
     std::string without_addresses(const std::string& text);
+    // Whether the library's messages keep their addresses (false by default): netplay_probe's, for the tests
+    // that check which addresses a peer was told (tools/netplay/server/test.sh). Before the first Session.
+    void keep_addresses_in_log(bool keep);
 }
 
 namespace conker::netplay {
