@@ -280,9 +280,20 @@ namespace conker {
         // The Mouse: Turn the Camera setting: whether the mouse turns the third-person camera
         // (mouse_camera.cpp).
         bool mouse_turns_camera();
-        // The Right Stick: Free Camera setting (issue #65), in single player: whether the right stick
-        // turns the third-person camera (mouse_camera.cpp) instead of pressing the C-buttons.
-        bool stick_free_camera();
+        // The Right Stick: Free Camera setting (issue #65), in single player: whether a player's (0 to 3) right
+        // stick turns their third-person camera (mouse_camera.cpp) instead of pressing the C-buttons. Player 1's
+        // is the option; players 2-4's are set on the Controls tab (issue #160), as is Swap Sticks.
+        bool stick_free_camera(int player = 0);
+        void set_stick_free_camera(int player, bool on);
+        // A player's Aiming: Swap Sticks setting, and setting it (also for the controller presets that go with
+        // it, conker_config.cpp).
+        bool swap_sticks_setting(int player);
+        void set_swap_sticks(int player, bool on);
+        // The Controls tab's toggles of both for the player picked (conker_config.cpp, before the tab is made).
+        void add_player_toggles();
+        // Turns the mouse camera on (Mouse: Sensitivity 50 if it was 0, and Mouse: Turn the Camera), for the
+        // keyboard's Standard preset, which has Z and R on the mouse buttons (conker_config.cpp).
+        void turn_on_mouse_camera();
         // Aiming: Swap Sticks (issue #84): whether a player (0 to 3) is aiming now (either aiming mode
         // ran for their camera in the last few frames) with the setting on, so their controller's sticks
         // are swapped (frontend.cpp): the right stick aims and the left moves. Not with recompinput's own
@@ -323,6 +334,15 @@ namespace conker {
     // The Quit prompt's Return to Launcher (main.cpp): quits the game, then starts the program again at the
     // launcher.
     void return_to_launcher();
+
+    // cheat_codes.cpp: General: Remember Cheat Codes (issue #166), the game's cheat codes kept on from one time it's
+    // played to the next.
+    namespace cheat_codes {
+        // conker_config.cpp: the option, on the General tab.
+        void add_options(recomp::config::Config& config);
+        // From the game thread, as the game starts a frame's display list: the codes entered are kept.
+        void game_frame(uint8_t* rdram);
+    }
 
     // sound_volumes.cpp: the Sound tab's Music, Sound Effects and Speech volumes, and Sound Mode.
     namespace sound_volumes {
@@ -527,10 +547,10 @@ namespace conker {
         bool normal_camera();
         // The same for a player's camera while the harness is used (each player's orbit).
         bool normal_camera_of(int player);
-        // Whether the right stick turned the orbit last frame's camera update could run (the setting
-        // on, the normal camera, not R-Look or aiming): the controller's input then leaves the right
+        // Whether a player's (0 to 3) right stick turned their orbit last frame's camera update could run (their
+        // setting on, the normal camera, not R-Look or aiming): the controller's input then leaves the right
         // stick off the C-buttons (frontend.cpp). Safe from any thread.
-        bool stick_turns_camera();
+        bool stick_turns_camera(int player = 0);
         // The scroll wheel's notches since this was last called (netplay/motion.cpp, from the input thread).
         int take_wheel_notches();
         // For save states (host_state.cpp): every orbit, which writes the camera's eye.
