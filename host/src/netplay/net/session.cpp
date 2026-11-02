@@ -145,8 +145,10 @@ namespace conker::netplay {
             return duration<double>(steady_clock::now().time_since_epoch()).count();
         }
 
+        bool addresses_kept = false;    // keep_addresses_in_log
+
         void debug_output(ESteamNetworkingSocketsDebugOutputType, const char* message) {
-            std::fprintf(stderr, "[netplay] %s\n", netplay::without_addresses(message).c_str());
+            std::fprintf(stderr, "[netplay] %s\n", addresses_kept ? message : netplay::without_addresses(message).c_str());
         }
 
         // The reason a connection was closed for: ours if the peer gave one, otherwise the library's.
@@ -532,6 +534,10 @@ namespace conker::netplay {
             }
         }
         return out;
+    }
+
+    void keep_addresses_in_log(bool keep) {
+        addresses_kept = keep;
     }
 
     std::string without_addresses(const std::string& text) {
