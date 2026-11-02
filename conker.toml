@@ -563,6 +563,18 @@ func = "func_15180580"
 before_vram = 0x151814F4
 text = "{ extern void conker_iris_end(uint8_t*, recomp_context*); conker_iris_end(rdram, ctx); }"
 
+# Widescreen: a split-screen view's tint (the fade after its wipe closes) is drawn as wide as the view
+# (host/src/widescreen.cpp).
+[[patches.hook]]
+func = "func_1517F08C"
+before_vram = 0x1517F08C
+text = "{ extern void conker_view_tint_begin(uint8_t*, recomp_context*); conker_view_tint_begin(rdram, ctx); }"
+
+[[patches.hook]]
+func = "func_1517F08C"
+before_vram = 0x1517F398
+text = "{ extern void conker_view_tint_end(uint8_t*, recomp_context*); conker_view_tint_end(rdram, ctx); }"
+
 # The look mode (hold R): gyro and mouse, and smooth or direct response for each input
 # (host/src/look_aim.cpp). The first three can turn the stick's axes around, the fourth is
 # before the pitch clamp so the game's limits apply to the mouse and gyro too, and the last is
