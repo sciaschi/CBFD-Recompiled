@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstdio>
 #include <fstream>
 #include <mutex>
@@ -148,6 +149,19 @@ namespace {
         return 1;
     }
 
+    // A mouse button or the wheel used in play (the game running, its menu closed) since the main thread last
+    // looked, for the mouse's first use (look_aim.cpp). Watched as it's announced, before the click is handled, so
+    // the click that closes the menu doesn't count. Touches sent as the mouse don't.
+    std::atomic<bool> mouse_used_in_play = false;
+    int SDLCALL watch_mouse(void*, SDL_Event* event) {
+        const bool used = (event->type == SDL_MOUSEBUTTONDOWN && event->button.which != SDL_TOUCH_MOUSEID)
+            || (event->type == SDL_MOUSEWHEEL && event->wheel.which != SDL_TOUCH_MOUSEID);
+        if (used && ultramodern::is_game_started() && !recompinput::game_input_disabled()) {
+            mouse_used_in_play = true;
+        }
+        return 1;
+    }
+
     void* create_gfx() {
         SDL_SetHint(SDL_HINT_WINDOWS_DPI_AWARENESS, "permonitorv2");
         SDL_SetHint(SDL_HINT_GAMECONTROLLER_USE_BUTTON_LABELS, "0");
@@ -187,6 +201,7 @@ namespace {
             std::printf("[frontend] controller mappings: %d added\n", controller_mappings);
         }
         SDL_AddEventWatch(watch_controllers, nullptr);
+        SDL_AddEventWatch(watch_mouse, nullptr);
         // The controllers connected at start were announced before the watch.
         for (int index = 0; index < SDL_NumJoysticks(); index++) {
             print_controller(index);
@@ -238,6 +253,7 @@ namespace {
 
     void update_gfx(void*) {
         recompinput::handle_events();
+        conker::look_aim::update_mouse_first_use(mouse_used_in_play.exchange(false));
         conker::texture_packs::update_unpacking();
         conker::fps_counter::update();
         conker::notices::update();
