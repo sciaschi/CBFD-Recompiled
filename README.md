@@ -63,6 +63,8 @@ yourself instead, read on.
   other replacements.
 - Save states: save anywhere with F5 and load with F7, in nine slots
   ([how to use them, and how they work](docs/save-states.md)).
+- Netplay (built with the CMake option `CONKER_NETPLAY`, off by default): online
+  multiplayer from the launcher's **Netplay** menu. See [Netplay](#netplay).
 
 ## Status
 
@@ -79,7 +81,9 @@ The game is playable, and has been played through to the end. Known issues:
 
 If the game crashes on Windows, a report is written to `crash.log` next to the
 executable and shown in a message box. On Linux and macOS, the crash report is printed
-to the terminal. Please include it when reporting a problem.
+to the terminal, or, started from the desktop, to `conker.log` next to the game (in your user
+folder on macOS, or where the game's folder can't be written to); the run before is kept as
+`conker.prev.log`. Please include it when reporting a problem.
 
 ## What you need to build it
 
@@ -264,14 +268,64 @@ the settings' Quit prompt: the program restarts at the launcher.
   [docs/save-states.md](docs/save-states.md). **Save State Notifications** on the
   General tab turns off the line in the corner saying a state was saved or loaded,
   or another slot picked (one saying it couldn't be still shows).
-- Default keyboard controls: move with WASD, A = Space, B = Left Shift,
-  Z = Q, L = E, R = R, Start = Enter, C buttons = arrow keys, D-pad = IJKL.
-  Everything can be remapped in Controls.
+- Default controller controls: A = A, B = B, Z = either trigger, L = LB,
+  R = RB, C buttons = right stick (C-Up on its click too), in the menus A accepts
+  and B goes back.
+- Default keyboard controls: move with WASD, A = Space, B = E, Z = left click,
+  R = right click, L = Enter (skips cutscenes), Start = Tab, C buttons = IJKL,
+  D-pad = arrow keys (up and down also on the mouse wheel). Everything can be
+  remapped in Controls, and **Reset to defaults** there brings these back for a
+  profile made before they changed.
+- **Presets and profiles** (Controls tab): **Load preset** puts a ready-made
+  layout in the profile: for controllers **Standard** (the defaults), **Modern**
+  (LT = R to aim, RT = Z, and Aiming: Swap Sticks on) and **Old Skool** (the
+  N64-style layout from before, B on X); for the keyboard **Standard** (which
+  also turns the mouse camera on, at Mouse: Sensitivity 50 if it was off) and
+  **Classic** (the old keyboard layout). **New profile** makes your own, a copy
+  of the one in use that you can name and remap; the **Profile** list at the top
+  picks which one you play with, for the controller and the keyboard each.
+- **Players' controllers** (Controls tab, issue #160): controllers take players
+  1-4 in the order they first press a button. **Assign controllers** picks the
+  order instead (each player presses a button on theirs, in turn), until the game
+  is closed. The **Player** list beside the profile picks each player's own
+  controller profile, or **Same as Player 1** (the default). The keyboard and
+  mouse are always player 1's. Beside the keyboard switch at the bottom, **Swap
+  Sticks** and **Free Camera** are the picked player's own Aiming: Swap Sticks
+  and Right Stick: Free Camera (player 1's are the Camera tab's), so in split
+  screen each player can have them on or off; the **Modern** preset turns Swap
+  Sticks on for the player it's loaded for.
 - N64 pads and adapters for real N64 controllers (raphnet-tech's, Mayflash,
   Hyperkin, the NSO and 8BitDo 64 controllers) are mapped from
   `assets/controllerdb.txt`, with the C buttons as the right stick. A controller
   SDL doesn't know can be given a mapping in the `SDL_GAMECONTROLLERCONFIG`
   environment variable, which takes precedence.
+
+## Netplay
+
+Built with `-DCONKER_NETPLAY=ON` (see [tools/netplay/README.md](tools/netplay/README.md) for what it
+needs), the launcher has a **Netplay** menu: every player runs the game on their own computer and sees
+the match on their own screen. Everyone needs the same build and the same ROM, with no mods on.
+
+- **Hosting:** by a join code (your address and a forwarded UDP port), or visible to games on the same
+  network with no code at all. With a netplay server set (Settings; there's none by default, and anyone
+  can run one: [tools/netplay/server](tools/netplay/server/README.md)), also through a room code with no
+  port to forward, a public room list and Quick Match. Matches through a server go through its relay by
+  default, so nobody sees anyone's address.
+- **The waiting room:** players mark themselves Ready and the host starts; the host can kick a player,
+  and anyone can block one. Several players can play on one computer, each with their own controller.
+  Others see you by a name made from a random player id, kept in `netplay.json`. It stays the same in
+  every match and on every server (that's how blocking and coming back to your place work), so players
+  who meet you again can tell it's you. **New name** (Settings) makes a new id.
+- **During a match:** players can leave and come back, and new players or spectators can join a match
+  under way. If one game drifts from the host's (a desync), the host sends its game and the match goes on.
+  Each player gets their own input delay, sized for their connection; a computer that falls behind
+  catches up, and one whose inputs stop is let go of a while and comes back by itself. **Rollback** (the
+  host's choice, on by default) hides lag by predicting the others' inputs and correcting them.
+- **Screens:** by default each player sees only their own view, full screen (the host decides).
+
+Each run writes `conker.log` next to the game (in your user folder on macOS, or where the game's folder
+can't be written to), and keeps the run before as `conker.prev.log`: attach them to netplay reports.
+They don't hold join codes, private room codes or other players' addresses.
 
 ## ROM hacks
 

@@ -93,10 +93,10 @@ if finish "was the last: quitting" $names; then
         [ -n "$RECORD" ] && echo "$(date +%Y-%m-%dT%H:%M:%S) $commit $name $waits" >> "$RECORD"
     done
     # changes <match> <up|down>: the input delay the match ended with is higher (lower) than it started with,
-    # and the joiner made the same changes as the host (each "becomes <d> from read <r>").
+    # and the joiner made the same changes as the host (each "<ports> becomes <d> from read <r>").
     changes() {
-        host_made=$(sed -n 's/^\[netplay\] read [0-9]*: the input delay becomes \([0-9]*\) from read \([0-9]*\) .*/\1 \2/p' "$OUT/$1-host.out")
-        heard=$(sed -n 's/^\[netplay\] read [0-9]*: the input delay becomes \([0-9]*\) from read \([0-9]*\) .*/\1 \2/p' "$OUT/$1-join.out")
+        host_made=$(sed -n 's/^\[netplay\] read [0-9]*: the input delay of \(.*\) becomes \([0-9]*\) from read \([0-9]*\) .*/\1: \2 \3/p' "$OUT/$1-host.out")
+        heard=$(sed -n 's/^\[netplay\] read [0-9]*: the input delay of \(.*\) becomes \([0-9]*\) from read \([0-9]*\) .*/\1: \2 \3/p' "$OUT/$1-join.out")
         was=$(sed -n 's/^\[netplay\] the match starts: .*input delay \([0-9]*\) reads.*/\1/p' "$OUT/$1-host.out")
         now=$(sed -n 's/^\[netplay\] waits: .*; input delay \([0-9]*\),.*/\1/p' "$OUT/$1-host.out")
         if [ -z "$host_made" ] || [ "$host_made" != "$heard" ]; then
@@ -107,7 +107,7 @@ if finish "was the last: quitting" $names; then
             echo "  $1: the input delay went from ${was:-?} to ${now:-?}, not $2"
             return 1
         fi
-        echo "  $1: the input delay went from $was to $now ($(echo "$host_made" | sed 's/\(.*\) \(.*\)/\1 at read \2/' | paste -sd, - | sed 's/,/, /g')), the same on both"
+        echo "  $1: the input delay went from $was to $now ($(echo "$host_made" | sed 's/\(.*\) \([0-9]*\)$/\1 at read \2/' | paste -sd, - | sed 's/,/, /g')), the same on both"
     }
     changes lag-change up || failed=1
     changes lag-drop down || failed=1

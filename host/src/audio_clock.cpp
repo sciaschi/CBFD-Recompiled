@@ -49,7 +49,8 @@ namespace {
             const uint64_t start = ends.empty() ? now : ends.back();
             ends.push_back(start + (uint64_t)(sample_count / channels) * ticks_per_second);
         }
-        if (device.queue_samples != nullptr) {
+        // Not heard while replaying (a rollback playing reads again): those reads' sound was played already.
+        if (device.queue_samples != nullptr && !ultramodern::timeline::replaying()) {
             device.queue_samples(samples, sample_count);
         }
     }

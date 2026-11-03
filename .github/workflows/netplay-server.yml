@@ -1,0 +1,110 @@
+# Builds the netplay signalling server's Docker image (tools/netplay/server/Dockerfile) for amd64 and arm64,
+# each on its own kind of runner. From the default branch it also publishes them to GitHub's container
+# registry as ghcr.io/<owner>/conker-netplay-server (:latest and :<commit>, both architectures under one
+# name), for tools/netplay/server/compose.yaml to pull. From other branches it only builds.
+#
+# Like the other workflows, it uses no third-party actions: git and the docker on GitHub's runners.
+name: netplay-server
+
+on:
+  push:
+    branches: ['**']
+    # Only what goes into the image: the server, its packets, how they're built (CMakeLists.txt's
+    # conker_netplay_signal). A game update that doesn't touch these needs no new server (the game's own
+    # packets, packets.cpp and lan_packets.cpp, aren't built into it; packets.hpp's constants are).
+    paths:
+      - 'host/src/netplay/net/signal_server.cpp'
+      - 'host/src/netplay/net/signal_packets.*'
+      - 'host/src/netplay/net/signal_packets_test.cpp'
+      - 'host/src/netplay/net/join_code.*'
+      - 'host/src/netplay/net/turn_credentials*'
+      - 'host/src/netplay/net/server_status*'
+      - 'host/src/netplay/net/packets.hpp'
+      - 'host/src/netplay/net/vcpkg.*'
+      - 'host/src/netplay/net/CMakeLists.txt'
+      - 'tools/netplay/server/Dockerfile'
+      - 'tools/netplay/server/Dockerfile.dockerignore'
+      - '.github/workflows/netplay-server.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: netplay-server-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GIT_TERMINAL_PROMPT: '0'
+  PUBLISH: ${{ github.ref_name == github.event.repository.default_branch }}
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        run: |
+          git clone -q --no-checkout "https://github.com/$GITHUB_REPOSITORY" .
+          git checkout -q "$GITHUB_SHA"
+
+      - name: Build
+        run: |
+          image="ghcr.io/$(echo "$GITHUB_REPOSITORY_OWNER" | tr 'A-Z' 'a-z')/conker-netplay-server"
+          echo "IMAGE=$image" >> "$GITHUB_ENV"
+          docker build -f tools/netplay/server/Dockerfile \
+            --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
+            --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+            --label "org.opencontainers.image.description=Conker netplay signalling server" \
+            -t "$image:${{ matrix.arch }}-$GITHUB_SHA" .
+
+      # It starts, listens, and stops on SIGTERM as docker stop sends.
+      - name: Smoke test
+        run: |
+          docker run -d --name smoke "$IMAGE:${{ matrix.arch }}-$GITHUB_SHA"
+          sleep 2
+          docker logs smoke | grep -q "listening on UDP port 27100"
+          docker stop -t 5 smoke
+          docker logs smoke | grep -q "stopping"
+          test "$(docker inspect -f '{{.State.ExitCode}}' smoke)" = 0
+          # compose.yaml's net runs nft and ip from this image.
+          docker run --rm --entrypoint nft "$IMAGE:${{ matrix.arch }}-$GITHUB_SHA" --version
+          docker run --rm --entrypoint ip "$IMAGE:${{ matrix.arch }}-$GITHUB_SHA" -V
+          # With a relay to offer, as compose.yaml runs it.
+          docker run -d --name smoke-turn -e TURN_SECRET=smoke-test-secret-0123 "$IMAGE:${{ matrix.arch }}-$GITHUB_SHA" --turn 203.0.113.7:3478
+          sleep 2
+          docker logs smoke-turn | grep -q "offering a TURN relay"
+          docker stop -t 5 smoke-turn
+
+      - name: Publish
+        if: env.PUBLISH == 'true'
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          docker push "$IMAGE:${{ matrix.arch }}-$GITHUB_SHA"
+
+  # Both architectures under :latest and :<commit>.
+  manifest:
+    needs: build
+    if: github.ref_name == github.event.repository.default_branch
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      packages: write
+    steps:
+      - name: Publish
+        run: |
+          image="ghcr.io/$(echo "$GITHUB_REPOSITORY_OWNER" | tr 'A-Z' 'a-z')/conker-netplay-server"
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          for tag in "$GITHUB_SHA" latest; do
+            docker buildx imagetools create -t "$image:$tag" "$image:amd64-$GITHUB_SHA" "$image:arm64-$GITHUB_SHA"
+          done

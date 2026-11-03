@@ -305,6 +305,7 @@ extern "C" void conker_frame_dl_begin(uint8_t* rdram, recomp_context* ctx) {
     conker::look_aim::leap_frame(rdram);
     conker::sound_volumes::game_frame(rdram);
     conker::sound_volumes::sound_mode_frame(rdram, ctx);
+    conker::cheat_codes::game_frame(rdram);
 #if defined(CONKER_RT64)
     conker::local_achievements::game_frame(rdram);
 #endif
@@ -722,6 +723,8 @@ extern "C" void conker_frame_copy_end(uint8_t* rdram, recomp_context* ctx) {
 // the rectangles that touch one side of the frame, but when the circle is wider
 // than the 4:3 frame, the side rectangles are empty and aren't drawn, and the left
 // quarters are cut at 0, so the widened sides show the game through the wipe.
+// In split screen a view that stops short of the frame's sides (2 players' are 30..262 across) is widened too,
+// but its rectangles were cut at its 4:3 sides by its scissor, which RT64 widens only when it spans the frame.
 //
 // The wipe is rewritten into a display list of our own: the black rectangles
 // become RT64's extended ones, with signed coordinates reaching past the frame's
@@ -732,6 +735,9 @@ extern "C" void conker_frame_copy_end(uint8_t* rdram, recomp_context* ctx) {
 // them (it masks addresses to 16 MB) and mods don't load (from 0x81000000).
 namespace {
     constexpr uint32_t g_ex_fillrect_v1 = 0x000003;
+    constexpr uint32_t g_ex_setscissor_v1 = 0x000005;
+    constexpr uint32_t g_ex_pushscissor_v1 = 0x000017;
+    constexpr uint32_t g_ex_popscissor_v1 = 0x000018;
     constexpr uint32_t g_dl_branch = 0xDE010000;
     constexpr uint32_t wide_dl_start = 0x00F00000;
     // A ring of display lists: RT64 has long finished with one when it comes round again.
@@ -794,6 +800,55 @@ namespace {
         put_command(rdram, dl, ((uint32_t)(ulx * 4) << 16) | ((uint32_t)(uly * 4) & 0xFFFF),
             ((uint32_t)(lrx * 4) << 16) | ((uint32_t)(lry * 4) & 0xFFFF));
     }
+
+    // A camera's bounds, with its sides where RT64 draws them. A full-screen camera is clipped to 2..290, and its
+    // sides reach past the frame's edges. A split-screen one's are where RT64 widens them: it widens every view
+    // about the frame's middle, so the 2-player views (30..262) are wider than in 4:3. A side at the frame's
+    // middle (the quarters') stays there.
+    struct WideCamera {
+        int32_t top, bottom, left, right;
+        // A side isn't at the frame's edge and is widened: RT64 doesn't widen the camera's scissor, which only
+        // spans the view, so what's drawn out to that side needs a scissor of its own (put_wide_scissor).
+        bool split_widened;
+    };
+
+    WideCamera wide_camera(uint8_t* rdram, int32_t camera) {
+        const int32_t left = camera_bound(rdram, camera, camera_left);
+        const int32_t right = camera_bound(rdram, camera, camera_right);
+        const int32_t frame_width = MEM_W(0, (gpr)(int32_t)0x800BE620); // D_800BE620
+        const float middle = (float)frame_width * 0.5f;
+        const float ratio = widescreen_ratio();
+        WideCamera wide;
+        wide.top = camera_bound(rdram, camera, camera_top);
+        wide.bottom = camera_bound(rdram, camera, camera_bottom);
+        wide.left = left <= 4 ? left - wide_reach : (int32_t)std::floor(middle + ((float)left - middle) * ratio);
+        wide.right = right >= frame_width - 6 ? right + wide_reach : (int32_t)std::ceil(middle + ((float)right - middle) * ratio);
+        wide.split_widened = (left > 4 && wide.left < left) || (right < frame_width - 6 && wide.right > right);
+        return wide;
+    }
+
+    // A scissor as wide as a split-screen view is drawn (extended, so signed), after a push of the camera's: three
+    // commands. put_pop_scissor brings the camera's back.
+    void put_wide_scissor(uint8_t* rdram, gpr& dl, const WideCamera& wide) {
+        put_command(rdram, dl, (rt64_extended_opcode << 24) | g_ex_pushscissor_v1, 0);
+        put_command(rdram, dl, (rt64_extended_opcode << 24) | g_ex_setscissor_v1, (g_ex_origin_none << 2) | (g_ex_origin_none << 14));
+        put_command(rdram, dl, ((uint32_t)(wide.left * 4) << 16) | ((uint32_t)(wide.top * 4) & 0xFFFF),
+            ((uint32_t)(wide.right * 4) << 16) | ((uint32_t)(wide.bottom * 4) & 0xFFFF));
+    }
+
+    void put_pop_scissor(uint8_t* rdram, gpr& dl) {
+        put_command(rdram, dl, (rt64_extended_opcode << 24) | g_ex_popscissor_v1, 0);
+    }
+
+    // Room in the ring for one of our display lists of that many commands after the enable of RT64's extended GBI,
+    // which it starts with; the game's first command (at `start`) becomes a branch to it. Returns where the rest goes.
+    gpr begin_wide_dl(uint8_t* rdram, gpr start, uint32_t commands) {
+        gpr dl = take_wide_dl((1 + commands) * 8);
+        gpr game_dl = start;
+        put_command(rdram, game_dl, g_dl_branch, (uint32_t)dl & 0x00FFFFFF);
+        put_command(rdram, dl, (rt64_hook_opcode << 24) | rt64_hook_magic, (rt64_hook_op_enable << 28) | rt64_extended_opcode);
+        return dl;
+    }
 }
 
 // At the start of the function: $a0 is where it writes its first command, $a1 the camera.
@@ -822,9 +877,31 @@ extern "C" void conker_iris_end(uint8_t* rdram, recomp_context* ctx) {
     // two G_RDPHALF words each: below right, above left, above right, below left)
     // and the geometry mode's restore. Anything else is left as the game drew it.
     constexpr size_t setup_count = 8;
-    if (count < setup_count || cmds[0].op() != 0xDE) {
+    if (count < setup_count + 2 || cmds[0].op() != 0xDE || cmds[count - 1].op() != 0xD9) {
         return;
     }
+    const WideCamera wide = wide_camera(rdram, iris_camera);
+
+    // The wipe closed: the setup, one black rectangle over the camera and the restore. A full-screen camera's
+    // reaches the frame's sides, which RT64 widens; a split-screen view's is drawn as wide as the view.
+    if (count == setup_count + 2) {
+        if (cmds[setup_count].op() != 0xF6 || !wide.split_widened) {
+            return;
+        }
+        // Ours: the setup but its first command, the scissor (three, and a pop), the rectangle (two), the restore
+        // and the branch back.
+        gpr dl = begin_wide_dl(rdram, start, (setup_count - 1) + 4 + 2 + 1 + 1);
+        for (size_t i = 1; i < setup_count; i++) {
+            put_command(rdram, dl, cmds[i].w0, cmds[i].w1);
+        }
+        put_wide_scissor(rdram, dl, wide);
+        put_fill(rdram, dl, wide.left, wide.top, wide.right, wide.bottom);
+        put_pop_scissor(rdram, dl);
+        put_command(rdram, dl, cmds[count - 1].w0, cmds[count - 1].w1);
+        put_command(rdram, dl, g_dl_branch, (uint32_t)end & 0x00FFFFFF);
+        return;
+    }
+
     size_t texture_setup = setup_count;
     while (texture_setup < count && cmds[texture_setup].op() == 0xF6) {
         texture_setup++;
@@ -834,9 +911,6 @@ extern "C" void conker_iris_end(uint8_t* rdram, recomp_context* ctx) {
         return;
     }
     size_t quarters = count - 1 - quarter_count * 3;
-    if (cmds[count - 1].op() != 0xD9) {
-        return;
-    }
     for (size_t i = texture_setup; i < quarters; i++) {
         if (cmds[i].op() == 0xE4 || cmds[i].op() == 0xF6) {
             return;
@@ -860,31 +934,26 @@ extern "C" void conker_iris_end(uint8_t* rdram, recomp_context* ctx) {
         return;
     }
 
-    uint32_t needed = (1 + (uint32_t)count + quarter_count * 2 + 1) * 8;
-    gpr dl = take_wide_dl(needed);
-    const uint32_t wide_dl = (uint32_t)dl & 0x00FFFFFF;
-
-    put_command(rdram, dl, (rt64_hook_opcode << 24) | rt64_hook_magic, (rt64_hook_op_enable << 28) | rt64_extended_opcode);
-    for (size_t i = 0; i < setup_count; i++) {
+    // Ours: the game's commands but its first, the four black rectangles as extended ones (two commands each), a
+    // third command for each quarter made an extended rectangle, the scissor (three, and a pop) and the branch back.
+    gpr dl = begin_wide_dl(rdram, start, ((uint32_t)count - 1) + 4 * 2 + quarter_count + 4 + 1);
+    for (size_t i = 1; i < setup_count; i++) {
         put_command(rdram, dl, cmds[i].w0, cmds[i].w1);
     }
 
-    // The black around the circle: bands above and below it, and its sides, which
-    // reach past the frame's edges where the camera touches them.
-    int32_t top = camera_bound(rdram, iris_camera, camera_top);
-    int32_t bottom = camera_bound(rdram, iris_camera, camera_bottom);
-    int32_t left = camera_bound(rdram, iris_camera, camera_left);
-    int32_t right = camera_bound(rdram, iris_camera, camera_right);
+    // The black around the circle: bands above and below it, and its sides, which reach out to the view's sides
+    // (past the frame's edges where the camera touches them). A split-screen view's black and quarters are drawn
+    // in a scissor as wide as the view: they were cut at its 4:3 sides, the dying player's view showing beside.
+    if (wide.split_widened) {
+        put_wide_scissor(rdram, dl, wide);
+    }
     int32_t cx = cx4 / 4, cy = cy4 / 4, r = r4 / 4;
-    // A full-screen camera is clipped to 2..290; split-screen ones stop in the middle.
-    int32_t wide_left = left <= 4 ? left - wide_reach : left;
-    int32_t wide_right = right >= 286 ? right + wide_reach : right;
-    int32_t band_top = std::max(top, cy - r);
-    int32_t band_bottom = std::min(bottom, cy + r);
-    put_fill(rdram, dl, wide_left, top, wide_right, band_top);
-    put_fill(rdram, dl, wide_left, band_bottom, wide_right, bottom);
-    put_fill(rdram, dl, wide_left, band_top, std::min(cx - r, wide_right), band_bottom);
-    put_fill(rdram, dl, std::max(cx + r, wide_left), band_top, wide_right, band_bottom);
+    int32_t band_top = std::max(wide.top, cy - r);
+    int32_t band_bottom = std::min(wide.bottom, cy + r);
+    put_fill(rdram, dl, wide.left, wide.top, wide.right, band_top);
+    put_fill(rdram, dl, wide.left, band_bottom, wide.right, wide.bottom);
+    put_fill(rdram, dl, wide.left, band_top, std::min(cx - r, wide.right), band_bottom);
+    put_fill(rdram, dl, std::max(cx + r, wide.left), band_top, wide.right, band_bottom);
 
     for (size_t i = texture_setup; i < quarters; i++) {
         put_command(rdram, dl, cmds[i].w0, cmds[i].w1);
@@ -910,12 +979,60 @@ extern "C" void conker_iris_end(uint8_t* rdram, recomp_context* ctx) {
             ((uint32_t)lrx(q) << 16) | (uint32_t)lry(q));
         put_command(rdram, dl, ((uint32_t)s << 16) | t, rect[2].w1);
     }
+    if (wide.split_widened) {
+        put_pop_scissor(rdram, dl);
+    }
     put_command(rdram, dl, cmds[count - 1].w0, cmds[count - 1].w1);
     put_command(rdram, dl, g_dl_branch, (uint32_t)end & 0x00FFFFFF);
+}
 
-    // The game's first command branches to ours; the rest of its wipe is skipped.
-    gpr game_dl = start;
-    put_command(rdram, game_dl, g_dl_branch, wide_dl);
+// The fade after a split-screen player's wipe closes (and the views' other tints: func_1517F4D8's and
+// func_1517F3A0's colours) is func_1517F08C(dl, alpha, red, green, blue, camera) drawing a see-through rectangle
+// over the camera: a pipe sync, the combiner, the colour, the other modes and the rectangle, from the camera's
+// bounds. Like the wipe's black, a split-screen view's was cut at its 4:3 sides; its rectangle is drawn as wide as
+// the view, in a scissor as wide.
+namespace {
+    gpr tint_dl_start = 0;
+    int32_t tint_camera = 0;
+}
+
+// At its first instruction: $a0 is where it writes, the camera its 6th argument ($sp + 0x14).
+extern "C" void conker_view_tint_begin(uint8_t* rdram, recomp_context* ctx) {
+    tint_dl_start = ctx->r4;
+    tint_camera = MEM_W(0x14, ctx->r29);
+}
+
+// At its return: $v0 is the end of what it wrote.
+extern "C" void conker_view_tint_end(uint8_t* rdram, recomp_context* ctx) {
+    const gpr start = tint_dl_start;
+    const gpr end = ctx->r2;
+    tint_dl_start = 0;
+    constexpr size_t count = 5;
+    constexpr uint8_t ops[count] = { 0xE7, 0xFC, 0xFA, 0xEF, 0xF6 };
+    if (start == 0 || end != start + count * 8) {
+        return;
+    }
+    Command cmds[count];
+    for (size_t i = 0; i < count; i++) {
+        cmds[i] = { (uint32_t)MEM_W(i * 8, start), (uint32_t)MEM_W(i * 8 + 4, start) };
+        if (cmds[i].op() != ops[i]) {
+            return;
+        }
+    }
+    const WideCamera wide = wide_camera(rdram, tint_camera);
+    if (!wide.split_widened) {
+        return;
+    }
+    // Ours: the combiner, the colour and the other modes, the scissor (three, and a pop), the rectangle (two) and
+    // the branch back.
+    gpr dl = begin_wide_dl(rdram, start, 3 + 4 + 2 + 1);
+    for (size_t i = 1; i < count - 1; i++) {
+        put_command(rdram, dl, cmds[i].w0, cmds[i].w1);
+    }
+    put_wide_scissor(rdram, dl, wide);
+    put_fill(rdram, dl, wide.left, wide.top, wide.right, wide.bottom);
+    put_pop_scissor(rdram, dl);
+    put_command(rdram, dl, g_dl_branch, (uint32_t)end & 0x00FFFFFF);
 }
 
 // The bazooka's sight in multiplayer is the tinted copy of the frame (func_151A5170, above) over the aiming player's

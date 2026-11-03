@@ -1,7 +1,9 @@
 # Builds and tests netplay's transport (host/src/netplay/net) on Windows, Linux and
 # macOS: GameNetworkingSockets and its dependencies, the packets' and join codes' tests, and matches
-# between copies of netplay_probe over loopback (test.sh). On Linux it also fuzzes the packets for a minute
-# (libFuzzer). It needs no ROM: the transport builds without the game.
+# between copies of netplay_probe over loopback, directly and through ICE with the signalling server
+# (test.sh). On Linux it also plays matches through the TURN relay with the servers' Docker setup
+# (tools/netplay/server/test.sh) and fuzzes the packets for a minute (libFuzzer). It needs no ROM: the
+# transport builds without the game.
 #
 # Like the other workflows, it uses no third-party actions: git, and on Windows the vcpkg on GitHub's
 # runners (for protobuf, from host/src/netplay/net/vcpkg.json) and GitHub's own actions/cache (for
@@ -13,6 +15,7 @@ on:
     branches: ['**']
     paths:
       - 'host/src/netplay/net/**'
+      - 'tools/netplay/server/**'
       - '.github/workflows/netplay-transport.yml'
   workflow_dispatch:
 
@@ -48,13 +51,18 @@ jobs:
 
       - name: Test
         run: sh host/src/netplay/net/test.sh build
+        env:
+          LAN_BROADCAST: '1'   # no firewall here: LAN discovery's broadcast alone must be heard
+
+      - name: Test the relay (Docker)
+        run: sh tools/netplay/server/test.sh build relay-test
 
       - name: Fuzz the packets
         run: |
           cmake -S host/src/netplay/net -B build-fuzz -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DCONKER_NETPLAY_FUZZ=ON
           cmake --build build-fuzz --target fuzz_packets
           mkdir -p corpus
-          build-fuzz/fuzz_packets corpus -max_total_time=60 -max_len=128
+          build-fuzz/fuzz_packets corpus -max_total_time=60 -max_len=512
 
   macos:
     runs-on: macos-15

@@ -96,6 +96,7 @@ endif()
 
 add_executable(ConkerRecomp
     src/main.cpp
+    src/log_file.cpp
     src/null_renderer.cpp
     src/overlays.cpp
     src/ultra_extras.cpp
@@ -110,9 +111,11 @@ add_executable(ConkerRecomp
     src/model_detail.cpp
     src/shadow_smoothing.cpp
     src/render_fixes.cpp
+    src/more_bots.cpp
     src/look_aim.cpp
     src/mouse_camera.cpp
     src/sound_volumes.cpp
+    src/cheat_codes.cpp
     # The audio microcode, recompiled by RSPRecomp (recomp/audio_ucode.toml, run by recomp/recompile.py).
     "${REPO_ROOT}/RecompiledFuncs/rsp/audio_ucode.cpp"
 )
@@ -209,6 +212,9 @@ if (CONKER_RT64)
     if (CONKER_NETPLAY)
         # The launcher's Netplay menu, "my view only", and the match's status on screen.
         target_sources(ConkerRecomp PRIVATE src/netplay/menu.cpp src/netplay/view.cpp src/netplay/status.cpp)
+        # Desync recovery compresses the host's game with RT64's zstd (lockstep.cpp).
+        target_link_libraries(ConkerRecomp PRIVATE libzstd_static)
+        target_include_directories(ConkerRecomp PRIVATE "${RT64_DIR}/src/contrib/zstd/lib")
     endif()
     if (WIN32)
         target_compile_definitions(ConkerRecomp PRIVATE NOMINMAX)
@@ -256,8 +262,11 @@ elseif (WIN32)
     # The crash handler symbolises the stack with DbgHelp.
     target_link_libraries(ConkerRecomp PRIVATE DbgHelp)
     # Mods replace recompiled functions by patching their machine code, so identical
-    # functions must not be folded into one.
-    target_link_options(ConkerRecomp PRIVATE /OPT:NOICF)
+    # functions must not be folded into one, nor linked incrementally (issue #178): RelWithDebInfo
+    # links with /INCREMENTAL, which points every function pointer at a 5-byte jmp thunk in a table
+    # of them, and a mod's 12-byte patch there overwrote the next two thunks, so calling those
+    # functions crashed (the left stick's, for one hook).
+    target_link_options(ConkerRecomp PRIVATE /OPT:NOICF /INCREMENTAL:NO)
     # A GUI app, so no console window opens beside the game's (issue #128), still entered at main
     # (main.cpp's attach_parent_console keeps the output going to a terminal it's started from).
     set_target_properties(ConkerRecomp PROPERTIES WIN32_EXECUTABLE TRUE)

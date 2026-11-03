@@ -3,6 +3,8 @@
 
 #include "hello.hpp"
 
+#include <algorithm>
+#include <cctype>
 #include <cstring>
 
 #include "librecomp/game.hpp"
@@ -11,6 +13,16 @@
 
 #define XXH_INLINE_ALL
 #include "xxHash/xxhash.h"
+
+std::string conker::netplay::release_url(const std::string& release) {
+    // v<digits and dots>, maybe with a suffix of letters, digits, dots and dashes: the release workflow's tags.
+    const auto allowed = [](char c) { return std::isalnum((unsigned char)c) || c == '.' || c == '-'; };
+    if (release.size() < 2 || (release[0] != 'v' && release[0] != 'V') || !std::isdigit((unsigned char)release[1]) ||
+        !std::all_of(release.begin() + 1, release.end(), allowed)) {
+        return {};
+    }
+    return "https://github.com/sciaschi/CBFD-Recompiled/releases/tag/" + release;
+}
 
 conker::netplay::Hello conker::netplay::local_hello() {
     return hello_for_rom(recomp::get_rom());

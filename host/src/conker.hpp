@@ -86,6 +86,9 @@ namespace conker {
         // A hash of the mods on but texture packs, in load order: each one's id, version, file and saved
         // settings (0 for none), for netplay's handshake: everyone in a match needs the same.
         uint64_t mods_hash();
+        // The mods on but texture packs, in load order, for the player: "Name 1.2.0, Other 0.3.1" (empty for
+        // none).
+        std::string mods_text();
 #else
         inline bool active() { return false; }
 #endif
@@ -191,6 +194,9 @@ namespace conker {
         // The ports whose views are shown two to a window under that rule (bit n: port n; each machine with two
         // players'): a match's (Start), a replay's, or --view-pairs'. It changes their culls too.
         uint8_t view_pairs();
+        // The most characters in a multiplayer game (more_bots.cpp; 0: the game's own, 12 or 16), while the netplay
+        // settings profile is active: a match's rule (the host's), a replay's (its recording's), or --characters'.
+        int characters_rule();
         // While recording, replaying or hashing, the game sees fixed controllers (--ports, no paks).
         bool fixes_ports();
         ultramodern::input::connected_device_info_t connected_device_info(int controller_num);
@@ -253,6 +259,12 @@ namespace conker {
         bool is_pack(const std::string& mod_id);
     }
 
+    // more_bots.cpp: Multiplayer Characters, more bots in a multiplayer game (discussion #105).
+    namespace more_bots {
+        // The option, on the General tab.
+        void add_options(recomp::config::Config& config);
+    }
+
     // rumble.cpp: the Rumble Pak, sent to each port's controller.
     namespace rumble {
         // Its settings (motor, style), on the General tab.
@@ -277,9 +289,20 @@ namespace conker {
         // The Mouse: Turn the Camera setting: whether the mouse turns the third-person camera
         // (mouse_camera.cpp).
         bool mouse_turns_camera();
-        // The Right Stick: Free Camera setting (issue #65), in single player: whether the right stick
-        // turns the third-person camera (mouse_camera.cpp) instead of pressing the C-buttons.
-        bool stick_free_camera();
+        // The Right Stick: Free Camera setting (issue #65), in single player: whether a player's (0 to 3) right
+        // stick turns their third-person camera (mouse_camera.cpp) instead of pressing the C-buttons. Player 1's
+        // is the option; players 2-4's are set on the Controls tab (issue #160), as is Swap Sticks.
+        bool stick_free_camera(int player = 0);
+        void set_stick_free_camera(int player, bool on);
+        // A player's Aiming: Swap Sticks setting, and setting it (also for the controller presets that go with
+        // it, conker_config.cpp).
+        bool swap_sticks_setting(int player);
+        void set_swap_sticks(int player, bool on);
+        // The Controls tab's toggles of both for the player picked (conker_config.cpp, before the tab is made).
+        void add_player_toggles();
+        // Turns the mouse camera on (Mouse: Sensitivity 50 if it was 0, and Mouse: Turn the Camera), for the
+        // keyboard's Standard preset, which has Z and R on the mouse buttons (conker_config.cpp).
+        void turn_on_mouse_camera();
         // Aiming: Swap Sticks (issue #84): whether a player (0 to 3) is aiming now (either aiming mode
         // ran for their camera in the last few frames) with the setting on, so their controller's sticks
         // are swapped (frontend.cpp): the right stick aims and the left moves. Not with recompinput's own
@@ -320,6 +343,15 @@ namespace conker {
     // The Quit prompt's Return to Launcher (main.cpp): quits the game, then starts the program again at the
     // launcher.
     void return_to_launcher();
+
+    // cheat_codes.cpp: General: Remember Cheat Codes (issue #166), the game's cheat codes kept on from one time it's
+    // played to the next.
+    namespace cheat_codes {
+        // conker_config.cpp: the option, on the General tab.
+        void add_options(recomp::config::Config& config);
+        // From the game thread, as the game starts a frame's display list: the codes entered are kept.
+        void game_frame(uint8_t* rdram);
+    }
 
     // sound_volumes.cpp: the Sound tab's Music, Sound Effects and Speech volumes, and Sound Mode.
     namespace sound_volumes {
@@ -396,13 +428,20 @@ namespace conker {
         void open();
         // On the main thread (update_gfx): says when a match is over.
         void update();
+        // The Esc menu's Netplay tab (conker_config.cpp): during a match, its players, with Kick (the host's)
+        // and Block, and Leave match.
+        void add_tab();
     }
 
     // netplay/status.cpp: the match's status on screen: waiting for a player, a player leaving, and with
-    // General: Netplay Details, the input delay and each player's round trip in a corner.
+    // the Netplay tab's Netplay Details, the input delay and each player's round trip in a corner.
     namespace netplay_status {
-        // On the General tab (conker_config.cpp): Netplay Details.
+        // Netplay Details, kept with the General tab's options (conker_config.cpp) but not shown there: the Netplay tab
+        // (menu.cpp) sets it, beside the match, with details_wanted() and set_details_wanted() (saved at once), with details_description.
         void add_options(recomp::config::Config& config);
+        bool details_wanted();
+        void set_details_wanted(bool on);
+        extern const char* const details_description;
         // From the launcher's init (frontend.cpp): recompui's UI exists now.
         void on_ui_ready();
         // On the main thread (update_gfx).
@@ -423,6 +462,16 @@ namespace conker {
 
     // notices.cpp: a line in the top-left corner for a few seconds, one at a time (an unlock, a save state's
     // "State saved"...).
+    namespace log_file {
+        // From then on, stdout and stderr go to `folder`/conker.log, or else `otherwise`/conker.log (log_file.cpp):
+        // for a game whose output would go nowhere.
+        void start(const std::filesystem::path& folder, const std::filesystem::path& otherwise);
+        // As the frontend updates: a log past its most stops there.
+        void check();
+        // Whether stdout and stderr go to conker.log: a file players post with bug reports, so nothing that
+        // lets someone in (a join or room code) or says where a player is (an address) is printed then.
+        bool active();
+    }
     namespace notices {
         // From any thread. With replace, it's shown at once in place of what's shown (and of an earlier one to
         // replace), as a save state's slot is as F6 is pressed again and again.
@@ -472,6 +521,8 @@ namespace conker {
         void save();
         void load();
         void next_slot();
+        // As the program ends: the states still being written are (5 s at most).
+        void wait_for_writes();
         // On the General tab (conker_config.cpp): Save State Notifications (issue #133).
         void add_options(recomp::config::Config& config);
     }
@@ -505,10 +556,10 @@ namespace conker {
         bool normal_camera();
         // The same for a player's camera while the harness is used (each player's orbit).
         bool normal_camera_of(int player);
-        // Whether the right stick turned the orbit last frame's camera update could run (the setting
-        // on, the normal camera, not R-Look or aiming): the controller's input then leaves the right
+        // Whether a player's (0 to 3) right stick turned their orbit last frame's camera update could run (their
+        // setting on, the normal camera, not R-Look or aiming): the controller's input then leaves the right
         // stick off the C-buttons (frontend.cpp). Safe from any thread.
-        bool stick_turns_camera();
+        bool stick_turns_camera(int player = 0);
         // The scroll wheel's notches since this was last called (netplay/motion.cpp, from the input thread).
         int take_wheel_notches();
         // For save states (host_state.cpp): every orbit, which writes the camera's eye.
