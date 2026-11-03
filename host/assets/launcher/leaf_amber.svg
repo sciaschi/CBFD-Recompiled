@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-36 -44 72 88">
+  <!-- One of the launcher's leaves (host/src/frontend.cpp places and turns them). -->
+  <path d="M0,-40 C22,-30 30,-6 0,40 C-30,-6 -22,-30 0,-40 Z" fill="#e9a23b" stroke="#2a1206" stroke-opacity="0.35" stroke-width="2"/>
+  <path d="M0,-36 L0,36" stroke="#2a1206" stroke-opacity="0.35" stroke-width="2"/>
+</svg>
