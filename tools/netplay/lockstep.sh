@@ -23,6 +23,10 @@
 #   tall       a 2-player Deathmatch (make_match.py --mouse): the split screen's two views are drawn taller in
 #              "my view only", the match's rule, so every copy widens each camera's culls up and down: both copies
 #              of a match of two must match its solo replay
+#   bots       a 2-player Deathmatch of 16 characters (make_match.py --characters 16 --bots 14: more_bots.cpp), the
+#              host's rule (--characters 16), which the joiner takes from it (its recording says the game's own):
+#              the game's memory is laid out by it as the game starts, so both copies of a match of two must
+#              match its solo replay, which mustn't match the same recording replayed with the game's own
 #   room       the match through a room on a netplay server (netplay_server, beside the game's build, on
 #              loopback): the host makes the room, public, which the server must list for the game's hashes;
 #              the joiner joins by its code (direct connections: there's no relay here,
@@ -72,7 +76,7 @@
 # It exits 0 if all is as it should be, 1 if not. The logs are kept in --out; without it they're in a
 # temporary folder, deleted if all passed. The data folders it makes for the copies (about 1 GB in all) are
 # always deleted. As in check.sh, a run is judged by what it prints and then stopped. It uses UDP ports
-# 27310 to 27324 and 27326 on 127.0.0.1 (netplay servers on 27320 to 27323).
+# 27310 to 27324, 27326 and 27327 on 127.0.0.1 (netplay servers on 27320 to 27323).
 set -u
 
 cd "$(dirname "$0")/../.."
@@ -132,6 +136,17 @@ python3 tools/netplay/make_match.py "$OUT/tall.pads" --mode deathmatch --players
 python3 tools/netplay/make_match.py "$OUT/tall-other.pads" --mode deathmatch --players 2 --mouse --seed "$((SEED + 1))" --own-view > /dev/null || exit 2
 scramble "$OUT/tall.pads" "$OUT/tall-other.pads" 2 "$OUT/tall-" || exit 2
 TALL_READS=$(( ($(wc -c < "$OUT/tall.pads") - 40) / 73 ))
+python3 tools/netplay/make_match.py "$OUT/bots.pads" --mode deathmatch --players 2 --mouse --seed "$SEED" --own-view \
+    --characters 16 --bots 14 || exit 2
+python3 tools/netplay/make_match.py "$OUT/bots-other.pads" --mode deathmatch --players 2 --mouse --seed "$((SEED + 1))" \
+    --own-view --characters 16 --bots 14 > /dev/null || exit 2
+scramble "$OUT/bots.pads" "$OUT/bots-other.pads" 2 "$OUT/bots-" || exit 2
+# The game's own (the header's flags without the characters, bits 8-15): the joiner's, and a solo replay of it.
+for name in bots-2 bots-original; do
+    python3 -c "import sys; d=bytearray(open(sys.argv[1],'rb').read()); d[33]=0; open(sys.argv[2],'wb').write(d)" \
+        "$OUT/$( [ $name = bots-2 ] && echo bots-2 || echo bots ).pads" "$OUT/$name.pads" || exit 2
+done
+BOTS_READS=$(( ($(wc -c < "$OUT/bots.pads") - 40) / 73 ))
 
 
 failed=0
@@ -382,6 +397,25 @@ if finish "was the last: quitting" tall-host tall-join; then
     for name in tall-host tall-join; do
         same $name tall-solo "$TALL_READS" || failed=1
     done
+else
+    failed=1
+fi
+
+echo "bots"
+pads=bots.pads start bots-solo
+pads=bots-original.pads start bots-original
+finish "was the last: quitting" bots-solo bots-original || exit 1
+if python3 tools/netplay/compare_hashes.py "$OUT/bots-solo.log" "$OUT/bots-original.log" > /dev/null; then
+    echo "  bots-solo same as bots-original: the 16 characters made no difference"
+    failed=1
+fi
+pads=bots-1.pads start bots-host --netplay-host 27327 --netplay-address 127.0.0.1 --players 2 --characters 16
+pads=bots-2.pads start bots-join --netplay-join "$(code_of bots-host)"
+if finish "was the last: quitting" bots-host bots-join; then
+    for name in bots-host bots-join; do
+        same $name bots-solo "$BOTS_READS" || failed=1
+    done
+    grep -q "up to 16 characters" "$OUT/bots-join.out" || { echo "  the joiner didn't take the host's 16 characters"; failed=1; }
 else
     failed=1
 fi

@@ -194,6 +194,9 @@ namespace conker {
         // The ports whose views are shown two to a window under that rule (bit n: port n; each machine with two
         // players'): a match's (Start), a replay's, or --view-pairs'. It changes their culls too.
         uint8_t view_pairs();
+        // The most characters in a multiplayer game (more_bots.cpp; 0: the game's own, 12 or 16), while the netplay
+        // settings profile is active: a match's rule (the host's), a replay's (its recording's), or --characters'.
+        int characters_rule();
         // While recording, replaying or hashing, the game sees fixed controllers (--ports, no paks).
         bool fixes_ports();
         ultramodern::input::connected_device_info_t connected_device_info(int controller_num);

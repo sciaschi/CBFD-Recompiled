@@ -4,9 +4,10 @@
 // Each packet: "CN", u16 protocol version, u8 kind, then (all little-endian):
 //   1 Hello    u64 build, u64 rom, u64 profile, u64 mods, u64 key,                    55 bytes
 //              u8 players (0 to 3), u64 player (not 0), u8 platform (1 to 3)
-//   2 Welcome  u8 ports (bits: none at or past players, not port 0; none: a spectator), 11 bytes
+//   2 Welcome  u8 ports (bits: none at or past players, not port 0; none: a spectator), 12 bytes
 //              u8 players (2 to 4), u8 rejoin (0 to 2), then as Start's (all 0 unless
-//              rejoin): u8 own view (0 or 1), u8 pairs, u8 rollback (0 to 12)
+//              rejoin): u8 own view (0 or 1), u8 pairs, u8 rollback (0 to 12),
+//              u8 characters (0, 12 or 16)
 //   3 Refuse   u8 reason, u8 size (0 to 40), the host's release (! to ~), zeros to 40  47 bytes
 //              (the same in every version from 17 on: decode_refusal)
 //   4 Inputs   u8 port (< 4), u32 first read, u8 count (1 to 8), 8 pads of 5 bytes  161 bytes
@@ -17,18 +18,19 @@
 //   5 Hash     u32 read, u64 hash, 128 u16 region hashes, 4 u8 spreads (any),         285 bytes
 //              4 u8 reads waited (any), 4 u8 reads waited long (any)
 //   6 Bye      u8 reason                                                               6 bytes
-//   7 Start    u8 players (2 to 4), u8 own view (0 or 1), 4 u8 delays (0 to 8),      14 bytes
+//   7 Start    u8 players (2 to 4), u8 own view (0 or 1), 4 u8 delays (0 to 8),      15 bytes
 //              u8 pairs
 //              (ports below players, an even number of them), u8 rollback (0 to 12),
-//              u8 open (ports below players, not port 0, none of the pairs)
+//              u8 open (ports below players, not port 0, none of the pairs),
+//              u8 characters (0, 12 or 16)
 //   8 Gone     u8 port (1 to 3: never the host's 0), u32 from read,                    11 bytes
 //              u8 silent (0 to 3: stopped answering, stepped out to watch, let go)
 //   9 Delay    u8 ports (bits: some, below 4), u8 delay (0 to 8), u32 from read        11 bytes
-//  10 Roster   4 seats of 12: u64 player, u8 platform, u8 ready, u16 round trip;    130 bytes
+//  10 Roster   4 seats of 12: u64 player, u8 platform, u8 ready, u16 round trip;    131 bytes
 //              (a free seat, player 0, all zero; a taken one platform 1 to 3, ready
 //              0 or 1; none taken at or past players), u8 players (2 to 4),
 //              u8 own view (0 or 1), u8 delay (0 to 8, or 255: auto), u8 rollback (0 to 12),
-//              u8 spectators (0 or 1), then 8 watchers of 9: u64 player, u8 platform (none:
+//              u8 spectators (0 or 1), u8 characters (0, 12 or 16), then 8 watchers of 9: u64 player, u8 platform (none:
 //              all zero; else platform 1 to 3)
 //  11 Ready    u8 ready (0 or 1)                                                       6 bytes
 //  12 Resync   u32 read, u8 ports (bits: not port 0; none: a spectator)               10 bytes
@@ -60,15 +62,15 @@ namespace conker::netplay {
         constexpr size_t size_of(uint8_t kind) {
             switch (kind) {
                 case hello: return header_size + 50;
-                case welcome: return header_size + 6;
+                case welcome: return header_size + 7;
                 case refuse: return header_size + 2 + max_release_name;
                 case inputs: return header_size + 6 + input_window * (pad_size + motion_size) + max_players + 2;
                 case hash: return header_size + 12 + 2 * memory_regions + 3 * max_players;
                 case bye: return header_size + 1;
-                case start: return header_size + 5 + max_players;
+                case start: return header_size + 6 + max_players;
                 case gone: return header_size + 6;
                 case delay: return header_size + 6;
-                case roster: return header_size + 12 * max_players + 5 + 9 * max_spectators;
+                case roster: return header_size + 12 * max_players + 6 + 9 * max_spectators;
                 case ready: return header_size + 1;
                 case resync: return header_size + 5;
                 case back: return header_size + 14;
@@ -95,7 +97,7 @@ namespace conker::netplay {
         }
         bool valid_fields(const Roster& p) {
             if (p.players < 2 || p.players > max_players || p.own_view > 1 || (p.delay > max_delay && p.delay != auto_delay) ||
-                p.rollback > max_rollback || p.spectators > 1) {
+                p.rollback > max_rollback || p.spectators > 1 || !valid_characters(p.characters)) {
                 return false;
             }
             for (const Watcher& w : p.watchers) {
@@ -121,8 +123,9 @@ namespace conker::netplay {
         bool valid_fields(const Welcome& p) {
             return p.players >= 2 && p.players <= max_players && (p.ports & 1) == 0 &&
                 (p.ports >> p.players) == 0 && p.rejoin <= 2 &&
-                (p.rejoin == 0 ? p.own_view == 0 && p.pairs == 0 && p.rollback == 0
-                               : p.own_view <= 1 && valid_pairs(p.pairs, p.players) && p.rollback <= max_rollback);
+                (p.rejoin == 0 ? p.own_view == 0 && p.pairs == 0 && p.rollback == 0 && p.characters == 0
+                               : p.own_view <= 1 && valid_pairs(p.pairs, p.players) && p.rollback <= max_rollback &&
+                                     valid_characters(p.characters));
         }
         bool valid_release(const std::string& release) {
             return release.size() <= max_release_name && printable_word(release);
@@ -161,7 +164,7 @@ namespace conker::netplay {
             return p.players >= 2 && p.players <= max_players && p.own_view <= 1 &&
                 std::all_of(p.delays.begin(), p.delays.end(), [](uint8_t d) { return d <= max_delay; }) &&
                 valid_pairs(p.pairs, p.players) && p.rollback <= max_rollback && (p.open & 1) == 0 && (p.open >> p.players) == 0 &&
-                (p.open & p.pairs) == 0;
+                (p.open & p.pairs) == 0 && valid_characters(p.characters);
         }
 
         bool valid_fields(const Resync& p) {
@@ -314,6 +317,7 @@ namespace conker::netplay {
                 w.u8(p.delay);
                 w.u8(p.rollback);
                 w.u8(p.spectators);
+                w.u8(p.characters);
                 for (const Watcher& watcher : p.watchers) {
                     w.u64(watcher.player);
                     w.u8(watcher.platform);
@@ -329,6 +333,7 @@ namespace conker::netplay {
                 w.u8(p.own_view);
                 w.u8(p.pairs);
                 w.u8(p.rollback);
+                w.u8(p.characters);
             }
             else if constexpr (std::is_same_v<T, Refuse>) {
                 w.u8((uint8_t)p.reason);
@@ -390,6 +395,7 @@ namespace conker::netplay {
                 w.u8(p.pairs);
                 w.u8(p.rollback);
                 w.u8(p.open);
+                w.u8(p.characters);
             }
             else if constexpr (std::is_same_v<T, Resync>) {
                 w.u32(p.read);
@@ -473,6 +479,7 @@ namespace conker::netplay {
                 p.delay = r.u8();
                 p.rollback = r.u8();
                 p.spectators = r.u8();
+                p.characters = r.u8();
                 for (Watcher& w : p.watchers) {
                     w.player = r.u64();
                     w.platform = r.u8();
@@ -491,6 +498,7 @@ namespace conker::netplay {
                 p.own_view = r.u8();
                 p.pairs = r.u8();
                 p.rollback = r.u8();
+                p.characters = r.u8();
                 packet = p;
                 break;
             }
@@ -563,6 +571,7 @@ namespace conker::netplay {
                     p.pairs = r.u8();
                     p.rollback = r.u8();
                     p.open = r.u8();
+                    p.characters = r.u8();
                     packet = p;
                 }
                 break;

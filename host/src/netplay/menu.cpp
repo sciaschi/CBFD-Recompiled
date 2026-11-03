@@ -97,6 +97,7 @@ namespace {
         bool lan_visible = false;   // anyone on the network could join: the host chooses it
         int local_players = 1;
         bool spectators = true;
+        int characters = 0;         // Multiplayer Characters' (more_bots.cpp): 0, the game's own, 12 or 16
     };
 
     // The match this player joined last (not one they hosted), to come back to it after the game quit:
@@ -187,6 +188,8 @@ namespace {
                 flag(host, "lan_visible", choices.lan_visible);
                 number(host, "local_players", 1, conker::netplay::max_players - 1, choices.local_players);
                 flag(host, "spectators", choices.spectators);
+                number(host, "characters", 0, 16, choices.characters);
+                if (choices.characters != 12 && choices.characters != 16) choices.characters = 0;
             }
             if (json.contains("last_match") && json["last_match"].is_object()) {
                 const nlohmann::json& last = json["last_match"];
@@ -212,7 +215,8 @@ namespace {
                 { "host", { { "players", choices.players }, { "public", choices.public_room }, { "input_delay", choices.input_delay },
                     { "rollback", choices.rollback }, { "own_view", choices.own_view }, { "directly", choices.directly },
                     { "port", choices.port }, { "address", choices.address }, { "lan_visible", choices.lan_visible },
-                    { "local_players", choices.local_players }, { "spectators", choices.spectators } } } };
+                    { "local_players", choices.local_players }, { "spectators", choices.spectators },
+                    { "characters", choices.characters } } } };
             if (!settings.last.code.empty()) {
                 json["last_match"] = { { "code", settings.last.code }, { "local_players", settings.last.local_players },
                     { "started", settings.last.started } };
@@ -349,6 +353,7 @@ namespace {
         int input_delay = -1;               // hosting: reads, or -1 for auto
         int rollback = 12;                  // hosting: reads predicted, 0 (off) to 12
         bool spectators = true;             // hosting: the match takes spectators
+        int characters = 0;                 // hosting: the most characters in a multiplayer game (0: the game's own)
         bool watching = false;              // joining (or in) as a spectator
         std::string port_text = std::to_string(default_port);
         std::string address_text;
@@ -638,7 +643,9 @@ namespace {
             std::string rules = "Waiting room: " + std::to_string(room.players) + " players, input delay " +
                 (room.delay < 0 ? std::string("auto") : std::to_string(room.delay)) +
                 (room.rollback > 0 ? ", rollback " + std::to_string(room.rollback) : ", no rollback") +
-                (room.own_view ? ", everyone sees only their own view" : "") + (room.takes_spectators ? "" : ", no spectators");
+                (room.own_view ? ", everyone sees only their own view" : "") +
+                (room.characters > 0 ? ", up to " + std::to_string(room.characters) + " characters" : "") +
+                (room.takes_spectators ? "" : ", no spectators");
             text(waiting_box, rules, Typography::LabelMD);
             seat_about.assign(room.players, nullptr);
             shown_about.assign(room.players, "");
@@ -1070,9 +1077,10 @@ namespace {
                 return;
             }
             settings.host = HostChoices{ players, public_room, input_delay, rollback, own_view_for_everyone, host_directly,
-                host_directly ? port : settings.host.port, trimmed(address_text), lan_visible, local_players, spectators };
+                host_directly ? port : settings.host.port, trimmed(address_text), lan_visible, local_players, spectators, characters };
             save();
             conker::lockstep::set_host(port, players, own_view_for_everyone, input_delay, local_players, rollback, spectators);
+            conker::lockstep::set_characters(characters);
             conker::lockstep::set_lan(host_directly && lan_visible);
             hosting = true;
             begin();
@@ -1109,6 +1117,7 @@ namespace {
             settings.host.local_players = local_players;
             save();
             conker::lockstep::set_quick(local_players + 1, true, -1, local_players, HostChoices{}.rollback, settings.host.spectators);
+            conker::lockstep::set_characters(0);   // Quick Match: the game's own
             quick = true;
             begin();
         }
@@ -1121,6 +1130,7 @@ namespace {
             std::string about = input_delay < 0 ? "Input delay auto" : "Input delay " + std::to_string(input_delay);
             about += rollback > 0 ? ", rollback " + std::to_string(rollback) : ", no rollback";
             about += own_view_for_everyone ? ", everyone sees only their own view" : ", players choose their screen";
+            about += characters > 0 ? ", up to " + std::to_string(characters) + " characters" : "";
             about += spectators ? ", spectators welcome" : ", no spectators";
             about += !host_directly ? ", through the server" : lan_visible ? ", without a server, visible on this network" :
                 ", without a server";
@@ -1260,6 +1270,7 @@ namespace {
             rollback = choices.rollback;
             own_view_for_everyone = choices.own_view;
             spectators = choices.spectators;
+            characters = choices.characters;
             host_directly = choices.directly;
             port_text = std::to_string(choices.port);
             address_text = choices.address;
@@ -1425,6 +1436,20 @@ namespace {
                 own_view_for_everyone = index == 0;
                 show_advanced();
             });
+            recompui::Element* characters_row = row(advanced_box);
+            text(characters_row, "Characters", Typography::LabelMD);
+            recompui::Radio* characters_radio = context.create_element<recompui::Radio>(characters_row);
+            characters_radio->add_option("Original");
+            characters_radio->add_option("Up to 12");
+            characters_radio->add_option("Up to 16");
+            characters_radio->set_index(characters == 16 ? 2 : characters == 12 ? 1 : 0);
+            characters_radio->add_index_changed_callback([this](uint32_t index) {
+                characters = index == 2 ? 16 : index == 1 ? 12 : 0;
+                show_advanced();
+            });
+            text(advanced_box, "The most characters, players and bots, in the match's multiplayer games, as the General tab's "
+                "Multiplayer Characters (Tank stops at 12, Race is the game's own). Original: the game's own, which allows no "
+                "bots with 4 players.", Typography::Body, color::TextDim);
             recompui::Element* spectators_row = row(advanced_box);
             text(spectators_row, "Spectators", Typography::LabelMD);
             recompui::Radio* spectators_radio = context.create_element<recompui::Radio>(spectators_row);
@@ -1676,7 +1701,8 @@ namespace {
             }
             add_text(left, std::to_string(room.players) + " players, input delay " + std::to_string(room.delay) +
                 (room.rollback > 0 ? ", rollback " + std::to_string(room.rollback) : "") +
-                (room.own_view ? ", everyone sees only their own view" : ""), Typography::Body);
+                (room.own_view ? ", everyone sees only their own view" : "") +
+                (room.characters > 0 ? ", up to " + std::to_string(room.characters) + " characters" : ""), Typography::Body);
             add_text(left, room.watching ? "You're watching: nobody waits for you, and your controllers play nothing." :
                 "The match goes on while this menu is open: your player stands still until you close it.", Typography::Body, color::TextDim);
             add_text(left, room.hosting ? "Kick removes a player: their place plays on, idle. Block also keeps them out of your "

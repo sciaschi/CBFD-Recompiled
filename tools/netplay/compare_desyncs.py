@@ -96,9 +96,9 @@ def main():
     a, b = reports
     print()
     same = True
-    # (rollback: none in reports from before it was the match's)
+    # (rollback and characters: none in reports from before they were the match's)
     for key in ("build_id", "rom", "profile", "mods", "players", "input_delay", "own_view", "view_pairs", "region_size", "idle_from",
-                "rollback"):
+                "rollback", "characters"):
         if a.get(key) != b.get(key):
             print(f"  {key} differs: {a.get(key)} vs {b.get(key)}")
             same = False

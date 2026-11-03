@@ -430,14 +430,15 @@ namespace conker::netplay {
         }
     }
 
-    bool Session::start(bool own_view, const std::array<uint8_t, max_players>& delays, int rollback, bool open_seats) {
+    bool Session::start(bool own_view, const std::array<uint8_t, max_players>& delays, int rollback, bool open_seats, int characters) {
         uint8_t taken = own_ports;
         for (const Peer& peer : peers) {
             taken |= peer.ports;
         }
         const uint8_t open = (uint8_t)(((1u << match_players) - 1) & ~taken);
         if (!is_host || !entry_open || (open != 0 && !open_seats) ||
-            std::any_of(delays.begin(), delays.end(), [](uint8_t d) { return d > max_delay; }) || rollback < 0 || rollback > max_rollback) {
+            std::any_of(delays.begin(), delays.end(), [](uint8_t d) { return d > max_delay; }) || rollback < 0 || rollback > max_rollback ||
+            characters < 0 || characters > 0xFF || !valid_characters((uint8_t)characters)) {
             return false;
         }
         // (The roster as it is now first: a joiner moved this very poll learns where it is before the Start.)
@@ -450,8 +451,10 @@ namespace conker::netplay {
         entry_open = false;
         match_started = true;
         next_inputs.fill(0);
-        const Start start{ (uint8_t)match_players, (uint8_t)(own_view ? 1 : 0), delays, pairs(), (uint8_t)rollback, open };
+        const Start start{ (uint8_t)match_players, (uint8_t)(own_view ? 1 : 0), delays, pairs(), (uint8_t)rollback, open,
+            (uint8_t)characters };
         match_own_view = start.own_view;
+        match_characters = start.characters;
         match_pairs = start.pairs;
         match_rollback = start.rollback;
         match_open = start.open;
@@ -604,8 +607,9 @@ namespace conker::netplay {
         return (int)std::count_if(peers.begin(), peers.end(), [](const Peer& p) { return !in(p); });
     }
 
-    void Session::set_room_settings(bool own_view, int delay, int rollback, bool spectators) {
+    void Session::set_room_settings(bool own_view, int delay, int rollback, bool spectators, int characters) {
         settings.own_view = own_view ? 1 : 0;
+        settings.characters = characters >= 0 && characters <= 0xFF && valid_characters((uint8_t)characters) ? (uint8_t)characters : 0;
         settings.spectators = spectators ? 1 : 0;
         settings.delay = delay < 0 ? auto_delay : (uint8_t)(std::min)(delay, max_delay);
         settings.rollback = (uint8_t)std::clamp(rollback, 0, max_rollback);
@@ -932,7 +936,7 @@ namespace conker::netplay {
                     peer.in_match = entry_open;
                     peer.late = !entry_open;
                     send_to(peer.connection, entry_open ? Welcome{ 0, (uint8_t)match_players }
-                        : Welcome{ 0, (uint8_t)match_players, 2, match_own_view, match_pairs, match_rollback });
+                        : Welcome{ 0, (uint8_t)match_players, 2, match_own_view, match_pairs, match_rollback, match_characters });
                     Event event{ Event::Type::joined };
                     event.spectator = number;
                     event.players = match_players;
@@ -996,7 +1000,8 @@ namespace conker::netplay {
                             rejoins[p]++;
                         }
                     }
-                    welcome = { ports, (uint8_t)match_players, (uint8_t)(rejoin ? 1 : 2), match_own_view, match_pairs, match_rollback };
+                    welcome = { ports, (uint8_t)match_players, (uint8_t)(rejoin ? 1 : 2), match_own_view, match_pairs, match_rollback,
+                        match_characters };
                 }
                 send_to(peer.connection, welcome);
                 Event event{ Event::Type::joined };
@@ -1160,6 +1165,7 @@ namespace conker::netplay {
                 event.own_view = welcome->own_view != 0;
                 event.pairs = welcome->pairs;
                 event.rollback = welcome->rollback;
+                event.characters = welcome->characters;
                 events.push_back(std::move(event));
             }
             else if (std::holds_alternative<Refuse>(packet) || std::holds_alternative<Bye>(packet)) {
@@ -1240,6 +1246,7 @@ namespace conker::netplay {
             event.pairs = start->pairs;
             event.rollback = start->rollback;
             event.open = start->open;
+            event.characters = start->characters;
             events.push_back(std::move(event));
         }
         else if (const Inputs* inputs = std::get_if<Inputs>(&packet); inputs != nullptr) {

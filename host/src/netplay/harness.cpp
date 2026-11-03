@@ -43,6 +43,9 @@
 //                       recording's rule instead (not with --replay)
 //   --view-pairs <ports>  ...with these ports' views shown two to a window (e.g. 12: ports 1 and 2, as a
 //                       machine with two players), recorded too (not with --replay; within --ports)
+//   --characters <n>    the most characters in a multiplayer game, 0 (the game's own), 12 or 16
+//                       (more_bots.cpp): records or hashes so, recorded in the recording (not with --replay);
+//                       hosting a match (lockstep.hpp), the match's rule
 //   --netplay-host, --netplay-join, ...  a netplay match in lockstep (lockstep.hpp)
 //
 // Controller reads are counted from the first, so read <n> of one run is read <n> of another. The pads
@@ -57,7 +60,8 @@
 //
 // The recording: "CBFDPADS", then a little-endian u32 version (4) and u32 port count, u64 XXH3-64 of the
 // ROM, u64 hash of the settings profile, u32 flags (1: every player sees only their own view, the match's
-// rule: own_view_rule) and u32 view pairs (the ports shown two to a window, bit n port n: view_pairs), then
+// rule: own_view_rule; bits 8-15: the most characters in a multiplayer game, 0 the game's own, 12 or 16:
+// characters_rule) and u32 view pairs (the ports shown two to a window, bit n port n: view_pairs), then
 // for each read the number of controllers the game reads (u8), four
 // pads of 5 bytes each (u16 buttons, s8 stick x, s8 stick y, u8 err_no) and four players' movement of 13
 // bytes each (s16 mouse x, y, s16 gyro x, y, s8 wheel, u32 Controls: netplay::Motion, motion.cpp). A replay
@@ -112,6 +116,8 @@ namespace {
     constexpr size_t read_size_v3 = 1 + max_pads * (pad_size + motion_size_v3);
     constexpr size_t read_size_v2 = 1 + max_pads * pad_size;
     constexpr uint32_t own_view_flag = 1;
+    constexpr int characters_shift = 8;
+    constexpr uint32_t characters_flags = 0xFFu << characters_shift;
     constexpr uint64_t no_limit = UINT64_MAX;
 
     std::string record_path;
@@ -212,6 +218,8 @@ namespace {
     // --own-view's: recording or hashing alone, as in a match whose rule is that everyone sees only their own view.
     bool own_view_option = false;
     uint8_t view_pairs_option = 0;  // --view-pairs'
+    // --characters': recording or hashing alone, or hosting (0: the game's own; -1: not given).
+    int characters_option = -1;
     uint64_t jitter_us = 0;
     bool options_valid = true;
 
@@ -332,7 +340,9 @@ namespace {
                 const uint32_t pairs = get_u32(replay.data() + 36);
                 const uint32_t pair_ports = std::min<uint32_t>(get_u32(replay.data() + 12), max_pads);
                 // Its view pairs: ports it has, an even number of them.
-                if ((replay_flags & ~own_view_flag) != 0 || (pairs >> pair_ports) != 0 || std::popcount(pairs) % 2 != 0) {
+                if ((replay_flags & ~(own_view_flag | characters_flags)) != 0 ||
+                    !conker::netplay::valid_characters((uint8_t)(replay_flags >> characters_shift)) ||
+                    (pairs >> pair_ports) != 0 || std::popcount(pairs) % 2 != 0) {
                     std::fprintf(stderr, "[harness] %s has flags or view pairs this build doesn't know\n", replay_path.c_str());
                     return false;
                 }
@@ -1280,6 +1290,22 @@ bool conker::harness::parse_option(int argc, char** argv, int& i) {
         own_view_option = true;
         return true;
     }
+    if (std::strcmp(option, "--characters") == 0) {
+        // The most characters in a multiplayer game: 0 (the game's own), 12 or 16 (more_bots.cpp).
+        const std::string value = has_value ? argv[i + 1] : "";
+        const int characters = value == "0" ? 0 : value == "12" ? 12 : value == "16" ? 16 : -1;
+        if (characters < 0) {
+            std::fprintf(stderr, "[harness] --characters needs 0 (the game's own), 12 or 16\n");
+            options_valid = false;
+        }
+        else {
+            characters_option = characters;
+        }
+        if (has_value) {
+            i++;
+        }
+        return true;
+    }
     if (std::strcmp(option, "--view-pairs") == 0) {
         // Port numbers from 1, e.g. 12 or 34.
         view_pairs_option = 0;
@@ -1377,6 +1403,14 @@ bool conker::harness::prepare() {
         std::fprintf(stderr, "[harness] --record and --replay can't be used together\n");
         return false;
     }
+    if (characters_option >= 0) {
+        if (conker::lockstep::active() && !conker::lockstep::hosts()) {
+            // Joining (or Quick Match, the game's own): the host's rule.
+            std::fprintf(stderr, "[harness] --characters is the host's choice\n");
+            return false;
+        }
+        conker::lockstep::set_characters(characters_option);
+    }
     if (!conker::lockstep::prepare()) {
         return false;
     }
@@ -1404,9 +1438,11 @@ bool conker::harness::prepare() {
         std::fprintf(stderr, "[harness] --view-pairs has a port past --ports (%d)\n", ports);
         return false;
     }
-    if ((own_view_option || view_pairs_option != 0) && !replay_path.empty()) {
-        // A replay goes by its recording's rule, so it gives the game its recording did.
-        std::fprintf(stderr, "[harness] --own-view and --view-pairs are for recording or hashing: a replay has its recording's\n");
+    if ((own_view_option || view_pairs_option != 0 || (characters_option >= 0 && !conker::lockstep::active())) &&
+        !replay_path.empty()) {
+        // A replay goes by its recording's rule, so it gives the game its recording did (in a match, by the match's:
+        // a host's --characters is its rule).
+        std::fprintf(stderr, "[harness] --own-view, --view-pairs and --characters are for recording or hashing: a replay has its recording's\n");
         return false;
     }
     if (!replay_path.empty() && !load_replay()) {
@@ -1486,6 +1522,16 @@ bool conker::harness::own_view_rule() {
         return conker::lockstep::own_view_for_everyone();
     }
     return !replay.empty() ? (replay_flags & own_view_flag) != 0 : own_view_option;
+}
+
+int conker::harness::characters_rule() {
+    if (!conker::netplay_profile::active()) {
+        return 0;
+    }
+    if (conker::lockstep::connected()) {
+        return conker::lockstep::characters();
+    }
+    return !replay.empty() ? (int)((replay_flags & characters_flags) >> characters_shift) : std::max(characters_option, 0);
 }
 
 bool conker::harness::fixes_ports() {
@@ -1597,7 +1643,8 @@ void conker::harness::start(uint8_t* game_rdram) {
         put_u32(header + 12, (uint32_t)ports);
         put_u64(header + 16, rom_hash);
         put_u64(header + 24, profile_hash);
-        put_u32(header + 32, conker::harness::own_view_rule() ? own_view_flag : 0);
+        put_u32(header + 32, (conker::harness::own_view_rule() ? own_view_flag : 0) |
+            ((uint32_t)conker::harness::characters_rule() << characters_shift));
         put_u32(header + 36, conker::harness::view_pairs());
         std::fwrite(header, 1, sizeof(header), record_file);
     }

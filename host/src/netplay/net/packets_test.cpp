@@ -66,13 +66,15 @@ int main() {
     // Each kind, at its documented size.
     CHECK(round_trips(Hello{ 0x0123456789ABCDEFull, 2, 3, 4, 5, 1, 9, 1 }, 55));
     CHECK(round_trips(Hello{ 1, 2, 3, 4, 5, 3, ~0ull, 3 }, 55));
-    CHECK(round_trips(Welcome{ 0x02, 2 }, 11));
-    CHECK(round_trips(Welcome{ 0x08, 4 }, 11));
-    CHECK(round_trips(Welcome{ 0x0E, 4 }, 11));     // three players on one machine
-    CHECK(round_trips(Welcome{ 0x0C, 4, 1, 1, 0x0C, max_rollback }, 11));    // coming back to a match under way
-    CHECK(round_trips(Welcome{ 0x08, 4, 2, 0, 0x06, 0 }, 11));      // joining one under way
-    CHECK(round_trips(Welcome{ 0, 3 }, 11));                        // a spectator
-    CHECK(round_trips(Welcome{ 0, 4, 2, 1, 0x06, 4 }, 11));         // ...of a match under way
+    CHECK(round_trips(Welcome{ 0x02, 2 }, 12));
+    CHECK(round_trips(Welcome{ 0x08, 4 }, 12));
+    CHECK(round_trips(Welcome{ 0x0E, 4 }, 12));     // three players on one machine
+    CHECK(round_trips(Welcome{ 0x0C, 4, 1, 1, 0x0C, max_rollback }, 12));    // coming back to a match under way
+    CHECK(round_trips(Welcome{ 0x08, 4, 2, 0, 0x06, 0 }, 12));      // joining one under way
+    CHECK(round_trips(Welcome{ 0, 3 }, 12));                        // a spectator
+    CHECK(round_trips(Welcome{ 0, 4, 2, 1, 0x06, 4 }, 12));         // ...of a match under way
+    CHECK(round_trips(Welcome{ 0x08, 4, 2, 0, 0, 0, 16 }, 12));     // its characters
+    CHECK(round_trips(Welcome{ 0x08, 4, 1, 0, 0, 0, 12 }, 12));
     CHECK(round_trips(Hello{ 1, 2, 3, 4, 5, 0, 1, 1 }, 55));        // nobody playing on the joiner: a spectator
     CHECK(round_trips(Refuse{ Reason::rom }, 47));
     CHECK(round_trips(Refuse{ Reason::build, "v0.1.6-netplay.15" }, 47));
@@ -91,14 +93,14 @@ int main() {
     CHECK(hash[277] == 0 && hash[278] == 255 && hash[279] == 3 && hash[280] == 1);                // reads waited
     CHECK(hash[281] == 9 && hash[282] == 0 && hash[283] == 2 && hash[284] == 255);                // ...long
     CHECK(round_trips(Bye{ Reason::desync }, 6));
-    CHECK(round_trips(start_of(3, 0), 14));
-    CHECK(round_trips(start_of(4, 1, max_delay), 14));
-    CHECK(round_trips(start_of(4, 1, 2, 0x0C), 14));
-    CHECK(round_trips(start_of(2, 0, 1, 0, max_rollback), 14));
-    CHECK(round_trips(start_of(4, 1, 2, 0x06, 0, 0x08), 14));       // an open seat
+    CHECK(round_trips(start_of(3, 0), 15));
+    CHECK(round_trips(start_of(4, 1, max_delay), 15));
+    CHECK(round_trips(start_of(4, 1, 2, 0x0C), 15));
+    CHECK(round_trips(start_of(2, 0, 1, 0, max_rollback), 15));
+    CHECK(round_trips(start_of(4, 1, 2, 0x06, 0, 0x08), 15));       // an open seat
     Start delays = start_of(4, 0);
     delays.delays = { 0, 3, max_delay, 1 };                        // each port's own
-    CHECK(round_trips(delays, 14));
+    CHECK(round_trips(delays, 15));
     CHECK(round_trips(Gone{ 3, 4000000000u }, 11));
     CHECK(round_trips(Gone{ 1, 5, 1 }, 11));
     const std::vector<uint8_t> gone = bytes_of(Gone{ 2, 0x01020304, 1 });
@@ -125,9 +127,14 @@ int main() {
     CHECK(inputs.size() == 161 && inputs[155] == 0x80 && inputs[156] == 3 && inputs[157] == 0 && inputs[158] == 0x7F);  // gaps
     Start laid_out = start_of(3, 1, 0, 0x03, 8, 0x04);
     laid_out.delays = { 3, 0, 1, 2 };
+    laid_out.characters = 16;
     const std::vector<uint8_t> start = bytes_of(laid_out);
-    CHECK(start.size() == 14 && start[5] == 3 && start[6] == 1 && start[7] == 3 && start[8] == 0 && start[9] == 1 && start[10] == 2 &&
-        start[11] == 0x03 && start[12] == 8 && start[13] == 0x04);
+    CHECK(start.size() == 15 && start[5] == 3 && start[6] == 1 && start[7] == 3 && start[8] == 0 && start[9] == 1 && start[10] == 2 &&
+        start[11] == 0x03 && start[12] == 8 && start[13] == 0x04 && start[14] == 16);
+    CHECK(round_trips(laid_out, 15));
+    Start twelve = start_of(4, 0);
+    twelve.characters = 12;
+    CHECK(round_trips(twelve, 15));
 
     // Out-of-range fields are neither sent nor accepted.
     CHECK(bytes_of(Welcome{ 0x04, 2 }).empty());    // a port not below players
@@ -141,6 +148,8 @@ int main() {
     CHECK(bytes_of(Welcome{ 0x02, 2, 1, 0, 0x04 }).empty());        // pairs past the players
     CHECK(bytes_of(Welcome{ 0x02, 3, 1, 0, 0x01 }).empty());        // an odd number of them
     CHECK(bytes_of(Welcome{ 0x02, 2, 1, 0, 0, max_rollback + 1 }).empty());
+    CHECK(bytes_of(Welcome{ 0x02, 2, 0, 0, 0, 0, 16 }).empty());     // characters only when rejoining
+    CHECK(bytes_of(Welcome{ 0x02, 2, 1, 0, 0, 0, 13 }).empty());     // characters 0, 12 or 16
     CHECK(bytes_of(Hello{ 1, 2, 3, 4, 5, 4, 1, 1 }).empty());  // nobody left for the host
     CHECK(bytes_of(Hello{ 1, 2, 3, 4, 5, 1, 0, 1 }).empty());  // no player id
     CHECK(bytes_of(Hello{ 1, 2, 3, 4, 5, 1, 1, 0 }).empty());  // no platform
@@ -156,6 +165,9 @@ int main() {
     CHECK(bytes_of(start_of(4, 1, 0, 0x07)).empty()); // an odd number of ports in pairs
     CHECK(bytes_of(start_of(2, 0, 0, 0, max_rollback + 1)).empty());
     CHECK(bytes_of(start_of(3, 0, 0, 0, 0, 0x01)).empty());     // the host's port open
+    Start bad_characters = start_of(4, 0);
+    bad_characters.characters = 8;
+    CHECK(bytes_of(bad_characters).empty());                    // characters 0, 12 or 16
     CHECK(bytes_of(start_of(3, 0, 0, 0, 0, 0x08)).empty());     // an open port past the players
     CHECK(bytes_of(start_of(4, 0, 0, 0x0C, 0, 0x08)).empty());  // an open port in a pair
     CHECK(bytes_of(Delay{ 0x01, max_delay + 1, 30 }).empty());
@@ -277,18 +289,19 @@ int main() {
     roster.seats[0] = { 0x0102030405060708ull, 1, 1, 0 };
     roster.seats[2] = { 9, 2, 0, 0xFFFF };
     roster.rollback = max_rollback;
+    roster.characters = 16;
     roster.watchers[1] = { 0x1112131415161718ull, 3 };
-    CHECK(round_trips(roster, 130));
+    CHECK(round_trips(roster, 131));
     Roster settings_only;
     settings_only.delay = max_delay;
     settings_only.spectators = 0;
-    CHECK(round_trips(settings_only, 130));
+    CHECK(round_trips(settings_only, 131));
     CHECK(round_trips(Ready{ 1 }, 6));
     CHECK(round_trips(Ready{ 0 }, 6));
     const std::vector<uint8_t> r = bytes_of(roster);
     CHECK(r[4] == 10 && r[5] == 8 && r[12] == 1 && r[13] == 1 && r[14] == 1 && r[15] == 0 && r[29] == 9 && r[37] == 2 &&
         r[39] == 0xFF && r[40] == 0xFF && r[53] == 3 && r[54] == 0 && r[55] == auto_delay && r[56] == max_rollback && r[57] == 1 &&
-        r[58] == 0 && r[66] == 0 && r[67] == 0x18 && r[74] == 0x11 && r[75] == 3 && r[129] == 0);
+        r[58] == 16 && r[59] == 0 && r[67] == 0 && r[68] == 0x18 && r[75] == 0x11 && r[76] == 3 && r[130] == 0);
     Roster bad_roster = roster; bad_roster.players = 1; CHECK(bytes_of(bad_roster).empty());
     bad_roster = roster; bad_roster.players = 2; CHECK(bytes_of(bad_roster).empty());           // a seat past the players
     bad_roster = roster; bad_roster.seats[1].ready = 1; CHECK(bytes_of(bad_roster).empty());    // a free seat that isn't all zero
@@ -298,6 +311,7 @@ int main() {
     bad_roster = roster; bad_roster.delay = max_delay + 1; CHECK(bytes_of(bad_roster).empty());
     bad_roster = roster; bad_roster.rollback = max_rollback + 1; CHECK(bytes_of(bad_roster).empty());
     bad_roster = roster; bad_roster.spectators = 2; CHECK(bytes_of(bad_roster).empty());
+    bad_roster = roster; bad_roster.characters = 15; CHECK(bytes_of(bad_roster).empty());
     bad_roster = roster; bad_roster.watchers[0].platform = 1; CHECK(bytes_of(bad_roster).empty());    // nobody, but not all zero
     bad_roster = roster; bad_roster.watchers[1].platform = 4; CHECK(bytes_of(bad_roster).empty());
     CHECK(bytes_of(Ready{ 2 }).empty());
@@ -306,7 +320,8 @@ int main() {
     data = r; data[53] = 5; CHECK(!decodes(data));
     data = r; data[55] = max_delay + 1; CHECK(!decodes(data));
     data = r; data[57] = 2; CHECK(!decodes(data));
-    data = r; data[75] = 0; CHECK(!decodes(data));                 // a spectator with no platform
+    data = r; data[58] = 13; CHECK(!decodes(data));                // characters 0, 12 or 16
+    data = r; data[76] = 0; CHECK(!decodes(data));                 // a spectator with no platform
     data = bytes_of(Ready{ 1 }); data[5] = 2; CHECK(!decodes(data));
     data = bytes_of(Refuse{ Reason::watching }); CHECK(data.size() == 47 && data[5] == last_reason && data[6] == 0);
 

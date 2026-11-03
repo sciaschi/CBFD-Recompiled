@@ -6,18 +6,21 @@ moment of the same match. For trying multiplayer things (netplay's "my view only
 without playing through the menus each time. Replay it with --fast, in a window with shot.sh.
 
     make_match.py <out.pads> [--mode war] [--players 4] [--variant 0] [--pause] [--mouse] [--play-reads 900]
-                  [--seed 1] [--own-view] [--view-pairs 12]
+                  [--seed 1] [--own-view] [--view-pairs 12] [--characters 16 --bots 12]
 
 From boot: the intro (it can't be skipped), Start on the title, the main menu's MULTI, the mode's barrel in
 the cellar, its list's --variant'th entry (War's 1 is Colors, Race's 1 is Race B, Deathmatch's are maps),
-every other player pressing Start once (twice takes them out again), then player 1 starting the match and
+every other player pressing Start once (twice takes them out again), player 1 adding --bots bots in the bot menu
+(none: the game's own, one in Deathmatch alone; right in Deathmatch and Tank, down in the team games, where it adds
+one to each team), then player 1 starting the match and
 some 30 seconds of it with nobody moving. --pause pauses it at the end. A Race is started with Start
 alone (more presses pause it and quit). --mouse has every player play in those 30 seconds instead (or for
 --play-reads reads, 30 a second): move and turn with the stick, hold R to aim at times, and move their
 mouse, gyro and scroll wheel (from --seed, as make_inputs.py --mouse does), with settings (Controls) of
 their own. --own-view marks it as a match whose rule is that everyone sees only their own view (it changes
 the split screen's culls); --view-pairs, with the views of those ports (from 1) shown two to a window, as
-on a machine with two players.
+on a machine with two players. --characters is the most characters (players and bots) in the match's multiplayer
+games, its rule (more_bots.cpp: 0, the game's own, 12 or 16).
 
 The recording's format is the harness's (see its header comment), with its ROM and settings profile hashes
 0 (not checked). The timings were measured with the US ROM on the timeline: a change to what the game does
@@ -48,6 +51,8 @@ def main():
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--own-view", action="store_true")
     parser.add_argument("--view-pairs", default="")
+    parser.add_argument("--characters", type=int, default=0, choices=(0, 12, 16))
+    parser.add_argument("--bots", type=int, default=0)
     args = parser.parse_args()
     rng = random.Random(args.seed)
     motions = {}  # read: each port's 13 bytes
@@ -86,8 +91,14 @@ def main():
         press(port, START); wait(40)
     wait(60)
     starts = (START, A) if args.mode == "race" else (START, A, START, A, A)
-    for buttons in starts:
+    for i, buttons in enumerate(starts):
         press(0, buttons); wait(120 if args.mode != "race" else 60)
+        if i == 0 and args.bots > 0:
+            # The bot menu: each press adds bots, up to the most the match allows.
+            team = args.mode in ("war", "beach", "raptor", "heist")
+            for _ in range(args.bots):
+                press(0, stick_y=-80, count=8) if team else press(0, stick_x=80, count=8)
+                wait(40)
     # Some 30 seconds in (a Race 10: its bikes move by themselves, so with nobody steering they crash until
     # they run out of lives, and it ends).
     if args.mouse and args.mode != "race":
@@ -115,7 +126,7 @@ def main():
         press(0, START); wait(200)
 
     with open(args.out, "wb") as f:
-        f.write(header(args.players, args.own_view, args.view_pairs))
+        f.write(header(args.players, args.own_view, args.view_pairs, args.characters))
         for i, read in enumerate(reads):
             f.write(read + motions.get(i, NO_MOTION * 4))
     print(f"{args.out}: {len(reads)} reads, {args.mode} ({args.variant}), {args.players} players")

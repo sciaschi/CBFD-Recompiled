@@ -123,6 +123,10 @@ namespace {
     bool spectators_option = true;
     bool host_own_view = true;      // hosting: the rule this peer will start the match with
     bool match_own_view = false;    // the rule of the match under way
+    // The most characters in a multiplayer game (more_bots.cpp; 0: the game's own): hosting, the rule this peer
+    // will start the match with; and the match's (Start, or Welcome for one under way).
+    int host_characters = 0;
+    int match_characters = 0;
     uint8_t match_pairs = 0;        // ...and the ports shown two to a window (Start)
     // --input-delay's, or the menu's: the reads ahead, or auto (the host chooses from the round trips).
     constexpr int auto_delay = -1;
@@ -711,7 +715,7 @@ namespace {
         session->set_blocked(blocked_players);
         session->set_release(conker::netplay::release_name());
         if (session->hosting()) {
-            session->set_room_settings(host_own_view, delay_option, rollback_option, spectators_option);
+            session->set_room_settings(host_own_view, delay_option, rollback_option, spectators_option, host_characters);
             session->set_seat_hold(seat_hold_option);
             ready_now = auto_ready;
             session->set_ready(ready_now);
@@ -793,8 +797,8 @@ namespace {
             conker::netplay::build_id(), hex(sent.build).c_str(), hex(sent.rom).c_str(), hex(sent.profile).c_str(), hex(sent.mods).c_str());
         std::fprintf(file, "  \"players\": %d,\n  \"input_delay\": %d,\n  \"input_delays\": [", match_players, own_delay_at(read));
         for (int p = 0; p < match_players; p++) std::fprintf(file, "%s%d", p == 0 ? "" : ", ", delay_at(p, read));
-        std::fprintf(file, "],\n  \"own_view\": %s,\n  \"view_pairs\": %u,\n  \"rollback\": %d,\n",
-            match_own_view ? "true" : "false", match_pairs, match_rollback);
+        std::fprintf(file, "],\n  \"own_view\": %s,\n  \"view_pairs\": %u,\n  \"rollback\": %d,\n  \"characters\": %d,\n",
+            match_own_view ? "true" : "false", match_pairs, match_rollback, match_characters);
         std::fprintf(file, "  \"hash\": \"%s\",\n  \"their_hash\": \"%s\",\n  \"differing_regions\": [",
             hex(own.hash).c_str(), hex(theirs.hash).c_str());
         for (size_t i = 0; i < regions.size(); i++) std::fprintf(file, "%s%d", i == 0 ? "" : ", ", regions[i]);
@@ -3134,6 +3138,7 @@ bool conker::lockstep::begin(const netplay::Hello& me, std::string& error) {
     left = false;
     current_read = 0;
     match_own_view = false;
+    match_characters = 0;
     match_pairs = 0;
     watching = false;
     watched = 0;
@@ -3514,6 +3519,7 @@ conker::lockstep::Progress conker::lockstep::poll_connect(std::string& status) {
                     joining_late = true;
                     match_started = true;
                     match_own_view = event.own_view;
+                    match_characters = event.characters;
                     match_pairs = event.pairs;
                     match_rollback = event.rollback;
                     rollback_option = event.rollback;
@@ -3533,6 +3539,7 @@ conker::lockstep::Progress conker::lockstep::poll_connect(std::string& status) {
                     joining_late = event.late;
                     match_started = true;
                     match_own_view = event.own_view;
+                    match_characters = event.characters;
                     match_pairs = event.pairs;
                     rollback_option = event.rollback;
                     match_rollback = event.rollback;
@@ -3563,6 +3570,7 @@ conker::lockstep::Progress conker::lockstep::poll_connect(std::string& status) {
             case Event::Type::started:
                 match_started = true;
                 match_own_view = event.own_view;
+                match_characters = event.characters;
                 match_pairs = event.pairs;
                 match_rollback = event.rollback;
                 rollback_option = event.rollback;
@@ -3613,9 +3621,10 @@ conker::lockstep::Progress conker::lockstep::poll_connect(std::string& status) {
     const bool open_now = rendezvous == Rendezvous::none && (start_open || (start_with > 0 && joined >= start_with));
     if (hosting && !match_started && (joined == match_players || open_now) && session->everyone_ready(!open_now)) {
         const std::array<uint8_t, netplay::max_players> chosen = start_delays();
-        if (session->start(host_own_view, chosen, rollback_option, open_now)) {
+        if (session->start(host_own_view, chosen, rollback_option, open_now, host_characters)) {
             match_started = true;
             match_own_view = host_own_view;
+            match_characters = host_characters;
             match_pairs = session->pairs();
             for (int port = 0; port < netplay::max_players; port++) {
                 delays[port] = { 0, chosen[port], chosen[port] };
@@ -3685,9 +3694,10 @@ conker::lockstep::Progress conker::lockstep::poll_connect(std::string& status) {
         for (int port = 0; !by_port.empty() && port < match_players; port++) {
             by_port += (port == 0 ? "" : ", ") + std::to_string(delays[port].after) + (port == match_players - 1 ? ")" : "");
         }
-        std::printf("[netplay] the match starts: %d players, this is %s, input delay %d reads%s%s%s%s\n", match_players,
+        std::printf("[netplay] the match starts: %d players, this is %s, input delay %d reads%s%s%s%s%s\n", match_players,
             watching ? "a spectator" : ports_text(own_ports).c_str(), delay, by_port.c_str(),
             match_own_view ? ", everyone sees only their own view" : "",
+            match_characters > 0 ? (", up to " + std::to_string(match_characters) + " characters").c_str() : "",
             match_rollback > 0 ? (", rollback " + std::to_string(match_rollback) + " reads").c_str() : "",
             open_ports != 0 ? (", " + ports_text(open_ports) + " open").c_str() : "");
         publish();
@@ -4029,6 +4039,7 @@ conker::lockstep::WaitingRoom conker::lockstep::waiting_room() {
     room.players = roster.players;
     room.ready = ready_now;
     room.own_view = roster.own_view != 0;
+    room.characters = roster.characters;
     room.delay = roster.delay == netplay::auto_delay ? -1 : roster.delay;
     room.rollback = roster.rollback;
     for (int port = 0; port < netplay::max_players; port++) {
@@ -4165,6 +4176,7 @@ conker::lockstep::WaitingRoom conker::lockstep::match_room() {
     room.hosting = session->hosting();
     room.players = match_players;
     room.own_view = match_own_view;
+    room.characters = match_characters;
     room.delay = delay;
     room.rollback = match_rollback;
     const std::array<int, netplay::max_players> trips = session->round_trips_by_port();
@@ -4274,6 +4286,18 @@ int conker::lockstep::players() {
 
 int conker::lockstep::input_delay() {
     return delay;
+}
+
+void conker::lockstep::set_characters(int characters) {
+    host_characters = characters >= 0 && characters <= 0xFF && netplay::valid_characters((uint8_t)characters) ? characters : 0;
+}
+
+bool conker::lockstep::hosts() {
+    return host_port > 0 || host_room;
+}
+
+int conker::lockstep::characters() {
+    return match_started ? match_characters : 0;
 }
 
 bool conker::lockstep::own_view_for_everyone() {

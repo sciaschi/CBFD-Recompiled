@@ -29,8 +29,8 @@
 // crash). The pause and match-end scores (func_151EA15C at 0x151EABBC) take it from that table or another, by
 // the rank less 1. Past 12th, each gets one of 13th to 16th, written into that page.
 //
-// In netplay (and a replay or recording) it's the game's own, the same on every machine: the setting changes the
-// game's memory, and each machine has its own.
+// In netplay (and a replay or recording) it's the match's rule (the host's), the same on every machine: the
+// harness's characters_rule.
 
 #include <algorithm>
 #include <cstdint>
@@ -64,9 +64,11 @@ namespace {
 
     // The rule: the setting, or in netplay the match's.
     int characters() {
+#if defined(CONKER_NETPLAY)
         if (conker::netplay_profile::active()) {
-            return 0;
+            return conker::harness::characters_rule();
         }
+#endif
         if (!option_added) {
             return 0;
         }
@@ -104,7 +106,7 @@ void conker::more_bots::add_options(recomp::config::Config& config) {
         "fewer bots the more players there are: none in a 4-player Deathmatch or War). <recomp-color primary>Original"
         "</recomp-color> for the game's own. Tank stops at 12, Beach and Raptor at 10 (one side keeps its size), and "
         "Race is the game's own. 16 takes effect the next "
-        "time the game starts (until then it's 12). Netplay matches are the game's own.",
+        "time the game starts (until then it's 12). In netplay it's the host's choice.",
         choices, Characters::Original);
     option_added = true;
 }

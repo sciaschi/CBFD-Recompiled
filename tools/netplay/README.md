@@ -39,6 +39,7 @@ Its options (see `host/src/netplay/harness.cpp`):
 | `--real-time` | runs the game on the time, as normally, instead of the timeline, to compare |
 | `--own-view` | records or hashes as a match whose rule is that every player sees only their own view (it widens the split screen's culls, see `host/src/netplay/view.cpp`); the recording says so, and its replay does the same (a replay can't be given it: it goes by its recording's) |
 | `--view-pairs <ports>` | ...with those ports' views shown two to a window (e.g. `12`), as on a machine with two players; recorded too |
+| `--characters <n>` | the most characters (players and bots) in a multiplayer game: `0` (the game's own), `12` or `16` (`host/src/more_bots.cpp`); recorded too (a replay goes by its recording's). Hosting a match, the match's rule, which the others take from the host (a joiner's is refused) |
 
 While any of these are used, the game starts from an empty save of its own (`saves/harness/`, emptied
 each run; your own save isn't touched) and sees fixed controllers. Reads are counted from the first,
@@ -125,7 +126,8 @@ A recording (version 4) holds the ROM's XXH3-64 and the profile's hash: a replay
 another profile is refused before the game starts. `make_inputs.py` writes 0 for both, which isn't
 checked. It holds each player's mouse and gyro movement and Controls beside their pad at each read,
 whether the match's rule was that everyone sees only their own view (`--own-view`), and which ports'
-views were shown two to a window (`--view-pairs`), which change the split screen's culls. Version 3
+views were shown two to a window (`--view-pairs`), which change the split screen's culls, and the most
+characters in a multiplayer game (`--characters`: the flags' bits 8-15), which changes the game's memory. Version 3
 recordings (16-bit Controls, no rule) replay as split screen;
 version 2 recordings (before the mouse) replay with no movement and the default settings;
 version 1 recordings (before the profile) are replayed unchecked.

@@ -85,6 +85,7 @@ namespace conker::netplay {
         std::array<uint8_t, max_players> delays{};  // started: each port's input delay
         uint8_t pairs = 0;      // started (and welcomed back): the ports shown two to a window (each machine with two players')
         int rollback = 0;       // started (and welcomed back): the reads every peer predicts ahead (0: off)
+        int characters = 0;     // started (and welcomed back): the most characters in a multiplayer game (0: the game's own)
         Reason reason = Reason::quit;
         std::string detail;     // the library's account of a closed connection, for the log
         std::string release;    // ended by a Refuse: the host's release, if it said (another release, to get)
@@ -171,16 +172,16 @@ namespace conker::netplay {
         // Host: once every port is taken (false until then; or at once with `open_seats`, the free ports open), starts
         // the match: tells the joiners, and takes new players only on free ports from then on. `own_view`: every player
         // sees only their own view (the match's rule); `delays`: each port's input delay; `rollback`: the reads
-        // every peer predicts ahead (0: off).
+        // every peer predicts ahead (0: off); `characters`: the most in a multiplayer game (packets.hpp's valid_characters).
         bool start(bool own_view = false, const std::array<uint8_t, max_players>& delays = { 2, 2, 2, 2 }, int rollback = 0,
-            bool open_seats = false);
+            bool open_seats = false, int characters = 0);
         // The waiting room, before the start (packets.hpp's Roster and Ready). Host: the match's settings it
         // shows (`delay` -1: auto), whether its own players are ready (its Start), the players it keeps out
         // (their player ids: refused as kicked), and kick, which drops a port's machine (kicked; false if no
         // joiner has it). Joiner: set_ready tells the host. roster(): as the host last sent it (the host's:
         // as it is now; it's sent in the match too); everyone_ready: host, every machine ready, and every port taken
         // (unless not `full`). `spectators`: the host takes them (they're never waited for).
-        void set_room_settings(bool own_view, int delay, int rollback, bool spectators = true);
+        void set_room_settings(bool own_view, int delay, int rollback, bool spectators = true, int characters = 0);
         void set_ready(bool ready);
         void set_blocked(const std::vector<uint64_t>& players) { blocked = players; }
         // Host: this game's release (hello.hpp's release_name), told to each joiner it refuses (not if it
@@ -362,6 +363,7 @@ namespace conker::netplay {
         uint8_t match_pairs = 0;
         uint8_t match_rollback = 0;
         uint8_t match_open = 0;
+        uint8_t match_characters = 0;
         // Host: by port, the player who left it in the match (0: none, or kicked), who may come back, and how often
         // each port has been come back to (a player can't make everyone wait for a state again and again).
         std::array<uint64_t, max_players> left_players{};

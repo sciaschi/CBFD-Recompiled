@@ -23,7 +23,7 @@
 
 namespace conker::netplay {
     // Changes whenever any packet's layout or meaning does: peers with another one are refused.
-    constexpr uint16_t protocol_version = 24;
+    constexpr uint16_t protocol_version = 25;
     // The longest release name a Refuse carries (hello.hpp's release_name; signal_packets.hpp's max_release).
     constexpr size_t max_release_name = 40;
     // Every character of `text` printable, with no spaces (release names, a server's texts): the length is each one's own.
@@ -51,6 +51,11 @@ namespace conker::netplay {
     constexpr int max_delay = 8;
     // The most reads a peer predicts ahead with rollback (Start).
     constexpr int max_rollback = 12;
+    // The most characters (players and bots) a multiplayer game may have (Start: the host's rule, more_bots.cpp):
+    // 0, the game's own, or 12 or 16.
+    inline bool valid_characters(uint8_t characters) {
+        return characters == 0 || characters == 12 || characters == 16;
+    }
 
     // One controller read of one pad, as the N64 gives it to the game (the harness's 5 bytes).
     struct Pad {
@@ -138,7 +143,7 @@ namespace conker::netplay {
     // player who left it coming back to their ports; (2) the match is under way, and this is a new player
     // taking free ones (an open seat, or one whose player left and didn't come back in time): either way their
     // game starts at once, and loads the host's (Rejoin); with the match's rules from Start (0 and none for a new
-    // joiner before the start, who gets Start).
+    // joiner before the start, who gets Start), its characters among them.
     struct Welcome {
         uint8_t ports = 0;
         uint8_t players = 0;
@@ -146,6 +151,7 @@ namespace conker::netplay {
         uint8_t own_view = 0;
         uint8_t pairs = 0;
         uint8_t rollback = 0;
+        uint8_t characters = 0;
         bool operator==(const Welcome&) const = default;
     };
     // Host to joiner: not accepted, then the connection is closed; and the host's release (empty, or 1 to
@@ -196,8 +202,9 @@ namespace conker::netplay {
     // Host to everyone, once every port is taken: the match starts, with this many players, whether every
     // player sees only their own view of the split screen (the host's rule for the match: 1) or each chooses
     // (0), each port's input delay (0 to max_delay: how many reads ahead its pads are sent), and the ports whose views are shown two to a window
-    // (bit n: port n; the ports of each machine with two players), which the culls go by in "my view only", and
-    // how many reads every peer predicts the others' inputs ahead (rollback: 0, off, to max_rollback). The host
+    // (bit n: port n; the ports of each machine with two players), which the culls go by in "my view only",
+    // how many reads every peer predicts the others' inputs ahead (rollback: 0, off, to max_rollback), and the most
+    // characters its multiplayer games may have (valid_characters: the game's memory is laid out by it). The host
     // may start before every port is taken: `open` (bit n: port n; never the host's port 0, nor a pair's) are
     // free, idle from read 0 (as for a player who left at once), for players joining later (Welcome's 2).
     struct Start {
@@ -207,6 +214,7 @@ namespace conker::netplay {
         uint8_t pairs = 0;
         uint8_t rollback = 0;
         uint8_t open = 0;
+        uint8_t characters = 0;
         bool operator==(const Start&) const = default;
     };
     // Leaving, and why.
@@ -245,7 +253,7 @@ namespace conker::netplay {
     // (`player` 0: free; a machine with several players is on several ports), whether they're ready, their
     // platform and the round trip to the host (ms, the host's own 0; 0xFFFF not known yet), and the match's
     // settings: its players, whether everyone sees only their own view, its input delay (0 to max_delay, or
-    // auto_delay: chosen as it starts) and its rollback; whether it takes spectators, and theirs (`player` 0: none
+    // auto_delay: chosen as it starts), its rollback and characters; whether it takes spectators, and theirs (`player` 0: none
     // there; the host's spectator numbers, which stay theirs while they watch). Sent in the match too.
     constexpr uint8_t auto_delay = 0xFF;
     struct Seat {
@@ -267,6 +275,7 @@ namespace conker::netplay {
         uint8_t delay = auto_delay;
         uint8_t rollback = 0;
         uint8_t spectators = 1;
+        uint8_t characters = 0;
         std::array<Watcher, max_spectators> watchers{};
         bool operator==(const Roster&) const = default;
     };
