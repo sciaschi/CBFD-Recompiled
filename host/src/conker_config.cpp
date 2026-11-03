@@ -233,6 +233,7 @@ void conker::init_config() {
     general_options.has_mouse_sensitivity = false;
     recomp::config::Config& general_config = recompui::config::create_general_tab(general_options);
     conker::rumble::add_options(general_config);
+    conker::more_bots::add_options(general_config);
     conker::notices::add_options(general_config);
     conker::local_achievements::add_options(general_config);
     conker::save_states::add_options(general_config);

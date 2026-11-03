@@ -110,6 +110,7 @@ add_executable(ConkerRecomp
     src/model_detail.cpp
     src/shadow_smoothing.cpp
     src/render_fixes.cpp
+    src/more_bots.cpp
     src/look_aim.cpp
     src/mouse_camera.cpp
     src/sound_volumes.cpp
