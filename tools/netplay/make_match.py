@@ -5,18 +5,19 @@ Writes a recording that plays from boot into a multiplayer match, for the determ
 moment of the same match. For trying multiplayer things (netplay's "my view only", split-screen rendering)
 without playing through the menus each time. Replay it with --fast, in a window with shot.sh.
 
-    make_match.py <out.pads> [--mode war] [--players 4] [--variant 0] [--pause] [--mouse] [--seed 1] [--own-view]
-                  [--view-pairs 12]
+    make_match.py <out.pads> [--mode war] [--players 4] [--variant 0] [--pause] [--mouse] [--play-reads 900]
+                  [--seed 1] [--own-view] [--view-pairs 12]
 
 From boot: the intro (it can't be skipped), Start on the title, the main menu's MULTI, the mode's barrel in
 the cellar, its list's --variant'th entry (War's 1 is Colors, Race's 1 is Race B, Deathmatch's are maps),
 every other player pressing Start once (twice takes them out again), then player 1 starting the match and
 some 30 seconds of it with nobody moving. --pause pauses it at the end. A Race is started with Start
-alone (more presses pause it and quit). --mouse has every player play in those 30 seconds instead: move
-and turn with the stick, hold R to aim at times, and move their mouse, gyro and scroll wheel (from
---seed, as make_inputs.py --mouse does), with settings (Controls) of their own. --own-view marks it as a match
-whose rule is that everyone sees only their own view (it changes the split screen's culls); --view-pairs, with
-the views of those ports (from 1) shown two to a window, as on a machine with two players.
+alone (more presses pause it and quit). --mouse has every player play in those 30 seconds instead (or for
+--play-reads reads, 30 a second): move and turn with the stick, hold R to aim at times, and move their
+mouse, gyro and scroll wheel (from --seed, as make_inputs.py --mouse does), with settings (Controls) of
+their own. --own-view marks it as a match whose rule is that everyone sees only their own view (it changes
+the split screen's culls); --view-pairs, with the views of those ports (from 1) shown two to a window, as
+on a machine with two players.
 
 The recording's format is the harness's (see its header comment), with its ROM and settings profile hashes
 0 (not checked). The timings were measured with the US ROM on the timeline: a change to what the game does
@@ -43,6 +44,7 @@ def main():
     parser.add_argument("--variant", type=int, default=0)
     parser.add_argument("--pause", action="store_true")
     parser.add_argument("--mouse", action="store_true")
+    parser.add_argument("--play-reads", type=int, default=900)
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--own-view", action="store_true")
     parser.add_argument("--view-pairs", default="")
@@ -91,7 +93,7 @@ def main():
     if args.mouse and args.mode != "race":
         moving = [Movement(rng) for _ in range(4)]
         held = [[0, 0, 0, 0] for _ in range(4)]  # buttons, stick x, stick y, reads left
-        for _ in range(900):
+        for _ in range(args.play_reads):
             read = bytearray([4])
             for p in range(4):
                 if p >= args.players:

@@ -1,0 +1,12 @@
+# Builds the signalling server from this repository instead of pulling it (compose.yaml says how).
+services:
+  signal:
+    image: conker-netplay-server:local
+    build:
+      context: ../../..
+      dockerfile: tools/netplay/server/Dockerfile
+  net:
+    image: conker-netplay-server:local
+    build:
+      context: ../../..
+      dockerfile: tools/netplay/server/Dockerfile

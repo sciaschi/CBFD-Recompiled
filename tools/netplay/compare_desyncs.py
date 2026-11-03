@@ -96,9 +96,11 @@ def main():
     a, b = reports
     print()
     same = True
-    for key in ("build_id", "rom", "profile", "mods", "players", "input_delay", "own_view", "view_pairs", "region_size", "idle_from"):
-        if a[key] != b[key]:
-            print(f"  {key} differs: {a[key]} vs {b[key]}")
+    # (rollback: none in reports from before it was the match's)
+    for key in ("build_id", "rom", "profile", "mods", "players", "input_delay", "own_view", "view_pairs", "region_size", "idle_from",
+                "rollback"):
+        if a.get(key) != b.get(key):
+            print(f"  {key} differs: {a.get(key)} vs {b.get(key)}")
             same = False
     if a["read"] != b["read"]:
         print(f"  the reports are of different reads ({a['read']} and {b['read']}): their memory can't be compared")

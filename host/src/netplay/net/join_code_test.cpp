@@ -116,6 +116,24 @@ int main() {
         CHECK(typos_refused(c));
     }
 
+    // Room codes.
+    CHECK(encode_room_code(1) == "0000-0001");
+    CHECK(encode_room_code(max_room) == "ZZZZ-ZZZZ");
+    CHECK(encode_room_code(0).empty());
+    CHECK(encode_room_code(max_room + 1).empty());
+    CHECK(decode_room_code("7kq2 m9xd") == decode_room_code("7KQ2-M9XD"));
+    CHECK(decode_room_code("OOOO-OOOI") == 1u);
+    CHECK(!decode_room_code("0000-0000"));          // room 0
+    CHECK(!decode_room_code("7KQ2-M9X"));           // too short
+    CHECK(!decode_room_code("7KQ2-M9XDA"));         // too long
+    CHECK(!decode_room_code("7KQ2-M9XU"));          // not in the alphabet
+    CHECK(!decode_room_code(code));                 // a join code isn't a room code
+    CHECK(!decode_join_code("7KQ2-M9XD"));          // nor the other way round
+    for (int i = 0; i < 300; i++) {
+        const uint64_t room = ((uint64_t)random() << 32 | random()) % max_room + 1;
+        CHECK(decode_room_code(encode_room_code(room)) == room);
+    }
+
     if (failures == 0) {
         std::printf("join_code_test: all passed (e.g. 203.0.113.7:27015 is %s)\n", code.c_str());
     }
