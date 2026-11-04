@@ -420,6 +420,26 @@ namespace conker {
         // Save states (save_states.cpp), as one is loaded: the scenes it has are put back with the game's memory,
         // so they count for nothing, as a save's do.
         void state_loaded();
+        // For achievement_play.cpp: unlocks the achievement `id` (false if it was already, or there's none).
+        bool earn(const char* id);
+    }
+
+    // achievement_play.cpp: the achievements earned by how you play (issue #171), told by local_achievements.cpp.
+    namespace achievement_play {
+        // With local_achievements::init: reads the game's run so far.
+        void init();
+        // Each game frame; in_play is false at the menus.
+        void game_frame(uint8_t* rdram, bool in_play);
+        // A scene's bit set in play (not a save's, read in).
+        void scene_reached(int scene);
+        // A save's bits read in, at the menus: a new game's (new_game), or another save's.
+        void save_loaded(const std::vector<bool>& bits, bool new_game);
+        // A save state loaded.
+        void state_loaded();
+        // The end of the game (its million).
+        void finished_game();
+        // Player 1's cash collected in the story.
+        void cash_added(int64_t amount);
     }
 
 #if defined(CONKER_RT64) && defined(CONKER_NETPLAY)
