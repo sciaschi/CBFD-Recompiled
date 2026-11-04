@@ -858,6 +858,13 @@ func = "func_15085710"
 before_vram = 0x15085710
 text = "{ extern void conker_stat_change(uint8_t*, recomp_context*); conker_stat_change(rdram, ctx); }"
 
+# A multiplayer match over (host/src/achievement_play.cpp, issue #171): func_151E53E8 (0 for a match played out, else
+# left) ends it, its shots counted, and goes on to who won.
+[[patches.hook]]
+func = "func_151E53E8"
+before_vram = 0x151E53E8
+text = "{ extern void conker_match_decided(uint8_t*, recomp_context*); conker_match_decided(rdram, ctx); }"
+
 # Sound: the Music, Sound Effects and Speech volumes (host/src/sound_volumes.cpp). __n_vsVol's
 # voice states ($a0) are the sequence players', the music's; a voice's volume is scaled as it's set,
 # by the Music or Sound Effects volume.
