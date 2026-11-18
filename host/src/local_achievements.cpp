@@ -143,7 +143,10 @@ namespace {
         { "mp_army", "Against All Odds", "Win a multiplayer match with 12 or more characters in it (Multiplayer Characters).", by_play },
         { "mp_team", "Team Player", "Win a team match with another player on your side.", by_play },
         { "mp_four", "Full House", "Play a 4-player multiplayer match to the end.", by_play },
+#if defined(CONKER_NETPLAY)
+        // Only with netplay built in: without it, no match is online, so it couldn't be earned.
         { "mp_online", "Net Gain", "Win an online (netplay) match.", by_play },
+#endif
     };
     constexpr size_t achievement_count = std::size(achievement_list);
 
@@ -171,6 +174,9 @@ namespace {
     // The unlocks: id to when (unix time). From the game thread, read by the tab.
     std::mutex unlocks_mutex;
     std::map<std::string, int64_t> unlocks;
+    // achievements.txt's lines for achievements this build doesn't have (Net Gain, earned in a build with netplay),
+    // written back with the unlocks so they aren't lost. Not shown or counted.
+    std::map<std::string, int64_t> other_unlocks;
     std::atomic<uint32_t> list_version = 1;
     std::filesystem::path unlocks_path;
 
@@ -180,6 +186,9 @@ namespace {
         }
         std::ofstream file(unlocks_path, std::ios::trunc);
         for (const auto& [id, when] : unlocks) {
+            file << id << ' ' << when << '\n';
+        }
+        for (const auto& [id, when] : other_unlocks) {
             file << id << ' ' << when << '\n';
         }
     }
@@ -349,11 +358,13 @@ void conker::local_achievements::init() {
         if (!(fields >> id >> when)) {
             continue;
         }
+        bool listed = false;
         for (const Achievement& achievement : achievement_list) {
             if (id == achievement.id) {
-                unlocks[id] = when;
+                listed = true;
             }
         }
+        (listed ? unlocks : other_unlocks)[id] = when;
     }
     list_version++;
 }
