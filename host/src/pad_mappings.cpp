@@ -8,6 +8,12 @@
 // - The Nintendo Switch Online N64 controller, and pads like the 8BitDo 64 in its Switch mode,
 //   through the kernel's driver (057e:2019): the C-buttons are buttons 10 (up), 3 (down), 4 (left)
 //   and 2 (right). Only a mapping with the kernel driver's layout (A b0, B b1, Start b11) is taken.
+// - The same controller through SDL's HIDAPI driver (Windows and macOS, over Bluetooth or USB; issue
+//   #188): SDL 2.26 reads it as a Switch Pro pad, and its mapping has the C-buttons as Y (up, b3), the
+//   right trigger (down, a5), X (left, b2) and Back (right, b4), with no right stick. ZR, the pad's
+//   extra button, is the left stick's click (b7). They become the right stick, ZR the right trigger
+//   (Z, like the left one) and Capture (b15) Back, the configuration menu. Taken only with that
+//   layout (A b0, B b1, X b2, Y b3, Back b4, Start b6, the right trigger a5).
 // - The 8BitDo 64 in its D-Input mode (2dc8:3019): the C-buttons are two axes, SDL mapping their
 //   halves to Back (up), X (down), Y (left) and Misc2 (right). Those two axes become the right stick.
 // A mapping that already has a right stick is left alone (SDL2's own on Windows, for instance).
@@ -98,11 +104,19 @@ namespace {
         std::vector<std::string> c_inputs;
         std::string c_stick;
         if (vendor == vendor_nintendo && product == product_n64) {
-            if (!has_field(fields, "a:b0") || !has_field(fields, "b:b1") || !has_field(fields, "start:b11")) {
+            if (!has_field(fields, "a:b0") || !has_field(fields, "b:b1")) {
                 return {};
             }
-            c_inputs = { "b10", "b3", "b4", "b2" };
-            c_stick = "-righty:b10,+righty:b3,-rightx:b4,+rightx:b2";
+            if (has_field(fields, "start:b11")) {
+                c_inputs = { "b10", "b3", "b4", "b2" };
+                c_stick = "-righty:b10,+righty:b3,-rightx:b4,+rightx:b2";
+            } else if (has_field(fields, "x:b2") && has_field(fields, "y:b3") && has_field(fields, "back:b4") &&
+                has_field(fields, "start:b6") && has_field(fields, "righttrigger:a5")) {
+                c_inputs = { "b3", "a5", "b2", "b4", "b7", "b15" };
+                c_stick = "-righty:b3,+righty:+a5,-rightx:b2,+rightx:b4,righttrigger:b7,back:b15";
+            } else {
+                return {};
+            }
         } else if (vendor == vendor_8bitdo && product == product_8bitdo_64) {
             const std::string vertical = axis_half_for(fields, "back", '-');
             const std::string horizontal = axis_half_for(fields, "y", '-');
