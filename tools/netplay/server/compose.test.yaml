@@ -1,0 +1,12 @@
+# For test.sh only: the servers find the public address, a made-up one (TEST_PUBLIC_IP), by a made-up
+# name (PUBLIC_HOST), as they would a real one by DNS.
+services:
+  signal:
+    extra_hosts:
+      - "${PUBLIC_HOST}:${TEST_PUBLIC_IP}"
+  net:
+    extra_hosts:
+      - "${PUBLIC_HOST}:${TEST_PUBLIC_IP}"
+  turn:
+    extra_hosts:
+      - "${PUBLIC_HOST}:${TEST_PUBLIC_IP}"

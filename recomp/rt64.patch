@@ -1,5 +1,5 @@
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 79dfc38..237a00d 100644
+index 79dfc38..6467e67 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -327,6 +327,7 @@ set (SOURCES
@@ -18,11 +18,30 @@ index 79dfc38..237a00d 100644
      "${PROJECT_SOURCE_DIR}/src/hle/rt64_rigid_body.cpp"
      "${PROJECT_SOURCE_DIR}/src/hle/rt64_rsp.cpp"
      "${PROJECT_SOURCE_DIR}/src/hle/rt64_state.cpp"
+@@ -518,6 +520,7 @@ build_compute_shader(rt64 "src/shaders/FbWriteDepthCS.hlsl")
+ build_compute_shader(rt64 "src/shaders/FbWriteDepthCS.hlsl" "src/shaders/FbWriteDepthCSMS.hlsl" "-D MULTISAMPLING")
+ build_compute_shader(rt64 "src/shaders/GaussianFilterRGB3x3CS.hlsl")
+ build_compute_shader(rt64 "src/shaders/BoxFilterCS.hlsl")
++build_compute_shader(rt64 "src/shaders/ConkerBlurCS.hlsl")
+ build_compute_shader(rt64 "src/shaders/BicubicScalingCS.hlsl")
+ build_compute_shader(rt64 "src/shaders/HistogramAverageCS.hlsl")
+ build_compute_shader(rt64 "src/shaders/HistogramClearCS.hlsl")
 diff --git a/include/rt64_extended_gbi.h b/include/rt64_extended_gbi.h
-index d387090..75ab87d 100644
+index d387090..dd07e77 100644
 --- a/include/rt64_extended_gbi.h
 +++ b/include/rt64_extended_gbi.h
-@@ -113,6 +113,9 @@
+@@ -80,7 +80,9 @@
+ #define G_EX_SETVERTEXSEGMENT_V1        0x000031
+ #define G_EX_SETTEXCOORDWRAPPOINT_V1    0x000032
+ #define G_EX_SETRECTASPECT_V1           0x000033
+-#define G_EX_MAX                        0x000034
++#define G_EX_CONKERBLURFRAMEBUFFER_V1   0x000034 // Conker: see gEXConkerBlurFramebuffer
++#define G_EX_CONKERGREYFRAMEBUFFER_V1   0x000035 // Conker: see gEXConkerGreyFramebuffer
++#define G_EX_MAX                        0x000036
+ 
+ #define G_EX_ORIGIN_NONE            0x800
+ #define G_EX_ORIGIN_LEFT            0x0
+@@ -113,6 +115,9 @@
  #define G_EX_ASPECT_AUTO            0x0
  #define G_EX_ASPECT_STRETCH         0x1
  #define G_EX_ASPECT_ADJUST          0x2
@@ -32,8 +51,32 @@ index d387090..75ab87d 100644
  
  #define G_EX_VERTEX_POSITION        0x0
  #define G_EX_VERTEX_VELOCITY        0x1
+@@ -579,4 +584,23 @@ typedef union {
+         PARAM(aspect, 2, 0) \
+     )
+ 
++// Conker: once the frame's last framebuffer pair drawing into the color image at address (24 bits) is drawn, its high
++// resolution picture is blurred, by strength (8 bits) quarters of an N64 pixel. A copy of the frame blurred this way
++// stays as sharp as the high resolution picture and as wide as the widened view: the pause menu's background (Conker's
++// own blurs its copy on the CPU, in RDRAM, where it's the N64's 320 pixels and only the 4:3 view).
++#define gEXConkerBlurFramebuffer(cmd, address, strength) \
++    G_EX_COMMAND1(cmd, \
++        PARAM(RT64_EXTENDED_OPCODE, 8, 24) | PARAM(G_EX_CONKERBLURFRAMEBUFFER_V1, 24, 0), \
++        PARAM(strength, 8, 24) | PARAM(address, 24, 0) \
++    )
++
++// Conker: once the frame's last framebuffer pair drawing into the color image at address (24 bits) is drawn, its high
++// resolution picture is turned grey: each pixel's green in all three channels. The newspaper of It's War's intro (Conker's
++// own greys the frame on the CPU, in RDRAM, after the RDP has drawn it: func_150B1DB0). Address 0: the color image set now.
++#define gEXConkerGreyFramebuffer(cmd, address) \
++    G_EX_COMMAND1(cmd, \
++        PARAM(RT64_EXTENDED_OPCODE, 8, 24) | PARAM(G_EX_CONKERGREYFRAMEBUFFER_V1, 24, 0), \
++        PARAM(address, 24, 0) \
++    )
++
+ #endif // RT64_EXTENDED_GBI
 diff --git a/src/common/rt64_common.h b/src/common/rt64_common.h
-index f79adbf..6e0a6f9 100644
+index f79adbf..e40a61d 100644
 --- a/src/common/rt64_common.h
 +++ b/src/common/rt64_common.h
 @@ -70,6 +70,18 @@ namespace RT64 {
@@ -55,6 +98,195 @@ index f79adbf..6e0a6f9 100644
      struct FixedRect {
          int32_t ulx;
          int32_t uly;
+diff --git a/src/common/rt64_conker_view_focus.h b/src/common/rt64_conker_view_focus.h
+new file mode 100644
+index 0000000..1d006a6
+--- /dev/null
++++ b/src/common/rt64_conker_view_focus.h
+@@ -0,0 +1,183 @@
++//
++// RT64
++//
++
++// Conker: netplay's "my view only", drawn anew (the host's netplay/view.cpp). While it's on, this machine's players'
++// views of the split screen are each drawn across a part of the frame of their own instead of their part of the
++// split, and the other views aren't drawn: one player's view across the whole frame, two players' views across the
++// top and bottom halves. Each view's viewport and scissor are moved and stretched with it (RSP::setViewport,
++// RDP::setScissor; a smaller one inside the view goes to the same place in the stretched view), and its projection
++// is scaled by as much as the stretch isn't uniform (ProjectionProcessor), so nothing is stretched: a view made
++// relatively taller shows more of the scene up and down, one made relatively wider more of it across. The widescreen
++// widening then widens each like any view across the frame's width. The other views' viewports are collapsed to
++// nothing and their scissors emptied, which also leaves out their 2D. Rectangles in pixels of the frame, which is
++// frameWidth by frameHeight. Only the renderer changes: the game's memory doesn't (its Render to RAM is off in
++// netplay), so it can't desync.
++
++#pragma once
++
++#include <algorithm>
++#include <cmath>
++
++#include "common/rt64_common.h"
++
++
++namespace RT64 {
++    // One focused view: where the game draws it (src), and where it's drawn instead.
++    struct ConkerFocusView {
++        float srcLeft = 0.0f, srcTop = 0.0f, srcRight = 0.0f, srcBottom = 0.0f;
++        float left = 0.0f, top = 0.0f, right = 0.0f, bottom = 0.0f;
++    };
++
++    constexpr int ConkerMaxFocusViews = 2;
++
++    struct ConkerViewFocus {
++        bool on = false;
++        int count = 0;
++        ConkerFocusView views[ConkerMaxFocusViews];
++        float frameWidth = 0.0f, frameHeight = 0.0f;
++        uint32_t ownImages[2] = {};
++    };
++
++    // Set by the game's host each frame (defined in rt64_vi_renderer.cpp): `count` views (1 or 2), each 8 floats in
++    // `rects`, its rectangle in the split then where it's drawn (left, top, right, bottom). ownImages: the
++    // addresses of two images as wide as the frame that aren't it (0 for none), the game's own copies of it (the
++    // pause menu's picture, which is also the depth image: its clear covers the whole frame, left alone anyway).
++    void setViewFocusRedraw(bool on, int count, const float *rects, float frameWidth, float frameHeight,
++        uint32_t ownImage0, uint32_t ownImage1);
++    ConkerViewFocus conkerViewFocus();
++
++    // Whether the focus applies to what's drawn now: only to the frame itself, an image as wide as the frame.
++    // The game also draws into small images of its own (a shadow's silhouette, 64 pixels wide), which the
++    // frame's views have nothing to do with, and into copies of the frame as wide as it (the pause menu's
++    // picture: tiles of the frame across all of it, which moved with the views, or left out, left the picture
++    // as it was in memory, stripes of colour behind the menu).
++    inline bool conkerFocusApplies(const ConkerViewFocus &f, uint16_t colorImageWidth, uint32_t colorImageAddress) {
++        if (!f.on || (f.count <= 0) || (f.frameWidth <= 0.0f) || (colorImageWidth != uint16_t(f.frameWidth))) {
++            return false;
++        }
++        for (uint32_t image : f.ownImages) {
++            if ((image != 0) && ((image & 0x00FFFFFF) == (colorImageAddress & 0x00FFFFFF))) {
++                return false;
++            }
++        }
++        return true;
++    }
++
++    // A point of a focused view, where it goes in the frame: the view stretched to where it's drawn.
++    inline float conkerMapX(const ConkerFocusView &v, float x) { return v.left + (x - v.srcLeft) * (v.right - v.left) / (v.srcRight - v.srcLeft); }
++    inline float conkerMapY(const ConkerFocusView &v, float y) { return v.top + (y - v.srcTop) * (v.bottom - v.top) / (v.srcBottom - v.srcTop); }
++
++    // How much a focused view's projection is scaled across and down so what's drawn keeps its shape, from how much
++    // more it's stretched across than down (k). Alone across the frame it keeps its width of the scene and is made
++    // taller or shorter by k (a 2-player half, 1.26 / 2.04, about 0.62: more of the scene up and down; a quarter,
++    // about 1: unchanged). With two views, one made relatively wider (a quarter across half the frame, 2.04 / 1.0) is
++    // met halfway (`halfway`): by the square root of k across and down, more of the scene across and less up and
++    // down, rather than a band cut from the middle of it or a view twice as wide (which the widescreen widening
++    // would make wider again).
++    inline void conkerFocusScale(const ConkerFocusView &v, bool halfway, float &xScale, float &yScale) {
++        const float stretchX = (v.right - v.left) / (v.srcRight - v.srcLeft);
++        const float stretchY = (v.bottom - v.top) / (v.srcBottom - v.srcTop);
++        const float k = stretchX / stretchY;
++        if (!std::isfinite(k) || (k <= 0.0f) || (k <= 1.0f) || !halfway) {
++            xScale = 1.0f;
++            yScale = std::isfinite(k) && (k > 0.0f) ? k : 1.0f;
++            return;
++        }
++
++        const float root = std::sqrt(k);
++        xScale = 1.0f / root;
++        yScale = root;
++    }
++
++    // Where a rectangle (in pixels) stands: the whole frame (left alone), a focused view (`index`: moved with it),
++    // or another view (not drawn). Judged by its middle, so a view's own slightly different edges match.
++    enum class ConkerViewPart { Whole, Focused, Other };
++
++    inline ConkerViewPart conkerViewPart(const ConkerViewFocus &f, float left, float top, float right, float bottom, int &index, float slack = 0.0f) {
++        if (((right - left) >= 0.9f * f.frameWidth) && ((bottom - top) >= 0.9f * f.frameHeight)) {
++            return ConkerViewPart::Whole;
++        }
++        const float middleX = (left + right) / 2.0f;
++        const float middleY = (top + bottom) / 2.0f;
++        for (int i = 0; i < f.count; i++) {
++            const ConkerFocusView &v = f.views[i];
++            if ((middleX >= v.srcLeft - slack) && (middleX <= v.srcRight + slack) && (middleY >= v.srcTop - slack) && (middleY <= v.srcBottom + slack)) {
++                index = i;
++                return ConkerViewPart::Focused;
++            }
++        }
++        return ConkerViewPart::Other;
++    }
++
++    // A rectangle of the frame's 2D (quarter pixels), moved with its focused view: false if it isn't drawn. Only moved,
++    // never scaled: the game draws a split screen's 2D at full size.
++    // - At the line between the top and bottom views (within 3 pixels of it): shared by the views. With one view
++    //   focused it's moved down to the bottom of the frame, all of it by as much so it keeps together: the match timer
++    //   in the middle of the frame, War's and Beach's team scores beside it, Heist's row of every player's $$$. With
++    //   two it stays on the line, which is where the two halves meet.
++    // - Its middle outside the focused views: another's, left out (a piece on the line between views belongs to the
++    //   one its middle is in, as Heist's $$$ rows).
++    // - Covering most of its view in fill mode (its clears, color and depth): all of where the view is drawn.
++    // - Otherwise its view's: moved as far as the view's nearest edges move, across and down. Its middle in the
++    //   first 30% of the view's width goes with the left edge, past 70% with the right, otherwise with the middle
++    //   (wide, so centered text such as "0 (1st)" moves whole); the same down. Kept inside where the view is drawn.
++    inline bool conkerMoveRect(const ConkerViewFocus &f, bool fillMode, FixedRect &rect) {
++        const float left = rect.ulx / 4.0f, top = rect.uly / 4.0f, right = rect.lrx / 4.0f, bottom = rect.lry / 4.0f;
++        if ((right - left >= 0.9f * f.frameWidth) && (bottom - top >= 0.9f * f.frameHeight)) {
++            return true;
++        }
++        const float splitLine = f.frameHeight / 2.0f;
++        const bool split = (f.views[0].srcBottom - f.views[0].srcTop) < 0.75f * f.frameHeight;
++        float moveX = 0.0f, moveY = 0.0f;
++        const float nearLine = 3.0f;
++        int index = 0;
++        if (split && (top < splitLine + nearLine) && (bottom > splitLine - nearLine)) {
++            if (f.count == 1) {
++                const float margin = 6.0f;
++                const float sharedHalfHeight = 6.0f;
++                moveY = (f.frameHeight - margin) - (splitLine + sharedHalfHeight);
++            }
++        }
++        else if (conkerViewPart(f, left, top, right, bottom, index, 1.0f) != ConkerViewPart::Focused) {
++            return false;
++        }
++        else {
++            const ConkerFocusView &v = f.views[index];
++            const float viewWidth = v.srcRight - v.srcLeft;
++            const float viewHeight = v.srcBottom - v.srcTop;
++            if (fillMode && (right - left >= 0.8f * viewWidth) && (bottom - top >= 0.8f * viewHeight)) {
++                rect.ulx = int32_t(v.left * 4.0f);
++                rect.uly = int32_t(v.top * 4.0f);
++                rect.lrx = int32_t(v.right * 4.0f);
++                rect.lry = int32_t(v.bottom * 4.0f);
++                return true;
++            }
++
++            auto edgeMove = [](float middle, float srcStart, float srcEnd, float start, float end) {
++                const float share = (middle - srcStart) / (srcEnd - srcStart);
++                if (share < 0.3f) return start - srcStart;
++                if (share > 0.7f) return end - srcEnd;
++                return (start + end) / 2.0f - (srcStart + srcEnd) / 2.0f;
++            };
++            moveX = edgeMove((left + right) / 2.0f, v.srcLeft, v.srcRight, v.left, v.right);
++            moveY = edgeMove((top + bottom) / 2.0f, v.srcTop, v.srcBottom, v.top, v.bottom);
++            // Kept inside where the view is drawn (a piece hanging over the view's edge would go past it), where it
++            // fits in it at all.
++            const float inset = 2.0f;
++            if ((right - left) <= (v.right - v.left) - 2.0f * inset) {
++                moveX = std::clamp(moveX, (v.left + inset) - left, (v.right - inset) - right);
++            }
++            if ((bottom - top) <= (v.bottom - v.top) - 2.0f * inset) {
++                moveY = std::clamp(moveY, (v.top + inset) - top, (v.bottom - inset) - bottom);
++            }
++        }
++        const int32_t dx = int32_t(std::lround(moveX * 4.0f));
++        const int32_t dy = int32_t(std::lround(moveY * 4.0f));
++        rect.ulx += dx;
++        rect.lrx += dx;
++        rect.uly += dy;
++        rect.lry += dy;
++        return true;
++    }
++};
 diff --git a/src/common/rt64_fblog.h b/src/common/rt64_fblog.h
 new file mode 100644
 index 0000000..c9dd621
@@ -282,6 +514,36 @@ index 69c35d2..bcea8ec 100644
          Count
      };
  
+diff --git a/src/gbi/rt64_gbi_extended.cpp b/src/gbi/rt64_gbi_extended.cpp
+index 20c0d4d..60c166b 100644
+--- a/src/gbi/rt64_gbi_extended.cpp
++++ b/src/gbi/rt64_gbi_extended.cpp
+@@ -331,6 +331,16 @@ namespace RT64 {
+             state->rdp->setRectAspect(aspect);
+         }
+ 
++        void conkerBlurFramebufferV1(State *state, DisplayList **dl) {
++            const uint32_t address = (*dl)->p1(0, 24);
++            const uint8_t strength = (*dl)->p1(24, 8);
++            state->setConkerBlurFramebuffer(address, strength);
++        }
++
++        void conkerGreyFramebufferV1(State *state, DisplayList **dl) {
++            state->setConkerGreyFramebuffer((*dl)->p1(0, 24));
++        }
++
+         void noOpHook(State *state, DisplayList **dl) {
+             uint32_t magicNumber = (*dl)->p0(0, 24);
+             if (magicNumber == RT64_HOOK_MAGIC_NUMBER) {
+@@ -439,6 +449,8 @@ namespace RT64 {
+             Map[G_EX_SETVERTEXSEGMENT_V1] = &setVertexSegmentV1;
+             Map[G_EX_SETTEXCOORDWRAPPOINT_V1] = &setTexcoordWrapPointV1;
+             Map[G_EX_SETRECTASPECT_V1] = &setRectAspectV1;
++            Map[G_EX_CONKERBLURFRAMEBUFFER_V1] = &conkerBlurFramebufferV1;
++            Map[G_EX_CONKERGREYFRAMEBUFFER_V1] = &conkerGreyFramebufferV1;
+             MapInitialized = true;
+         }
+     }
 diff --git a/src/gbi/rt64_gbi_f3dex2cbfd.cpp b/src/gbi/rt64_gbi_f3dex2cbfd.cpp
 new file mode 100644
 index 0000000..96768bb
@@ -438,7 +700,7 @@ index 0000000..99ef5c2
 +    };
 +};
 diff --git a/src/hle/rt64_application.cpp b/src/hle/rt64_application.cpp
-index ee8bc1f..428208c 100644
+index ee8bc1f..3e2aa3a 100644
 --- a/src/hle/rt64_application.cpp
 +++ b/src/hle/rt64_application.cpp
 @@ -245,6 +245,11 @@ namespace RT64 {
@@ -453,8 +715,32 @@ index ee8bc1f..428208c 100644
                      else {
                          // Wireframe artifacts have been reported when using a high-precision color format on RDNA3 GPUs in D3D12. The workaround is to switch to Vulkan if this is the case.
                          const bool isRX7 = deviceDescription.name.find("AMD Radeon RX 7") != std::string::npos;
+@@ -524,6 +529,10 @@ namespace RT64 {
+         state->updateScreen(core.decodeVI(), false);
+     }
+ 
++    void Application::presentAgain() {
++        state->presentAgain();
++    }
++
+     void Application::destroyShaderCache() {
+         workloadQueue->waitForWorkloadId(state->workloadId);
+         presentQueue->waitForPresentId(state->presentId);
+diff --git a/src/hle/rt64_application.h b/src/hle/rt64_application.h
+index 6c83fe0..8555308 100644
+--- a/src/hle/rt64_application.h
++++ b/src/hle/rt64_application.h
+@@ -156,6 +156,8 @@ namespace RT64 {
+         SetupResult setup(uint32_t threadId);
+         void processDisplayLists(uint8_t *memory, uint32_t dlStartAddress, uint32_t dlEndAddress, bool isHLE);
+         void updateScreen();
++        // Presents the last frame again, as it is (the UI drawn over it anew), while the game draws none.
++        void presentAgain();
+         void destroyShaderCache();
+         void updateMultisampling();
+         void end();
 diff --git a/src/hle/rt64_framebuffer_manager.cpp b/src/hle/rt64_framebuffer_manager.cpp
-index d7caa12..60112aa 100644
+index d7caa12..2043064 100644
 --- a/src/hle/rt64_framebuffer_manager.cpp
 +++ b/src/hle/rt64_framebuffer_manager.cpp
 @@ -4,6 +4,8 @@
@@ -506,7 +792,29 @@ index d7caa12..60112aa 100644
          // Copy from depth target if the last write was a depth buffer.
          if (fbIt->second.lastWriteType == Framebuffer::Type::Depth) {
              RenderTargetKey depthTargetKey(fbIt->second.addressStart, fbIt->second.width, fbIt->second.siz, Framebuffer::Type::Depth);
-@@ -908,6 +929,11 @@ namespace RT64 {
+@@ -795,8 +816,10 @@ namespace RT64 {
+                 continue;
+             }
+ 
+-            // Only reuse exact matches.
+-            if ((tileCopy.textureWidth == textureWidth) && (tileCopy.textureHeight == textureHeight)) {
++            // Only reuse exact matches. Compared with the size asked for, unscaled: textureWidth and textureHeight are
++            // scaled by the resolution, so with any scale but 1 they never matched, and a new copy (a texture and a
++            // framebuffer, never freed) was made at every request.
++            if ((tileCopy.requestWidth == textureWidth) && (tileCopy.requestHeight == textureHeight)) {
+                 tileCopy.usedWidth = width;
+                 tileCopy.usedHeight = height;
+                 tileCopy.usedTimestamp = usedTimestamp;
+@@ -807,6 +830,8 @@ namespace RT64 {
+         // Make a new tile with a new Id.
+         TileCopy &tileCopy = tileCopies[++newId];
+         tileCopy.id = newId;
++        tileCopy.requestWidth = textureWidth;
++        tileCopy.requestHeight = textureHeight;
+         tileCopy.usedWidth = width;
+         tileCopy.usedHeight = height;
+         tileCopy.usedTimestamp = usedTimestamp;
+@@ -908,6 +933,11 @@ namespace RT64 {
          auto it = framebuffers.begin();
          while (it != framebuffers.end()) {
              if ((&it->second != changedFb) && (it->second.overlaps(addressStart, addressEnd))) {
@@ -518,6 +826,21 @@ index d7caa12..60112aa 100644
                  it->second.rdramChanged = true;
              }
  
+diff --git a/src/hle/rt64_framebuffer_manager.h b/src/hle/rt64_framebuffer_manager.h
+index 8d36b51..fd6cf90 100644
+--- a/src/hle/rt64_framebuffer_manager.h
++++ b/src/hle/rt64_framebuffer_manager.h
+@@ -85,6 +85,10 @@ namespace RT64 {
+             uint32_t usedWidth = 0;
+             uint32_t usedHeight = 0;
+             uint64_t usedTimestamp = 0;
++            // The size findTileCopyId was asked for, made a multiple as the texture is (unscaled: textureWidth and
++            // textureHeight are the scaled texture's, set when it's made), so a copy can be found again by it.
++            uint32_t requestWidth = 0;
++            uint32_t requestHeight = 0;
+             bool ulScaleS = true;
+             bool ulScaleT = true;
+             interop::uint2 texelShift = { 0, 0 };
 diff --git a/src/hle/rt64_framebuffer_pair.cpp b/src/hle/rt64_framebuffer_pair.cpp
 index c944393..f611522 100644
 --- a/src/hle/rt64_framebuffer_pair.cpp
@@ -591,10 +914,50 @@ index 60b0fa4..6c80bb6 100644
  };
 \ No newline at end of file
 diff --git a/src/hle/rt64_game_frame.cpp b/src/hle/rt64_game_frame.cpp
-index 87392d0..1f5e54a 100644
+index 87392d0..58560a3 100644
 --- a/src/hle/rt64_game_frame.cpp
 +++ b/src/hle/rt64_game_frame.cpp
-@@ -296,7 +296,11 @@ namespace RT64 {
+@@ -10,6 +10,28 @@
+ #include "xxHash/xxh3.h"
+ 
+ namespace RT64 {
++    // Whether two projections are drawn in parts of the frame apart from each other: a split screen's views, each
++    // player's own. Their cameras can be alike (the same projection, the view in the model matrices), and paired with
++    // each other they were drawn from between two players' cameras for a frame, the level culled for one of them.
++    static bool areScissorsApart(const FixedRect &first, const FixedRect &second) {
++        if (first.isNull() || second.isNull()) {
++            return false;
++        }
++
++        return first.intersection(second).isEmpty();
++    }
++
++    // Whether two scenes are drawn in different places, for pairing them with last frame's: apart (above), or one of
++    // them with no scissor at all (a scene that drew nothing scissored) and the other with one. Such a scene was
++    // paired with player 2's last frame before player 2's own was, and player 2's camera jittered between frames.
++    static bool areScenesPlacedApart(const FixedRect &first, const FixedRect &second) {
++        if (first.isNull() != second.isNull()) {
++            return true;
++        }
++
++        return areScissorsApart(first, second);
++    }
++
+     // GameFrame
+     
+     bool GameFrame::areFramebufferPairsCompatible(const WorkloadQueue &workloadQueue, const GameIndices::FramebufferPair &first, const GameIndices::FramebufferPair &second) {
+@@ -55,6 +77,10 @@ namespace RT64 {
+         const Workload &cmpWorkload = workloadQueue.workloads[firstProj.workloadIndex];
+         const FramebufferPair &cmpFbPair = cmpWorkload.fbPairs[firstProj.fbPairIndex];
+         const Projection &cmpProj = cmpFbPair.projections[firstProj.projectionIndex];
++        if (areScissorsApart(cmpProj.scissorRect, fbProj.scissorRect)) {
++            return false;
++        }
++
+         const interop::float4x4 &cmpViewMatrix = cmpWorkload.drawData.viewTransforms[cmpProj.transformsIndex];
+         const interop::float4x4 &fbViewMatrix = workload.drawData.viewTransforms[fbProj.transformsIndex];
+         const float viewMatrixDiff = matrixDifference(cmpViewMatrix, fbViewMatrix);
+@@ -296,7 +322,11 @@ namespace RT64 {
                  prevWorkloadMap = &prevFrame.frameMap.workloads[workloadMap.prevWorkloadIndex];
              }
  
@@ -607,7 +970,7 @@ index 87392d0..1f5e54a 100644
              ModifiedBuffers modifiedBuffers;
              auto curIt = curWorkload.transformIdMap.begin();
              auto prevIt = prevWorkload.transformIdMap.begin();
-@@ -309,9 +313,31 @@ namespace RT64 {
+@@ -309,9 +339,31 @@ namespace RT64 {
                      prevIt++;
                  }
                  else {
@@ -642,7 +1005,18 @@ index 87392d0..1f5e54a 100644
                  }
              }
  
-@@ -486,6 +512,17 @@ namespace RT64 {
+@@ -348,7 +400,9 @@ namespace RT64 {
+                     const Projection &prevProj = prevFbPair.projections[prevFirstProj.projectionIndex];
+                     const hlslpp::float4x4 &prevViewTransform = prevWorkload.drawData.viewTransforms[prevProj.transformsIndex];
+                     const hlslpp::float4x4 &prevProjTransform = prevWorkload.drawData.projTransforms[prevProj.transformsIndex];
+-                    matchCandidates.emplace_back(i, j, matrixDifference(curViewTransform, prevViewTransform) + matrixDifference(curProjTransform, prevProjTransform));
++                    // A scene is paired with one drawn in the same part of the frame before any other (split screen).
++                    const float apartPenalty = areScenesPlacedApart(curProj.scissorRect, prevProj.scissorRect) ? 1e20f : 0.0f;
++                    matchCandidates.emplace_back(i, j, matrixDifference(curViewTransform, prevViewTransform) + matrixDifference(curProjTransform, prevProjTransform) + apartPenalty);
+                 }
+             }
+ 
+@@ -486,6 +540,17 @@ namespace RT64 {
                          viewProjMap.rigidBody = prevViewProjMap.rigidBody;
                      }
  
@@ -660,7 +1034,7 @@ index 87392d0..1f5e54a 100644
                      viewProjMap.rigidBody.updateLinear(prevView, curView, projectionLinearComponent);
                      viewProjMap.rigidBody.updateAngular(prevView, curView, projectionAngularComponent, projectionScaleComponent, projectionSkewComponent);
                      viewProjMap.rigidBody.updateDecomposition(curView, projectionDecompose);
-@@ -709,7 +746,45 @@ namespace RT64 {
+@@ -709,7 +774,45 @@ namespace RT64 {
          }
      }
  
@@ -707,7 +1081,7 @@ index 87392d0..1f5e54a 100644
          GameFrameMap::TransformMap &curTransformMap = curWorkloadMap.transforms[curTransformIndex];
          if (prevWorkloadMap != nullptr) {
              curTransformMap.rigidBody = prevWorkloadMap->transforms[prevTransformIndex].rigidBody;
-@@ -733,7 +808,7 @@ namespace RT64 {
+@@ -733,7 +836,7 @@ namespace RT64 {
          uint32_t curVertexCount = curWorkload.drawData.worldTransformVertexCount(curTransformIndex);
          uint32_t prevVertexIndex = prevWorkload.drawData.worldTransformVertexIndices[prevTransformIndex];
          uint32_t prevVertexCount = prevWorkload.drawData.worldTransformVertexCount(prevTransformIndex);
@@ -716,7 +1090,7 @@ index 87392d0..1f5e54a 100644
              const std::vector<float> &curPosFloats = curWorkload.drawData.posFloats;
              const std::vector<float> &prevPosFloats = prevWorkload.drawData.posFloats;
              std::vector<float> &curVelFloats = curWorkload.drawData.velFloats;
-@@ -744,17 +819,178 @@ namespace RT64 {
+@@ -744,17 +847,178 @@ namespace RT64 {
                  const float *curPosFloatsRef = &curPosFloats[curVertexIndex * 3];
                  const float *prevPosFloatsRef = &prevPosFloats[prevVertexIndex * 3];
                  float *curVelFloatsRef = &curVelFloats[curVertexIndex * 3];
@@ -917,8 +1291,22 @@ index 00a72f6..32e9300 100644
          void buildCallHashMap(uint32_t sceneProjIndex, const Workload &workload, const Projection &proj, std::multimap<uint64_t, GameCallMap> &hashMap) const;
          void buildTransformIdMap(const Workload &workload, std::multimap<uint32_t, uint32_t> &idMap, std::vector<uint32_t> &ignoredIdVector) const;
          uint64_t hashFromCall(const GameCall &call, uint32_t matrixIdHash) const;
+diff --git a/src/hle/rt64_present.h b/src/hle/rt64_present.h
+index e1889e5..c5d5f40 100644
+--- a/src/hle/rt64_present.h
++++ b/src/hle/rt64_present.h
+@@ -21,6 +21,9 @@ namespace RT64 {
+         std::vector<FramebufferOperation> fbOperations;
+         DebuggerFramebuffer debuggerFramebuffer;
+         bool paused = false;
++        // Shown again as it was (presentAgain): the frame once, not the frames interpolated before it again. It counts
++        // the frames as presented, as a present of one frame does, so a workload waiting on them goes on.
++        bool repeated = false;
+         uint64_t presentId = 0;
+         uint64_t workloadId = 0;
+     };
 diff --git a/src/hle/rt64_present_queue.cpp b/src/hle/rt64_present_queue.cpp
-index 7de5b69..2ef2ef5 100644
+index 7de5b69..0a41c76 100644
 --- a/src/hle/rt64_present_queue.cpp
 +++ b/src/hle/rt64_present_queue.cpp
 @@ -9,7 +9,16 @@
@@ -938,7 +1326,17 @@ index 7de5b69..2ef2ef5 100644
      // PresentQueue
  
      PresentQueue::PresentQueue() {
-@@ -402,6 +411,7 @@ namespace RT64 {
+@@ -188,7 +197,8 @@ namespace RT64 {
+                     }
+                 }
+ 
+-                if (presentFb->interpolationEnabled) {
++                // (A repeated present shows the frame once: its interpolated ones were shown already.)
++                if (presentFb->interpolationEnabled && !present.repeated) {
+                     framesToPresent = frameCounters.count;
+                 }
+                 else {
+@@ -402,6 +412,7 @@ namespace RT64 {
                  RenderCommandSemaphore *waitSemaphore = drawSemaphores[swapChainIndex].get();
                  presentTimestamp = Timer::current();
                  swapChainValid = ext.swapChain->present(swapChainIndex, &waitSemaphore, 1);
@@ -960,6 +1358,70 @@ index e08b02c..084ccfd 100644
      struct PresentQueue {
          struct External {
              ApplicationWindow *appWindow = nullptr;
+diff --git a/src/hle/rt64_rdp.cpp b/src/hle/rt64_rdp.cpp
+index a10c11a..f5faa49 100644
+--- a/src/hle/rt64_rdp.cpp
++++ b/src/hle/rt64_rdp.cpp
+@@ -4,7 +4,10 @@
+ 
+ #include "rt64_rdp.h"
+ 
++#include "common/rt64_conker_view_focus.h"
++
+ #include <cassert>
++#include <cmath>
+ 
+ #include "../include/rt64_extended_gbi.h"
+ 
+@@ -977,6 +980,29 @@ namespace RT64 {
+         scissorRect.uly = std::clamp(uly + extAlignment.topOffset, extAlignment.topBound, extAlignment.bottomBound);
+         scissorRect.lrx = std::clamp(movedFromOrigin(lrx + extAlignment.rightOffset, extAlignment.rightOrigin), extAlignment.leftBound, extAlignment.rightBound);
+         scissorRect.lry = std::clamp(lry + extAlignment.bottomOffset, extAlignment.topBound, extAlignment.bottomBound);
++
++        // Conker: netplay's "my view only", drawn anew (rt64_conker_view_focus.h). The rectangle is in quarter pixels.
++        const ConkerViewFocus focus = conkerViewFocus();
++        if (conkerFocusApplies(focus, colorImage.width, colorImage.address)) {
++            int index = 0;
++            const ConkerViewPart part = conkerViewPart(focus, scissorRect.ulx / 4.0f, scissorRect.uly / 4.0f, scissorRect.lrx / 4.0f, scissorRect.lry / 4.0f, index);
++            if (part == ConkerViewPart::Focused) {
++                // Stretched with the view (the view's own scissor to where it's drawn), within that.
++                const ConkerFocusView &view = focus.views[index];
++                auto mapped = [](float v, float low, float high) { return int32_t(std::lround(std::clamp(v, low, high) * 4.0f)); };
++                const float left = conkerMapX(view, scissorRect.ulx / 4.0f), right = conkerMapX(view, scissorRect.lrx / 4.0f);
++                const float top = conkerMapY(view, scissorRect.uly / 4.0f), bottom = conkerMapY(view, scissorRect.lry / 4.0f);
++                scissorRect.ulx = mapped(left, view.left, view.right);
++                scissorRect.uly = mapped(top, view.top, view.bottom);
++                scissorRect.lrx = mapped(right, view.left, view.right);
++                scissorRect.lry = mapped(bottom, view.top, view.bottom);
++            }
++            else if (part == ConkerViewPart::Other) {
++                scissorRect.lrx = scissorRect.ulx;
++                scissorRect.lry = scissorRect.uly;
++            }
++        }
++
+         scissorModeStack[scissorStackSize - 1] = mode;
+         extended.scissorLeftOriginStack[scissorStackSize - 1] = extAlignment.leftOrigin;
+         extended.scissorRightOriginStack[scissorStackSize - 1] = extAlignment.rightOrigin;
+@@ -1192,11 +1218,17 @@ namespace RT64 {
+             }
+         }
+ 
+-        const FixedRect drawRect(movedFromOrigin(ulx, extAlignment.leftOrigin), uly, movedFromOrigin(lrx, extAlignment.rightOrigin), lry);
++        FixedRect drawRect(movedFromOrigin(ulx, extAlignment.leftOrigin), uly, movedFromOrigin(lrx, extAlignment.rightOrigin), lry);
+         if (drawRect.isEmpty()) {
+             return;
+         }
+ 
++        // Conker: netplay's "my view only", drawn anew (rt64_conker_view_focus.h): the view's 2D goes with it.
++        const ConkerViewFocus focus = conkerViewFocus();
++        if (conkerFocusApplies(focus, colorImage.width, colorImage.address) && !conkerMoveRect(focus, usesFillMode, drawRect)) {
++            return;
++        }
++
+         // Check if framebuffer pair must be changed.
+         checkFramebufferPair();
+ 
 diff --git a/src/hle/rt64_rdp_tmem.cpp b/src/hle/rt64_rdp_tmem.cpp
 index 6051f4e..8f00934 100644
 --- a/src/hle/rt64_rdp_tmem.cpp
@@ -1425,20 +1887,31 @@ index 778e08b..f53d597 100644
          void updatePerspective(const hlslpp::float4x4 &prevTransform, const hlslpp::float4x4 &curTransform, uint8_t perspInterpolation);
  
 diff --git a/src/hle/rt64_rsp.cpp b/src/hle/rt64_rsp.cpp
-index 1da2550..c2c7517 100644
+index 1da2550..c0aeee5 100644
 --- a/src/hle/rt64_rsp.cpp
 +++ b/src/hle/rt64_rsp.cpp
-@@ -4,7 +4,9 @@
+@@ -4,7 +4,11 @@
  
  #include "rt64_rsp.h"
  
++#include "common/rt64_conker_view_focus.h"
++
 +#include <algorithm>
  #include <cassert>
 +#include <cmath>
  
  #include "../include/rt64_extended_gbi.h"
  #include "common/rt64_common.h"
-@@ -427,6 +429,215 @@ namespace RT64 {
+@@ -56,6 +60,8 @@ namespace RT64 {
+         lights.fill({});
+         segments.fill(0);
+         viewportStack[0] = {};
++        extended.viewportFocusXScaleStack.fill(1.0f);
++        extended.viewportFocusYScaleStack.fill(1.0f);
+         clipRatios[0] = 1;
+         clipRatios[1] = 1;
+         clipRatios[2] = -1;
+@@ -427,6 +433,215 @@ namespace RT64 {
          setVertexCommon<false, sizeof(VertexEXV1)>(rdramAddress, dstIndex, dstIndex + vtxCount);
      }
  
@@ -1654,7 +2127,16 @@ index 1da2550..c2c7517 100644
      void RSP::setVertexColorPD(uint32_t address) {
          vertexColorPDAddress = fromSegmentedMasked(address);
      }
-@@ -506,13 +717,18 @@ namespace RT64 {
+@@ -471,6 +686,8 @@ namespace RT64 {
+             drawData.viewProjTransformGroups.emplace_back(extended.curViewProjMatrixIdGroupIndex);
+             drawData.rspViewports.emplace_back(viewportStack[viewportStackSize - 1]);
+             drawData.viewportOrigins.emplace_back(extended.viewportOriginStack[viewportStackSize - 1]);
++            drawData.viewportFocusXScales.emplace_back(extended.viewportFocusXScaleStack[viewportStackSize - 1]);
++            drawData.viewportFocusYScales.emplace_back(extended.viewportFocusYScaleStack[viewportStackSize - 1]);
+ 
+             for (uint32_t j = 0; j < 4; j++) {
+                 drawData.viewportClipRatios.emplace_back(clipRatios[j]);
+@@ -506,13 +723,18 @@ namespace RT64 {
          const int workloadCursor = state->ext.workloadQueue->writeCursor;
          Workload &workload = state->ext.workloadQueue->workloads[workloadCursor];
  
@@ -1674,7 +2156,7 @@ index 1da2550..c2c7517 100644
          // ModelViewProj is only updated when a vertex is processed and the flag is enabled.
          auto &worldTransforms = workload.drawData.worldTransforms;
          auto &worldTransformGroups = workload.drawData.worldTransformGroups;
-@@ -520,6 +736,12 @@ namespace RT64 {
+@@ -520,6 +742,12 @@ namespace RT64 {
          auto &worldTransformPhysicalAddresses = workload.drawData.worldTransformPhysicalAddresses;
          auto &worldTransformVertexIndices = workload.drawData.worldTransformVertexIndices;
          bool addWorldTransform = (modelViewProjChanged || modelViewProjInserted);
@@ -1687,7 +2169,7 @@ index 1da2550..c2c7517 100644
          if (modelViewProjChanged) {
              computeModelViewProj();
              curTransformIndex = static_cast<uint16_t>(worldTransforms.size());
-@@ -731,6 +953,22 @@ namespace RT64 {
+@@ -731,6 +959,22 @@ namespace RT64 {
                  tcFloats.emplace_back((float)((double)((vertices[i].s) * TextureSc) / Divisor));
                  tcFloats.emplace_back((float)((double)((vertices[i].t) * TextureTc) / Divisor));
              }
@@ -1710,7 +2192,7 @@ index 1da2550..c2c7517 100644
          }
      }
  
-@@ -841,7 +1079,12 @@ namespace RT64 {
+@@ -841,7 +1085,12 @@ namespace RT64 {
          const uint32_t globalIndex = indices[vtxIndex];
          const float screenZ = workload.drawData.posScreen[globalIndex][2] * DepthRange;
          const float zValueFloat = zValue / 65536.0f;
@@ -1724,7 +2206,53 @@ index 1da2550..c2c7517 100644
              const uint32_t rdramAddress = fromSegmentedMasked(branchDl);
              *dl = reinterpret_cast<DisplayList *>(state->fromRDRAM(rdramAddress)) - 1;
          }
-@@ -1152,6 +1395,16 @@ namespace RT64 {
+@@ -910,6 +1159,36 @@ namespace RT64 {
+         viewport.translate.y = float(vp->vtrans[0] + offy) / 4.0f;
+         viewport.translate.z = float(vp->vtrans[3]) / DepthRange;
+         extended.viewportOriginStack[viewportStackSize - 1] = ori;
++
++        // Conker: netplay's "my view only", drawn anew (rt64_conker_view_focus.h).
++        float focusXScale = 1.0f;
++        float focusYScale = 1.0f;
++        const ConkerViewFocus focus = conkerViewFocus();
++        if (conkerFocusApplies(focus, state->rdp->colorImage.width, state->rdp->colorImage.address)) {
++            const float halfWidth = std::fabs(viewport.scale.x);
++            const float halfHeight = std::fabs(viewport.scale.y);
++            int index = 0;
++            const ConkerViewPart part = conkerViewPart(focus, viewport.translate.x - halfWidth, viewport.translate.y - halfHeight,
++                viewport.translate.x + halfWidth, viewport.translate.y + halfHeight, index);
++            if ((part == ConkerViewPart::Focused) && (halfWidth > 0.0f) && (halfHeight > 0.0f)) {
++                // Stretched with the view to where it's drawn; the projection scaled so what's drawn keeps its shape.
++                const ConkerFocusView &view = focus.views[index];
++                const float stretchX = (view.right - view.left) / (view.srcRight - view.srcLeft);
++                const float stretchY = (view.bottom - view.top) / (view.srcBottom - view.srcTop);
++                conkerFocusScale(view, focus.count > 1, focusXScale, focusYScale);
++                viewport.translate.x = conkerMapX(view, viewport.translate.x);
++                viewport.translate.y = conkerMapY(view, viewport.translate.y);
++                viewport.scale.x *= stretchX;
++                viewport.scale.y *= stretchY;
++            }
++            else if (part == ConkerViewPart::Other) {
++                viewport.scale.x = 0.0f;
++                viewport.scale.y = 0.0f;
++            }
++        }
++
++        extended.viewportFocusXScaleStack[viewportStackSize - 1] = focusXScale;
++        extended.viewportFocusYScaleStack[viewportStackSize - 1] = focusYScale;
+         viewportChanged = true;
+     }
+ 
+@@ -917,6 +1196,8 @@ namespace RT64 {
+         if (viewportStackSize < RSP_EXTENDED_STACK_SIZE) {
+             viewportStack[viewportStackSize] = viewportStack[viewportStackSize - 1];
+             extended.viewportOriginStack[viewportStackSize] = extended.viewportOriginStack[viewportStackSize - 1];
++            extended.viewportFocusXScaleStack[viewportStackSize] = extended.viewportFocusXScaleStack[viewportStackSize - 1];
++            extended.viewportFocusYScaleStack[viewportStackSize] = extended.viewportFocusYScaleStack[viewportStackSize - 1];
+             viewportStackSize++;
+         }
+     }
+@@ -1152,6 +1433,16 @@ namespace RT64 {
  
              const interop::RSPViewport &viewport = viewportStack[viewportStackSize - 1];
              const FixedRect viewportClipRect = viewport.rect(clipRatios.data());
@@ -1742,7 +2270,7 @@ index 1da2550..c2c7517 100644
              if (!drawRect.isNull()) {
                  fbPair.drawColorRect.merge(drawRect);
 diff --git a/src/hle/rt64_rsp.h b/src/hle/rt64_rsp.h
-index 61bb3b1..782ed13 100644
+index 61bb3b1..b76a3d6 100644
 --- a/src/hle/rt64_rsp.h
 +++ b/src/hle/rt64_rsp.h
 @@ -162,6 +162,28 @@ namespace RT64 {
@@ -1774,7 +2302,17 @@ index 61bb3b1..782ed13 100644
          uint32_t vertexFogIndex;
          uint32_t vertexLightIndex;
          uint32_t vertexLightCount;
-@@ -254,6 +276,11 @@ namespace RT64 {
+@@ -205,6 +227,9 @@ namespace RT64 {
+             } global;
+ 
+             std::array<uint16_t, RSP_EXTENDED_STACK_SIZE> viewportOriginStack;
++            // Conker: how much each viewport's projection is scaled across and up and down (rt64_conker_view_focus.h).
++            std::array<float, RSP_EXTENDED_STACK_SIZE> viewportFocusXScaleStack;
++            std::array<float, RSP_EXTENDED_STACK_SIZE> viewportFocusYScaleStack;
+ 
+             DrawExtendedType drawExtendedType;
+             DrawExtendedData drawExtendedData;
+@@ -254,6 +279,11 @@ namespace RT64 {
          void setVertex(uint32_t address, uint32_t vtxCount, uint32_t dstIndex);
          void setVertexPD(uint32_t address, uint32_t vtxCount, uint32_t dstIndex);
          void setVertexEXV1(uint32_t address, uint32_t vtxCount, uint32_t dstIndex);
@@ -1787,7 +2325,7 @@ index 61bb3b1..782ed13 100644
          void setVertexSegmentV1(bool isEnabled, uint32_t vertexElement, uint32_t vertexAddress, uint32_t baseSegmentAddress);
          template<uint32_t floatCount, uint32_t vertexSize>
 diff --git a/src/hle/rt64_state.cpp b/src/hle/rt64_state.cpp
-index 2970e71..9102bbf 100644
+index 2970e71..20fd97e 100644
 --- a/src/hle/rt64_state.cpp
 +++ b/src/hle/rt64_state.cpp
 @@ -4,6 +4,8 @@
@@ -1878,7 +2416,17 @@ index 2970e71..9102bbf 100644
              if (!differentFbs.empty()) {
                  RenderWorkerExecution execution(ext.framebufferGraphicsWorker);
                  framebufferManager.uploadRAM(ext.framebufferGraphicsWorker, differentFbs.data(), differentFbs.size(), workload.fbChangePool, RDRAM, true, drawFbOperations, drawFbDiscards, ext.shaderLibrary);
-@@ -1611,6 +1657,9 @@ namespace RT64 {
+@@ -818,7 +864,8 @@ namespace RT64 {
+ 
+         // Validate all tile copies to be used during the rendering.
+         const bool extendedRenderToRAMSet = (extended.renderToRAM < UINT8_MAX);
+-        const bool renderToRDRAM = extendedRenderToRAMSet ? (extended.renderToRAM != 0) : ext.emulatorConfig->framebuffer.renderToRAM;
++        // Conker: not while the game's host has it off (setRenderToRAMOff).
++        const bool renderToRDRAM = !renderToRAMOff() && (extendedRenderToRAMSet ? (extended.renderToRAM != 0) : ext.emulatorConfig->framebuffer.renderToRAM);
+         const bool warningsEnabled = ext.userConfig->developerMode;
+         const bool linearFiltering = !ext.userConfig->threePointFiltering;
+         const size_t callTileCount = workload.drawData.callTiles.size();
+@@ -1611,6 +1658,9 @@ namespace RT64 {
          }
  #   endif
  
@@ -1888,11 +2436,76 @@ index 2970e71..9102bbf 100644
          // Store the presentation rate in the workload.
          if (extended.refreshRate != UINT16_MAX) {
              workload.viOriginalRate = extended.refreshRate;
+@@ -2666,10 +2716,22 @@ namespace RT64 {
+         present.presentId = ++presentId;
+         present.workloadId = workloadId;
+         present.paused = paused;
++        present.repeated = false;
+         present.debuggerFramebuffer.address = debuggerInspector.renderer.framebufferAddress;
+         present.debuggerFramebuffer.view = (debuggerInspector.renderer.framebufferIndex >= 0);
+     }
+ 
++    // The last present again, paused (as the debugger's pause does, without its workload: nothing is drawn anew
++    // but what the present draws over the frame), once the queues are done with it. Repeated: the frame once.
++    void State::presentAgain() {
++        ext.presentQueue->waitForPresentId(presentId);
++        ext.presentQueue->waitForIdle();
++        Present &lastPresent = ext.presentQueue->presents[ext.presentQueue->previousWriteCursor()];
++        advancePresent(lastPresent, true);
++        lastPresent.repeated = true;
++        ext.presentQueue->repeatLastPresent();
++    }
++
+     void State::dpInterrupt() {
+         *MI_INTR_REG |= MI_INTR_DP;
+         checkInterrupts();
+@@ -2727,6 +2789,20 @@ namespace RT64 {
+     void State::setDitherNoiseStrength(float noiseStrength) {
+         extended.ditherNoiseStrength = noiseStrength;
+     }
++
++    // Conker: gEXConkerBlurFramebuffer, for the workload being made (WorkloadQueue blurs the picture as it draws it).
++    void State::setConkerBlurFramebuffer(uint32_t address, uint8_t strength) {
++        Workload &workload = ext.workloadQueue->workloads[ext.workloadQueue->writeCursor];
++        workload.extended.conkerBlurAddress = address & 0x00FFFFFF;
++        workload.extended.conkerBlurStrength = strength;
++    }
++
++    // Conker: gEXConkerGreyFramebuffer, for the workload being made (WorkloadQueue greys the picture as it draws it).
++    void State::setConkerGreyFramebuffer(uint32_t address) {
++        Workload &workload = ext.workloadQueue->workloads[ext.workloadQueue->writeCursor];
++        // 0: the color image set now.
++        workload.extended.conkerGreyAddress = ((address != 0) ? address : rdp->colorImage.address) & 0x00FFFFFF;
++    }
+     
+     void State::setExtendedRDRAM(bool isExtended) {
+         extended.extendRDRAM = isExtended;
+diff --git a/src/hle/rt64_state.h b/src/hle/rt64_state.h
+index 7a8c13b..bd14d52 100644
+--- a/src/hle/rt64_state.h
++++ b/src/hle/rt64_state.h
+@@ -153,6 +153,7 @@ namespace RT64 {
+         void inspect();
+         void advanceWorkload(Workload &workload, bool paused);
+         void advancePresent(Present &present, bool paused);
++        void presentAgain();
+         void dpInterrupt();
+         void spInterrupt();
+         void advanceFramebufferRenderer();
+@@ -165,6 +166,8 @@ namespace RT64 {
+         void setDitherNoiseStrength(float noiseStrength);
+         void setExtendedRDRAM(bool isExtended);
+         void setTexcoordWrapPoint(int16_t wrapU, int16_t wrapV);
++        void setConkerBlurFramebuffer(uint32_t address, uint8_t strength);
++        void setConkerGreyFramebuffer(uint32_t address);
+         void startSpriteCommand(uint64_t replacementHash);
+         void endSpriteCommand();
+         uint8_t *fromRDRAM(uint32_t rdramAddress) const;
 diff --git a/src/hle/rt64_workload.cpp b/src/hle/rt64_workload.cpp
-index b4c85f5..3e5f75e 100644
+index b4c85f5..2793924 100644
 --- a/src/hle/rt64_workload.cpp
 +++ b/src/hle/rt64_workload.cpp
-@@ -4,7 +4,23 @@
+@@ -4,7 +4,33 @@
  
  #include "rt64_workload.h"
  
@@ -1913,10 +2526,48 @@ index b4c85f5..3e5f75e 100644
 +        return interpolationPausedFlag;
 +    }
 +
++    static std::atomic<bool> renderToRAMOffFlag{ false };
++
++    void setRenderToRAMOff(bool off) {
++        renderToRAMOffFlag = off;
++    }
++
++    bool renderToRAMOff() {
++        return renderToRAMOffFlag;
++    }
++
      // Common functions.
  
      static uint64_t roundUp(uint64_t value, uint64_t powerOf2Alignment) {
-@@ -315,6 +331,55 @@ namespace RT64 {
+@@ -22,6 +48,9 @@ namespace RT64 {
+         workloadId = 0;
+         extended.testZIndexCount = 0;
+         extended.ditherNoiseStrength = 1.0f;
++        extended.conkerBlurAddress = 0;
++        extended.conkerBlurStrength = 0;
++        extended.conkerGreyAddress = 0;
+ 
+         commandWarnings.clear();
+         spriteCommands.clear();
+@@ -68,6 +97,8 @@ namespace RT64 {
+         drawData.rspViewports.clear();
+         drawData.viewportClipRatios.clear();
+         drawData.viewportOrigins.clear();
++        drawData.viewportFocusXScales.clear();
++        drawData.viewportFocusYScales.clear();
+         drawData.rspFog.clear();
+         drawData.rspLights.clear();
+         drawData.rspLookAt.clear();
+@@ -102,6 +133,8 @@ namespace RT64 {
+ 
+         // Push an identity matrix into the transforms by default so rects can use them.
+         drawData.rspViewports.push_back(interop::RSPViewport::identity());
++        drawData.viewportFocusXScales.push_back(1.0f);
++        drawData.viewportFocusYScales.push_back(1.0f);
+         drawData.viewTransforms.push_back(interop::float4x4::identity());
+         drawData.projTransforms.push_back(interop::float4x4::identity());
+         drawData.viewProjTransforms.push_back(interop::float4x4::identity());
+@@ -315,6 +348,82 @@ namespace RT64 {
          return addedPair;
      }
  
@@ -1939,8 +2590,35 @@ index b4c85f5..3e5f75e 100644
 +
 +        const FixedRect wideningScissor = fbPair.wideningScissor();
 +        const FixedRect &pairScissor = wideningScissor.isNull() ? proj.scissorRect : wideningScissor;
-+        return (viewRect.ulx <= pairScissor.ulx + CoversWidthViewportSlack) && (viewRect.lrx >= pairScissor.lrx - CoversWidthViewportSlack) &&
-+            (viewRect.width(true, true) > viewRect.height(true, true));
++        if (viewRect.width(true, true) <= viewRect.height(true, true)) {
++            return false;
++        }
++
++        if ((viewRect.ulx <= pairScissor.ulx + CoversWidthViewportSlack) && (viewRect.lrx >= pairScissor.lrx - CoversWidthViewportSlack)) {
++            return true;
++        }
++
++        // Conker: a split screen's row of views drawn in one pair (Beach's top two quarters in one, its bottom two in
++        // another): side by side they span the pair's width, and each is widened as if it had the pair to itself.
++        auto closeTo = [](int32_t a, int32_t b) { return std::abs(a - b) <= CoversWidthSlack; };
++        int32_t rowLeft = viewRect.ulx, rowRight = viewRect.lrx;
++        uint32_t rowViews = 0;
++        for (uint32_t p = 0; p < fbPair.projectionCount; p++) {
++            FixedRect otherRect;
++            if (!viewOfProjection(fbPair.projections[p], otherRect) || !closeTo(otherRect.uly, viewRect.uly) || !closeTo(otherRect.lry, viewRect.lry)) {
++                continue;
++            }
++
++            // Another view of the row, not one across it (its width is part of the row's).
++            if (!closeTo(otherRect.ulx, viewRect.ulx) || !closeTo(otherRect.lrx, viewRect.lrx)) {
++                rowViews++;
++            }
++
++            rowLeft = std::min(rowLeft, otherRect.ulx);
++            rowRight = std::max(rowRight, otherRect.lrx);
++        }
++
++        return (rowViews > 0) && (rowLeft <= pairScissor.ulx + CoversWidthViewportSlack) && (rowRight >= pairScissor.lrx - CoversWidthViewportSlack);
 +    }
 +
 +    bool Workload::widensView(uint32_t colorAddress, const FixedRect &viewRect) const {
@@ -1973,10 +2651,10 @@ index b4c85f5..3e5f75e 100644
          if (fbPairCount > 0) {
              return fbPairCount - 1;
 diff --git a/src/hle/rt64_workload.h b/src/hle/rt64_workload.h
-index 8ea27d5..392867f 100644
+index 8ea27d5..becae48 100644
 --- a/src/hle/rt64_workload.h
 +++ b/src/hle/rt64_workload.h
-@@ -23,6 +23,13 @@
+@@ -23,6 +23,19 @@
  #include "rt64_transform_group.h"
  
  namespace RT64 {
@@ -1987,10 +2665,25 @@ index 8ea27d5..392867f 100644
 +    void setInterpolationPaused(bool paused);
 +    bool interpolationPaused();
 +
++    // Conker: renders nothing back into the game's memory (its color and depth images), whatever the emulator's
++    // Render to RAM, while the game's host asks (netplay's deterministic mode): those writes come from the
++    // renderer's thread whenever it gets to a display list, and a headless run, with no renderer, has none.
++    void setRenderToRAMOff(bool off);
++    bool renderToRAMOff();
++
      struct DrawData {
          std::vector<float> posFloats;
          std::vector<float> velFloats;
-@@ -234,6 +241,8 @@ namespace RT64 {
+@@ -62,6 +75,8 @@ namespace RT64 {
+         std::vector<interop::RSPViewport> rspViewports;
+         std::vector<int16_t> viewportClipRatios;
+         std::vector<uint16_t> viewportOrigins;
++        std::vector<float> viewportFocusXScales;
++        std::vector<float> viewportFocusYScales;
+         std::vector<interop::RSPFog> rspFog;
+         std::vector<interop::RSPLight> rspLights;
+         std::vector<interop::RSPLookAt> rspLookAt;
+@@ -234,11 +249,18 @@ namespace RT64 {
          uint64_t workloadId = 0;
          uint64_t presentId = 0;
          bool paused = false;
@@ -1999,13 +2692,24 @@ index 8ea27d5..392867f 100644
  
          struct {
              uint32_t testZIndexCount = 0;
-@@ -253,5 +262,16 @@ namespace RT64 {
+             float ditherNoiseStrength = 1.0f;
+             hlslpp::float2 texcoordWrapPoint = {};
++            // Conker: the color image whose picture is blurred once drawn, and by how much (gEXConkerBlurFramebuffer).
++            uint32_t conkerBlurAddress = 0;
++            uint8_t conkerBlurStrength = 0;
++            // Conker: the color image whose picture is turned grey once drawn (gEXConkerGreyFramebuffer).
++            uint32_t conkerGreyAddress = 0;
+         } extended;
+ 
+         void reset();
+@@ -253,5 +275,17 @@ namespace RT64 {
          void begin(uint64_t submissionFrame);
          bool addFramebufferPair(uint32_t colorAddress, uint8_t colorFmt, uint8_t colorSiz, uint16_t colorWidth, uint32_t depthAddress);
          int currentFramebufferPairIndex() const;
 +
 +        // A 3D view's rect (its scissor and viewport's intersection) and whether a pair widens it: the view covers the
-+        // pair's widening scissor (FramebufferPair::wideningScissor), is wider than tall and has no custom origin.
++        // pair's widening scissor (FramebufferPair::wideningScissor), or its row of side-by-side views in the pair does
++        // together (a split screen's two views in one pair), is wider than tall and has no custom origin.
 +        bool viewOfProjection(const Projection &proj, FixedRect &viewRect) const;
 +        bool pairWidensView(const FramebufferPair &fbPair, const Projection &proj) const;
 +
@@ -2018,7 +2722,7 @@ index 8ea27d5..392867f 100644
  };
 \ No newline at end of file
 diff --git a/src/hle/rt64_workload_queue.cpp b/src/hle/rt64_workload_queue.cpp
-index 5a331aa..e6c0eae 100644
+index 5a331aa..77773ca 100644
 --- a/src/hle/rt64_workload_queue.cpp
 +++ b/src/hle/rt64_workload_queue.cpp
 @@ -4,6 +4,8 @@
@@ -2161,7 +2865,48 @@ index 5a331aa..e6c0eae 100644
                              FramebufferChange *depthFbChange = depthFb->readChangeFromStorage(ext.workloadGraphicsWorker, workload.fbStorage, scratchFbChangePool, Framebuffer::Type::Depth,
                                  G_IM_FMT_DEPTH, f, depthFb->readHeight, readRowCount, ext.shaderLibrary);
  
-@@ -986,7 +1049,7 @@ namespace RT64 {
+@@ -811,6 +874,40 @@ namespace RT64 {
+                         overrideTarget->resolveFromTarget(ext.workloadGraphicsWorker, colorTarget, ext.shaderLibrary);
+                     }
+ 
++                    // Conker: the picture asked for with gEXConkerBlurFramebuffer is blurred once the frame's last pair
++                    // drawing into it is drawn, before anything reads it (its tile copies are made as later pairs start).
++                    const uint32_t conkerBlurAddress = workload.extended.conkerBlurAddress;
++                    if ((conkerBlurAddress != 0) && (colorTarget != nullptr) && (colorFb != nullptr) && ((colorImg.address & 0x00FFFFFF) == conkerBlurAddress)) {
++                        bool lastPair = true;
++                        for (uint32_t g = f + 1; (g < fbPairCount) && lastPair; g++) {
++                            lastPair = ((workload.fbPairs[g].colorImage.address & 0x00FFFFFF) != conkerBlurAddress);
++                        }
++
++                        if (lastPair) {
++                            // The picture's native size at the high resolution, and sigma in N64 pixels, shrunk about as
++                            // much as the resolution is raised: the blur works on a picture about the N64's size.
++                            uint32_t blurWidth = 0, blurHeight = 0, blurMisalignment = 0;
++                            RenderTarget::computeScaledSize(colorFb->width, colorFb->height, fixedResScale, blurWidth, blurHeight, blurMisalignment);
++                            const uint32_t downsample = std::max(uint32_t(fixedResScale.y), 1U);
++                            const float sigma = (float(workload.extended.conkerBlurStrength) / 4.0f) * (fixedResScale.y / float(downsample));
++                            colorTarget->conkerBlur(ext.workloadGraphicsWorker, ext.shaderLibrary, blurWidth, blurHeight, downsample, sigma);
++                        }
++                    }
++
++                    // Conker: the picture asked for with gEXConkerGreyFramebuffer is turned grey the same way, once the frame's
++                    // last pair drawing into it is drawn: all of the target, the widened sides too.
++                    const uint32_t conkerGreyAddress = workload.extended.conkerGreyAddress;
++                    if ((conkerGreyAddress != 0) && (colorTarget != nullptr) && ((colorImg.address & 0x00FFFFFF) == conkerGreyAddress)) {
++                        bool lastPair = true;
++                        for (uint32_t g = f + 1; (g < fbPairCount) && lastPair; g++) {
++                            lastPair = ((workload.fbPairs[g].colorImage.address & 0x00FFFFFF) != conkerGreyAddress);
++                        }
++
++                        if (lastPair) {
++                            colorTarget->conkerGrey(ext.workloadGraphicsWorker, ext.shaderLibrary);
++                        }
++                    }
++
+                     const uint64_t writeTimestamp = fbManager.nextWriteTimestamp();
+                     FixedRect depthFbRect;
+                     if (colorFb != nullptr) {
+@@ -986,7 +1083,7 @@ namespace RT64 {
                      matchingProfiler.log();
  
                      const bool displayRateAboveOriginal = (workload.viOriginalRate > 0) && (workloadConfig.targetRate > workload.viOriginalRate);
@@ -2171,7 +2916,7 @@ index 5a331aa..e6c0eae 100644
                      const bool resetTicks = !generateInterpolatedFrames || (originalRateForTicks != workload.viOriginalRate) || (displayRateForTicks != workloadConfig.targetRate) || !displayRateAboveOriginal;
                      if (resetTicks) {
 diff --git a/src/render/rt64_framebuffer_renderer.cpp b/src/render/rt64_framebuffer_renderer.cpp
-index 9fae0d4..cf6687f 100644
+index 9fae0d4..ce26584 100644
 --- a/src/render/rt64_framebuffer_renderer.cpp
 +++ b/src/render/rt64_framebuffer_renderer.cpp
 @@ -7,6 +7,7 @@
@@ -2182,6 +2927,15 @@ index 9fae0d4..cf6687f 100644
  #include "common/rt64_math.h"
  #include "hle/rt64_color_converter.h"
  #include "gbi/rt64_f3d.h"
+@@ -218,7 +219,7 @@ namespace RT64 {
+         textureCacheFreeSpaces = textureCache->textureMap.freeSpaces;
+         textureCacheSize = static_cast<uint32_t>(textureCacheTextures.size());
+         textureCacheGlobalVersion = textureCache->textureMap.globalVersion;
+-        textureCacheReplacementMapEnabled = textureCache->textureMap.replacementMapEnabled;
++        textureCacheReplacementMapEnabled = textureCache->textureMap.replacementMapEnabled && !replacementsHidden(); // Conker
+         dynamicTextureViewVector.clear();
+         dynamicTextureBarrierVector.clear();
+     }
 @@ -599,8 +600,27 @@ namespace RT64 {
              case InstanceDrawCall::Type::FillRect: {
                  const auto &clearRect = drawCall.clearRect;
@@ -2229,7 +2983,7 @@ index 9fae0d4..cf6687f 100644
          InstanceDrawCall instanceDrawCall;
          interop::RenderIndices renderIndices;
          uint32_t globalCallIndex = 0;
-@@ -1450,6 +1480,48 @@ namespace RT64 {
+@@ -1450,6 +1480,46 @@ namespace RT64 {
          uint32_t vertexTestZFaceIndicesStart = 0;
          int32_t vertexTestZCallIndex = -1;
          RenderViewport viewportClip;
@@ -2251,7 +3005,6 @@ index 9fae0d4..cf6687f 100644
 +                continue;
 +            }
 +
-+            const FixedRect viewPairScissor = viewPair.wideningScissor();
 +            for (uint32_t vp = 0; vp < viewPair.projectionCount; vp++) {
 +                const Projection &viewProj = viewPair.projections[vp];
 +                if ((viewProj.type != Projection::Type::Perspective) || viewProj.scissorRect.isNull()) {
@@ -2265,9 +3018,8 @@ index 9fae0d4..cf6687f 100644
 +                    continue;
 +                }
 +
-+                const FixedRect &comparedScissor = viewPairScissor.isNull() ? viewProj.scissorRect : viewPairScissor;
-+                const bool widened = (viewRect.ulx <= comparedScissor.ulx + CoversWidthViewportSlack) && (viewRect.lrx >= comparedScissor.lrx - CoversWidthViewportSlack) &&
-+                    (viewRect.width(true, true) > viewRect.height(true, true));
++                // The same test as the projections' (Workload::pairWidensView), rows of views in one pair included.
++                const bool widened = p.curWorkload->pairWidensView(viewPair, viewProj);
 +                const bool narrowerThanFrame = (viewRect.lrx - viewRect.ulx) < (frameWidthFixed - 2 * CoversWidthSlack);
 +                if (widened && narrowerThanFrame) {
 +                    widenedViews.push_back({ viewRect, (viewRect.ulx + viewRect.lrx) / 2 });
@@ -2278,7 +3030,7 @@ index 9fae0d4..cf6687f 100644
          for (uint32_t pr = 0; (pr < fbPair.projectionCount) && (globalCallIndex < p.maxGameCall); pr++) {
              const Projection &proj = fbPair.projections[pr];
              if (proj.scissorRect.isNull()) {
-@@ -1488,9 +1560,28 @@ namespace RT64 {
+@@ -1488,9 +1558,28 @@ namespace RT64 {
                  // The call's scissor spans the whole width of the framebuffer pair scissor. Custom origin must not be in use to be able to use the stretched viewport.
                  const auto &viewport = drawData.rspViewports[proj.transformsIndex];
                  FixedRect intersectionRect = proj.scissorRect.intersection(viewport.rect(viewportClipRatios));
@@ -2308,7 +3060,7 @@ index 9fae0d4..cf6687f 100644
                  if (useWideViewport) {
                      projInvRatioScale = 1.0f;
                  }
-@@ -1548,6 +1639,27 @@ namespace RT64 {
+@@ -1548,6 +1637,27 @@ namespace RT64 {
                      }
  
                      clearRect.rect = convertFixedRect(call.callDesc.rect, p.resolutionScale, p.fbWidth, invRatioScale, extOriginPercentage, horizontalMisalignment, call.callDesc.rectLeftOrigin, call.callDesc.rectRightOrigin);
@@ -2336,7 +3088,7 @@ index 9fae0d4..cf6687f 100644
                  }
                  else if (call.callDesc.extendedType != DrawExtendedType::None) {
                      switch (call.callDesc.extendedType) {
-@@ -1625,6 +1737,7 @@ namespace RT64 {
+@@ -1625,6 +1735,7 @@ namespace RT64 {
  
                          float invRatioScale = 1.0f / aspectRatioScale;
                          float horizontalMisalignment = 0.0f;
@@ -2344,7 +3096,7 @@ index 9fae0d4..cf6687f 100644
                          switch (proj.type) {
                          case Projection::Type::Perspective:
                          case Projection::Type::Orthographic: {
-@@ -1645,14 +1758,62 @@ namespace RT64 {
+@@ -1645,14 +1756,62 @@ namespace RT64 {
                              // The call's scissor spans the whole width of the framebuffer pair scissor. The rect must not be using extended origins.
                              const bool regularOrigins = (call.callDesc.rectLeftOrigin == G_EX_ORIGIN_NONE) && (call.callDesc.rectRightOrigin == G_EX_ORIGIN_NONE);
                              const bool coversScissorWidth = regularOrigins && (call.callDesc.rect.ulx <= fbPair.scissorRect.ulx) && (call.callDesc.rect.lrx >= fbPair.scissorRect.lrx);
@@ -2409,7 +3161,7 @@ index 9fae0d4..cf6687f 100644
                              triangles.screenScale = { viewportRect.width / framebuffer.viewport.width, viewportRect.height / framebuffer.viewport.height };
                              triangles.screenOffset.x = halfPixelOffset.x + ((viewportRect.x + viewportRect.width / 2.0f) - halfViewportSize.x) / halfViewportSize.x;
                              triangles.screenOffset.y = halfPixelOffset.y + (halfViewportSize.y - (viewportRect.y + viewportRect.height / 2.0f)) / halfViewportSize.y;
-@@ -1676,7 +1837,12 @@ namespace RT64 {
+@@ -1676,7 +1835,12 @@ namespace RT64 {
                              break;
                          }
  
@@ -2424,7 +3176,7 @@ index 9fae0d4..cf6687f 100644
                          bool usesViewport = (proj.type == Projection::Type::Perspective) || (proj.type == Projection::Type::Orthographic);
                          if (usesViewport) {
 diff --git a/src/render/rt64_projection_processor.cpp b/src/render/rt64_projection_processor.cpp
-index e842dcc..c8cc898 100644
+index e842dcc..5b0ff63 100644
 --- a/src/render/rt64_projection_processor.cpp
 +++ b/src/render/rt64_projection_processor.cpp
 @@ -4,6 +4,7 @@
@@ -2532,16 +3284,29 @@ index e842dcc..c8cc898 100644
              interop::float4x4 &viewMatrix = drawData.modViewTransforms[proj.transformsIndex];
              interop::float4x4 &projMatrix = drawData.modProjTransforms[proj.transformsIndex];
              interop::float4x4 &viewProjMatrix = drawData.modViewProjTransforms[proj.transformsIndex];
-@@ -112,7 +179,7 @@ namespace RT64 {
+@@ -112,7 +179,20 @@ namespace RT64 {
                  projMatrix = workload.debuggerCamera.projMatrix;
              }
  
 -            adjustProjectionMatrix(projMatrix, projRatioScale);
 +            adjustProjectionMatrix(projMatrix, projRatioScale, projCenterX);
++
++            // Conker: a view drawn anew elsewhere in the frame keeps its shape (rt64_conker_view_focus.h).
++            const float focusXScale = drawData.viewportFocusXScales[proj.transformsIndex];
++            const float focusYScale = drawData.viewportFocusYScales[proj.transformsIndex];
++            auto adjustProjectionShape = [focusXScale, focusYScale](interop::float4x4 &matrix) {
++                if ((focusXScale != 1.0f) || (focusYScale != 1.0f)) {
++                    for (int r = 0; r < 4; r++) {
++                        matrix[r][0] *= focusXScale;
++                        matrix[r][1] *= focusYScale;
++                    }
++                }
++            };
++            adjustProjectionShape(projMatrix);
  
              interop::float4x4 &prevViewTransform = drawData.prevViewTransforms[proj.transformsIndex];
              interop::float4x4 &prevProjTransform = drawData.prevProjTransforms[proj.transformsIndex];
-@@ -120,9 +187,21 @@ namespace RT64 {
+@@ -120,9 +200,22 @@ namespace RT64 {
                  const interop::float4x4 curViewTransform = viewMatrix;
                  const interop::float4x4 curProjTransform = projMatrix;
                  interop::float4x4 adjustedPrevProj = *prevProjMatrix;
@@ -2549,6 +3314,7 @@ index e842dcc..c8cc898 100644
 -                viewMatrix = rigidBody->lerp(p.curFrameWeight, *prevViewMatrix, curViewTransform, true);
 -                prevViewTransform = rigidBody->lerp(p.prevFrameWeight, *prevViewMatrix, curViewTransform, true);
 +                adjustProjectionMatrix(adjustedPrevProj, projRatioScale, projCenterX);
++                adjustProjectionShape(adjustedPrevProj);
 +                if (rigidBody->lerpDecompose) {
 +                    viewMatrix = rigidBody->lerp(p.curFrameWeight, *prevViewMatrix, curViewTransform, true);
 +                    prevViewTransform = rigidBody->lerp(p.prevFrameWeight, *prevViewMatrix, curViewTransform, true);
@@ -2566,7 +3332,7 @@ index e842dcc..c8cc898 100644
  
                  // We only interpolate the projection if the view matrix has been interpolated.
                  const bool interpolateProjection = rigidBody->lerpTranslation || rigidBody->lerpRotation;
-@@ -144,6 +223,31 @@ namespace RT64 {
+@@ -144,6 +237,31 @@ namespace RT64 {
  
              interop::float4x4 &prevViewProjTransform = drawData.prevViewProjTransforms[proj.transformsIndex];
              prevViewProjTransform = hlslpp::mul(prevViewTransform, prevProjTransform);
@@ -2598,11 +3364,360 @@ index e842dcc..c8cc898 100644
          }
      }
  
+diff --git a/src/render/rt64_render_target.cpp b/src/render/rt64_render_target.cpp
+index 81917bc..502f55c 100644
+--- a/src/render/rt64_render_target.cpp
++++ b/src/render/rt64_render_target.cpp
+@@ -5,6 +5,7 @@
+ #include "rt64_render_target.h"
+ 
+ #include <algorithm>
++#include <cmath>
+ 
+ #include "gbi/rt64_f3d.h"
+ #include "shared/rt64_fb_common.h"
+@@ -51,6 +52,15 @@ namespace RT64 {
+         textureResolveDescSet.reset();
+         filterDescSet.reset();
+         fbWriteDescSet.reset();
++        for (auto &set : conkerBlurSets) {
++            set.reset();
++        }
++
++        conkerBlurSmall[0].reset();
++        conkerBlurSmall[1].reset();
++        conkerBlurFull.reset();
++        conkerGreySet.reset();
++        conkerGreyFull.reset();
+     }
+ 
+     bool RenderTarget::resize(RenderWorker *worker, uint32_t newWidth, uint32_t newHeight) {
+@@ -407,6 +417,197 @@ namespace RT64 {
+         worker->commandList->dispatch(dispatchX, dispatchY, 1);
+     }
+ 
++    // Conker: blurs the picture's top left blurWidth x blurHeight in place, in the texture the target is read from
++    // (getResolvedTexture: the resolved one with MSAA, which stays as it is until something is drawn into the target
++    // again). Shrunk by downsample (a box filter), blurred across and down by a Gaussian of sigma (in the shrunk
++    // picture's texels), then scaled back up bilinearly and copied in (ConkerBlurCS). For the pause menu's background
++    // (gEXConkerBlurFramebuffer, WorkloadQueue).
++    void RenderTarget::conkerBlur(RenderWorker *worker, const ShaderLibrary *shaderLibrary, uint32_t blurWidth, uint32_t blurHeight, uint32_t downsample, float sigma) {
++        assert(worker != nullptr);
++
++        blurWidth = std::min(blurWidth, width);
++        blurHeight = std::min(blurHeight, height);
++        downsample = std::max(downsample, 1U);
++        if ((texture == nullptr) || (blurWidth == 0) || (blurHeight == 0)) {
++            return;
++        }
++
++        resolveTarget(worker, shaderLibrary);
++
++        RenderTexture *picture = getResolvedTexture();
++        const uint32_t smallWidth = std::max((blurWidth + downsample - 1) / downsample, 1U);
++        const uint32_t smallHeight = std::max((blurHeight + downsample - 1) / downsample, 1U);
++        if ((conkerBlurFull == nullptr) || (conkerBlurRevision != textureRevision) || (conkerBlurWidth != blurWidth) || (conkerBlurHeight != blurHeight) || (conkerBlurDownsample != downsample)) {
++            const RenderTextureFlags flags = RenderTextureFlag::STORAGE | RenderTextureFlag::UNORDERED_ACCESS;
++            for (int i = 0; i < 2; i++) {
++                conkerBlurSmall[i] = worker->device->createTexture(RenderTextureDesc::Texture2D(smallWidth, smallHeight, 1, format, flags));
++                conkerBlurSmall[i]->setName("Render Target Conker Blur Small #" + std::to_string(addressForName));
++            }
++
++            conkerBlurFull = worker->device->createTexture(RenderTextureDesc::Texture2D(blurWidth, blurHeight, 1, format, flags));
++            conkerBlurFull->setName("Render Target Conker Blur #" + std::to_string(addressForName));
++
++            // The four passes: shrink, blur across, blur down, scale back up.
++            RenderTexture *inputs[4] = { picture, conkerBlurSmall[0].get(), conkerBlurSmall[1].get(), conkerBlurSmall[0].get() };
++            RenderTexture *outputs[4] = { conkerBlurSmall[0].get(), conkerBlurSmall[1].get(), conkerBlurSmall[0].get(), conkerBlurFull.get() };
++            for (int i = 0; i < 4; i++) {
++                conkerBlurSets[i] = std::make_unique<BoxFilterDescriptorSet>(worker->device);
++                conkerBlurSets[i]->setTexture(conkerBlurSets[i]->gInput, inputs[i], RenderTextureLayout::SHADER_READ);
++                conkerBlurSets[i]->setTexture(conkerBlurSets[i]->gOutput, outputs[i], RenderTextureLayout::GENERAL);
++            }
++
++            conkerBlurRevision = textureRevision;
++            conkerBlurWidth = blurWidth;
++            conkerBlurHeight = blurHeight;
++            conkerBlurDownsample = downsample;
++        }
++
++        const uint32_t BlockSize = 8;
++        auto dispatch = [&](uint32_t outputWidth, uint32_t outputHeight) {
++            worker->commandList->dispatch((outputWidth + BlockSize - 1) / BlockSize, (outputHeight + BlockSize - 1) / BlockSize, 1);
++        };
++
++        // Shrink, with the box filter.
++        struct BoxFilterCB {
++            interop::int2 Resolution;
++            interop::int2 ResolutionScale;
++            interop::int2 Misalignment;
++        };
++
++        BoxFilterCB boxFilterCB;
++        boxFilterCB.Resolution[0] = int32_t(blurWidth);
++        boxFilterCB.Resolution[1] = int32_t(blurHeight);
++        boxFilterCB.ResolutionScale[0] = int32_t(downsample);
++        boxFilterCB.ResolutionScale[1] = int32_t(downsample);
++        boxFilterCB.Misalignment[0] = 0;
++        boxFilterCB.Misalignment[1] = 0;
++        const RenderTextureBarrier shrinkBarriers[] = {
++            RenderTextureBarrier(picture, RenderTextureLayout::SHADER_READ),
++            RenderTextureBarrier(conkerBlurSmall[0].get(), RenderTextureLayout::GENERAL)
++        };
++
++        worker->commandList->barriers(RenderBarrierStage::COMPUTE, shrinkBarriers, uint32_t(std::size(shrinkBarriers)));
++
++        worker->commandList->setPipeline(shaderLibrary->boxFilter.pipeline.get());
++        worker->commandList->setComputePipelineLayout(shaderLibrary->boxFilter.pipelineLayout.get());
++        worker->commandList->setComputePushConstants(0, &boxFilterCB);
++        worker->commandList->setComputeDescriptorSet(conkerBlurSets[0]->get(), 0);
++        dispatch(smallWidth, smallHeight);
++
++        // Blur across, down, and scale back up.
++        struct ConkerBlurCB {
++            interop::uint2 InputResolution;
++            interop::uint2 OutputResolution;
++            uint32_t Mode;
++            uint32_t Radius;
++            float Sigma;
++            uint32_t Padding;
++        };
++
++        sigma = std::max(sigma, 0.1f);
++        const uint32_t radius = std::min(uint32_t(std::ceil(sigma * 3.0f)), 32U);
++        RenderTexture *passInputs[3] = { conkerBlurSmall[0].get(), conkerBlurSmall[1].get(), conkerBlurSmall[0].get() };
++        RenderTexture *passOutputs[3] = { conkerBlurSmall[1].get(), conkerBlurSmall[0].get(), conkerBlurFull.get() };
++        worker->commandList->setPipeline(shaderLibrary->conkerBlur.pipeline.get());
++        worker->commandList->setComputePipelineLayout(shaderLibrary->conkerBlur.pipelineLayout.get());
++        for (uint32_t pass = 0; pass < 3; pass++) {
++            ConkerBlurCB blurCB;
++            blurCB.InputResolution = { smallWidth, smallHeight };
++            blurCB.OutputResolution = (pass < 2) ? interop::uint2(smallWidth, smallHeight) : interop::uint2(blurWidth, blurHeight);
++            blurCB.Mode = pass;
++            blurCB.Radius = radius;
++            blurCB.Sigma = sigma;
++            blurCB.Padding = 0;
++            const RenderTextureBarrier passBarriers[] = {
++                RenderTextureBarrier(passInputs[pass], RenderTextureLayout::SHADER_READ),
++                RenderTextureBarrier(passOutputs[pass], RenderTextureLayout::GENERAL)
++            };
++
++            worker->commandList->barriers(RenderBarrierStage::COMPUTE, passBarriers, uint32_t(std::size(passBarriers)));
++
++            worker->commandList->setComputePushConstants(0, &blurCB);
++            worker->commandList->setComputeDescriptorSet(conkerBlurSets[pass + 1]->get(), 0);
++            dispatch(blurCB.OutputResolution[0], blurCB.OutputResolution[1]);
++        }
++
++        // Into the picture.
++        const RenderTextureBarrier copyBarriers[] = {
++            RenderTextureBarrier(conkerBlurFull.get(), RenderTextureLayout::COPY_SOURCE),
++            RenderTextureBarrier(picture, RenderTextureLayout::COPY_DEST)
++        };
++
++        worker->commandList->barriers(RenderBarrierStage::COPY, copyBarriers, uint32_t(std::size(copyBarriers)));
++
++        const RenderBox blurBox(0, 0, int32_t(blurWidth), int32_t(blurHeight));
++        worker->commandList->copyTextureRegion(RenderTextureCopyLocation::Subresource(picture), RenderTextureCopyLocation::Subresource(conkerBlurFull.get()), 0, 0, 0, &blurBox);
++        worker->commandList->barriers(RenderBarrierStage::GRAPHICS_AND_COMPUTE, RenderTextureBarrier(picture, RenderTextureLayout::SHADER_READ));
++    }
++
++    // Conker: turns the picture grey in place, each pixel's green in all three channels, as the N64's func_150B1DB0 does to
++    // the frame in RDRAM (It's War's intro). Into a picture of its own (ConkerBlurCS, Mode 3) and copied back in, in the
++    // texture the target is read from, as conkerBlur. For gEXConkerGreyFramebuffer (WorkloadQueue).
++    void RenderTarget::conkerGrey(RenderWorker *worker, const ShaderLibrary *shaderLibrary) {
++        assert(worker != nullptr);
++
++        if ((texture == nullptr) || (width == 0) || (height == 0)) {
++            return;
++        }
++
++        resolveTarget(worker, shaderLibrary);
++
++        RenderTexture *picture = getResolvedTexture();
++        if ((conkerGreyFull == nullptr) || (conkerGreyRevision != textureRevision) || (conkerGreyWidth != width) || (conkerGreyHeight != height)) {
++            const RenderTextureFlags flags = RenderTextureFlag::STORAGE | RenderTextureFlag::UNORDERED_ACCESS;
++            conkerGreyFull = worker->device->createTexture(RenderTextureDesc::Texture2D(width, height, 1, format, flags));
++            conkerGreyFull->setName("Render Target Conker Grey #" + std::to_string(addressForName));
++            conkerGreySet = std::make_unique<BoxFilterDescriptorSet>(worker->device);
++            conkerGreySet->setTexture(conkerGreySet->gInput, picture, RenderTextureLayout::SHADER_READ);
++            conkerGreySet->setTexture(conkerGreySet->gOutput, conkerGreyFull.get(), RenderTextureLayout::GENERAL);
++            conkerGreyRevision = textureRevision;
++            conkerGreyWidth = width;
++            conkerGreyHeight = height;
++        }
++
++        struct ConkerBlurCB {
++            interop::uint2 InputResolution;
++            interop::uint2 OutputResolution;
++            uint32_t Mode;
++            uint32_t Radius;
++            float Sigma;
++            uint32_t Padding;
++        };
++
++        ConkerBlurCB greyCB;
++        greyCB.InputResolution = { width, height };
++        greyCB.OutputResolution = { width, height };
++        greyCB.Mode = 3;
++        greyCB.Radius = 0;
++        greyCB.Sigma = 0.0f;
++        greyCB.Padding = 0;
++        const RenderTextureBarrier greyBarriers[] = {
++            RenderTextureBarrier(picture, RenderTextureLayout::SHADER_READ),
++            RenderTextureBarrier(conkerGreyFull.get(), RenderTextureLayout::GENERAL)
++        };
++
++        worker->commandList->barriers(RenderBarrierStage::COMPUTE, greyBarriers, uint32_t(std::size(greyBarriers)));
++        worker->commandList->setPipeline(shaderLibrary->conkerBlur.pipeline.get());
++        worker->commandList->setComputePipelineLayout(shaderLibrary->conkerBlur.pipelineLayout.get());
++        worker->commandList->setComputePushConstants(0, &greyCB);
++        worker->commandList->setComputeDescriptorSet(conkerGreySet->get(), 0);
++        const uint32_t BlockSize = 8;
++        worker->commandList->dispatch((width + BlockSize - 1) / BlockSize, (height + BlockSize - 1) / BlockSize, 1);
++
++        const RenderTextureBarrier copyBarriers[] = {
++            RenderTextureBarrier(conkerGreyFull.get(), RenderTextureLayout::COPY_SOURCE),
++            RenderTextureBarrier(picture, RenderTextureLayout::COPY_DEST)
++        };
++
++        worker->commandList->barriers(RenderBarrierStage::COPY, copyBarriers, uint32_t(std::size(copyBarriers)));
++        const RenderBox greyBox(0, 0, int32_t(width), int32_t(height));
++        worker->commandList->copyTextureRegion(RenderTextureCopyLocation::Subresource(picture), RenderTextureCopyLocation::Subresource(conkerGreyFull.get()), 0, 0, 0, &greyBox);
++        worker->commandList->barriers(RenderBarrierStage::GRAPHICS_AND_COMPUTE, RenderTextureBarrier(picture, RenderTextureLayout::SHADER_READ));
++    }
++
+     void RenderTarget::resolveTarget(RenderWorker *worker, const ShaderLibrary *shaderLibrary) {
+         if (!resolvedTextureDirty || !usesResolve()) {
+             return;
+diff --git a/src/render/rt64_render_target.h b/src/render/rt64_render_target.h
+index 82d8a36..b474e68 100644
+--- a/src/render/rt64_render_target.h
++++ b/src/render/rt64_render_target.h
+@@ -35,6 +35,21 @@ namespace RT64 {
+         std::unique_ptr<TextureCopyDescriptorSet> textureResolveDescSet;
+         std::unique_ptr<BoxFilterDescriptorSet> filterDescSet;
+         std::unique_ptr<FramebufferWriteDescriptorTextureSet> fbWriteDescSet;
++        // Conker: conkerBlur's pictures (two small ones and one the target's size) and the descriptor sets of its four
++        // passes, kept for the target's textures and the blurred area's size they were made for.
++        std::unique_ptr<RenderTexture> conkerBlurSmall[2];
++        std::unique_ptr<RenderTexture> conkerBlurFull;
++        std::unique_ptr<BoxFilterDescriptorSet> conkerBlurSets[4];
++        uint64_t conkerBlurRevision = 0;
++        uint32_t conkerBlurWidth = 0;
++        uint32_t conkerBlurHeight = 0;
++        uint32_t conkerBlurDownsample = 0;
++        // Conker: conkerGrey's picture and its descriptor set, kept for the target's textures and size they were made for.
++        std::unique_ptr<RenderTexture> conkerGreyFull;
++        std::unique_ptr<BoxFilterDescriptorSet> conkerGreySet;
++        uint64_t conkerGreyRevision = 0;
++        uint32_t conkerGreyWidth = 0;
++        uint32_t conkerGreyHeight = 0;
+         uint32_t addressForName = 0;
+         uint32_t width = 0;
+         uint32_t height = 0;
+@@ -63,6 +78,8 @@ namespace RT64 {
+         void clearColorTarget(RenderWorker *worker);
+         void clearDepthTarget(RenderWorker *worker);
+         void downsampleTarget(RenderWorker *worker, const ShaderLibrary *shaderLibrary);
++        void conkerBlur(RenderWorker *worker, const ShaderLibrary *shaderLibrary, uint32_t blurWidth, uint32_t blurHeight, uint32_t downsample, float sigma);
++        void conkerGrey(RenderWorker *worker, const ShaderLibrary *shaderLibrary);
+         void resolveTarget(RenderWorker *worker, const ShaderLibrary *shaderLibrary);
+         void recordRasterResolve(RenderWorker *worker, const TextureCopyDescriptorSet *srcDescriptorSet, uint32_t x, uint32_t y, uint32_t width, uint32_t height, const ShaderLibrary *shaderLibrary);
+         void markForResolve();
+diff --git a/src/render/rt64_shader_library.cpp b/src/render/rt64_shader_library.cpp
+index d1c5273..b4d8e15 100644
+--- a/src/render/rt64_shader_library.cpp
++++ b/src/render/rt64_shader_library.cpp
+@@ -19,6 +19,7 @@
+ #include "shaders/FbWriteDepthCSMS.hlsl.spirv.h"
+ #include "shaders/GaussianFilterRGB3x3CS.hlsl.spirv.h"
+ #include "shaders/BoxFilterCS.hlsl.spirv.h"
++#include "shaders/ConkerBlurCS.hlsl.spirv.h"
+ #include "shaders/BicubicScalingCS.hlsl.spirv.h"
+ #include "shaders/HistogramAverageCS.hlsl.spirv.h"
+ #include "shaders/HistogramClearCS.hlsl.spirv.h"
+@@ -65,6 +66,7 @@
+ #   include "shaders/FbWriteDepthCSMS.hlsl.dxil.h"
+ #   include "shaders/GaussianFilterRGB3x3CS.hlsl.dxil.h"
+ #   include "shaders/BoxFilterCS.hlsl.dxil.h"
++#   include "shaders/ConkerBlurCS.hlsl.dxil.h"
+ #   include "shaders/BicubicScalingCS.hlsl.dxil.h"
+ #   include "shaders/HistogramAverageCS.hlsl.dxil.h"
+ #   include "shaders/HistogramClearCS.hlsl.dxil.h"
+@@ -110,6 +112,7 @@
+ #   include "shaders/FbWriteDepthCSMS.hlsl.metal.h"
+ #   include "shaders/GaussianFilterRGB3x3CS.hlsl.metal.h"
+ #   include "shaders/BoxFilterCS.hlsl.metal.h"
++#   include "shaders/ConkerBlurCS.hlsl.metal.h"
+ #   include "shaders/BicubicScalingCS.hlsl.metal.h"
+ #   include "shaders/HistogramAverageCS.hlsl.metal.h"
+ #   include "shaders/HistogramClearCS.hlsl.metal.h"
+@@ -282,6 +285,20 @@ namespace RT64 {
+             boxFilter.pipeline = device->createComputePipeline(pipelineDesc);
+         }
+ 
++        // Conker: the pause menu's blurred background (RenderTarget::conkerBlur), with the box filter's descriptor set.
++        {
++            BoxFilterDescriptorSet descriptorSet;
++            layoutBuilder.begin();
++            layoutBuilder.addPushConstant(0, 0, sizeof(uint32_t) * 8, RenderShaderStageFlag::COMPUTE);
++            layoutBuilder.addDescriptorSet(descriptorSet);
++            layoutBuilder.end();
++            conkerBlur.pipelineLayout = layoutBuilder.create(device);
++
++            std::unique_ptr<RenderShader> computeShader = device->createShader(CREATE_SHADER_INPUTS(ConkerBlurCSBlobDXIL, ConkerBlurCSBlobSPIRV, ConkerBlurCSBlobMSL, "CSMain", shaderFormat));
++            RenderComputePipelineDesc pipelineDesc(conkerBlur.pipelineLayout.get(), computeShader.get(), 8, 8, 1);
++            conkerBlur.pipeline = device->createComputePipeline(pipelineDesc);
++        }
++
+         // Raytracing compose.
+         {
+             RaytracingComposeDescriptorSet descriptorSet(samplerLibrary);
+diff --git a/src/render/rt64_shader_library.h b/src/render/rt64_shader_library.h
+index 641f3ec..28b37fb 100644
+--- a/src/render/rt64_shader_library.h
++++ b/src/render/rt64_shader_library.h
+@@ -20,6 +20,7 @@ namespace RT64 {
+         // All shaders.
+         ShaderRecord bicubicScaling;
+         ShaderRecord boxFilter;
++        ShaderRecord conkerBlur; // Conker: the pause menu's blurred background (RenderTarget::conkerBlur)
+         ShaderRecord compose;
+         ShaderRecord debug;
+         ShaderRecord fbChangesClear;
 diff --git a/src/render/rt64_texture_cache.cpp b/src/render/rt64_texture_cache.cpp
-index 0848f3e..a153536 100644
+index 0848f3e..b99178d 100644
 --- a/src/render/rt64_texture_cache.cpp
 +++ b/src/render/rt64_texture_cache.cpp
-@@ -1298,6 +1298,7 @@ namespace RT64 {
+@@ -23,6 +23,17 @@
+ #define ONLY_USE_LOW_MIP_CACHE 0
+ 
+ namespace RT64 {
++    // Conker: see rt64_texture_cache.h.
++    static std::atomic<bool> replacementsHiddenFlag{ false };
++
++    void setReplacementsHidden(bool hidden) {
++        replacementsHiddenFlag = hidden;
++    }
++
++    bool replacementsHidden() {
++        return replacementsHiddenFlag;
++    }
++
+     // ReplacementMap
+     
+     static const interop::float2 IdentityScale = { 1.0f, 1.0f };
+@@ -301,7 +312,7 @@ namespace RT64 {
+         }
+ 
+         textureIndex = it->second;
+-        textureReplaced = replacementMapEnabled && (textureReplacements[textureIndex] != nullptr);
++        textureReplaced = replacementMapEnabled && !replacementsHidden() && (textureReplacements[textureIndex] != nullptr);
+ 
+         if (textureReplaced) {
+             textureScale = textureScales[textureIndex];
+@@ -1298,6 +1309,7 @@ namespace RT64 {
              }
          }
  
@@ -2610,7 +3725,7 @@ index 0848f3e..a153536 100644
          for (int32_t i = int32_t(textureMap.replacementMap.fileSystemResolvedPaths.size()) - 1; i >= 0; i--) {
              const auto &fsResolvedPaths = textureMap.replacementMap.fileSystemResolvedPaths[i];
              uint32_t hashVersion = textureMap.replacementMap.fileSystemHashVersions[i];
-@@ -1306,10 +1307,20 @@ namespace RT64 {
+@@ -1306,10 +1318,20 @@ namespace RT64 {
                  if (it != fsResolvedPaths.end()) {
                      // Stop searching for replacements as soon as we find one.
                      resolvedPaths.emplace_back(it->second);
@@ -2631,7 +3746,7 @@ index 0848f3e..a153536 100644
      }
  
      bool TextureCache::useTexture(uint64_t hash, uint64_t submissionFrame, uint32_t &textureIndex, interop::float2 &textureScale, interop::float3 &textureDimensions, bool &textureReplaced, bool &hasMipmaps, bool &shiftedByHalf) {
-@@ -1394,6 +1405,56 @@ namespace RT64 {
+@@ -1394,6 +1416,56 @@ namespace RT64 {
          return true;
      }
  
@@ -2688,7 +3803,7 @@ index 0848f3e..a153536 100644
      bool TextureCache::hasReplacement(uint64_t hash) {
          std::unique_lock lock(textureMapMutex);
          const auto &resolvedPaths = textureMap.replacementMap.fileSystemResolvedPaths;
-@@ -1426,6 +1487,15 @@ namespace RT64 {
+@@ -1426,6 +1498,15 @@ namespace RT64 {
          // Clear the current set of textures that were sent to streaming threads.
          textureMap.replacementMap.fileSystemStreamSets.clear();
  
@@ -2704,7 +3819,7 @@ index 0848f3e..a153536 100644
          // Clear the pending replacement checks for streamed textures.
          textureMap.replacementMap.fileSystemStreamResolvedPaths.clear();
  
-@@ -1502,6 +1572,9 @@ namespace RT64 {
+@@ -1502,6 +1583,9 @@ namespace RT64 {
              }
          }
  
@@ -2714,7 +3829,7 @@ index 0848f3e..a153536 100644
          // Load databases and low mipmap caches from the filesystems in reverse order.
          {
              loaderCommandList->begin();
-@@ -1518,7 +1591,7 @@ namespace RT64 {
+@@ -1518,7 +1602,7 @@ namespace RT64 {
                          db = json::parse(databaseBytes.begin(), databaseBytes.end(), nullptr, true);
  
                          if (db.config.hashVersion <= TMEMHasher::CurrentHashVersion) {
@@ -2723,7 +3838,7 @@ index 0848f3e..a153536 100644
                              fileSystemHashVersions[i] = db.config.hashVersion;
                              knownHashVersions.insert(db.config.hashVersion);
  
-@@ -1564,6 +1637,19 @@ namespace RT64 {
+@@ -1564,6 +1648,19 @@ namespace RT64 {
          textureMap.replacementMap.fileSystemStreamSets = std::move(fileSystemStreamSets);
          textureMap.replacementMap.fileSystemStreamResolvedPaths.resize(fileSystemCount);
  
@@ -2744,10 +3859,23 @@ index 0848f3e..a153536 100644
          bool texturesPreloaded = false;
          {
 diff --git a/src/render/rt64_texture_cache.h b/src/render/rt64_texture_cache.h
-index 9131697..488e5be 100644
+index 9131697..9c74131 100644
 --- a/src/render/rt64_texture_cache.h
 +++ b/src/render/rt64_texture_cache.h
-@@ -220,6 +220,14 @@ namespace RT64 {
+@@ -35,6 +35,12 @@ namespace interop {
+ };
+ 
+ namespace RT64 {
++    // Conker: the replacements (texture packs) hidden, the game's own textures shown, as the host asks (its
++    // Show Original Textures key): where the replacement map is used (the texture cache and the framebuffer
++    // renderer), as if it were turned off, without unloading the packs, so they come back at once.
++    void setReplacementsHidden(bool hidden);
++    bool replacementsHidden();
++
+     struct TextureUpload {
+         uint64_t hash;
+         uint64_t creationFrame;
+@@ -220,6 +226,14 @@ namespace RT64 {
          uint64_t streamLoadCount = 0;
          TextureMap textureMap;
          std::mutex textureMapMutex;
@@ -2762,7 +3890,7 @@ index 9131697..488e5be 100644
          RenderWorker *directWorker;
          RenderWorker *copyWorker;
          std::unique_ptr<RenderCommandList> loaderCommandList;
-@@ -240,6 +248,14 @@ namespace RT64 {
+@@ -240,6 +254,14 @@ namespace RT64 {
          bool useTexture(uint64_t hash, uint64_t submissionFrame, uint32_t &textureIndex);
          bool addReplacement(uint64_t hash, const std::string &relativePath, ReplacementShift shift);
          bool hasReplacement(uint64_t hash);
@@ -2778,16 +3906,19 @@ index 9131697..488e5be 100644
          void reloadReplacements(bool clearQueue, uint64_t exclusiveDbHash = 0);
          bool loadReplacementDirectory(const ReplacementDirectory &replacementDirectory);
 diff --git a/src/render/rt64_vi_renderer.cpp b/src/render/rt64_vi_renderer.cpp
-index b4ff4e9..3edef2f 100644
+index b4ff4e9..cffd3a0 100644
 --- a/src/render/rt64_vi_renderer.cpp
 +++ b/src/render/rt64_vi_renderer.cpp
-@@ -4,10 +4,24 @@
+@@ -4,10 +4,62 @@
  
  #include "rt64_vi_renderer.h"
  
 +#include <algorithm>
 +#include <atomic>
++#include <cmath>
++#include <mutex>
 +
++#include "common/rt64_conker_view_focus.h"
  #include "shared/rt64_hlsl.h"
  #include "shared/rt64_video_interface.h"
  
@@ -2803,10 +3934,45 @@ index b4ff4e9..3edef2f 100644
 +        return presentationCropShare;
 +    }
 +
++    // Conker: the view focus drawn anew (see common/rt64_conker_view_focus.h), set from the game's thread and read
++    // on the workload's.
++    static std::mutex viewFocusMutex;
++    static ConkerViewFocus viewFocus;
++
++    void setViewFocusRedraw(bool on, int count, const float *rects, float frameWidth, float frameHeight,
++        uint32_t ownImage0, uint32_t ownImage1)
++    {
++        ConkerViewFocus focus;
++        focus.on = on && (count >= 1) && (count <= ConkerMaxFocusViews) && (rects != nullptr);
++        focus.count = focus.on ? count : 0;
++        for (int i = 0; i < focus.count; i++) {
++            const float *r = rects + i * 8;
++            focus.views[i] = { r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7] };
++            // A view with no size (or not a number) can't be mapped: nothing is focused then.
++            const ConkerFocusView &v = focus.views[i];
++            if (!((v.srcRight > v.srcLeft) && (v.srcBottom > v.srcTop) && (v.right > v.left) && (v.bottom > v.top))) {
++                focus.on = false;
++                focus.count = 0;
++                break;
++            }
++        }
++        focus.frameWidth = frameWidth;
++        focus.frameHeight = frameHeight;
++        focus.ownImages[0] = ownImage0;
++        focus.ownImages[1] = ownImage1;
++        std::scoped_lock lock(viewFocusMutex);
++        viewFocus = focus;
++    }
++
++    ConkerViewFocus conkerViewFocus() {
++        std::scoped_lock lock(viewFocusMutex);
++        return viewFocus;
++    }
++
      // VIRenderer
  
      VIRenderer::VIRenderer() { }
-@@ -108,6 +122,18 @@ namespace RT64 {
+@@ -108,6 +160,18 @@ namespace RT64 {
          hlslpp::float4 viViewRect = vi.viewRectangle() * sdSize.xyxy;
          hlslpp::float4 viCropRect = vi.cropRectangle() * sdSize.xyxy;
  
@@ -2843,3 +4009,77 @@ index 8a3782a..6fd46b1 100644
      struct VIRenderer {
          std::unique_ptr<VideoInterfaceDescriptorSet> descriptorSet;
          const RenderSampler *descriptorSetSampler = nullptr;
+diff --git a/src/shaders/ConkerBlurCS.hlsl b/src/shaders/ConkerBlurCS.hlsl
+new file mode 100644
+index 0000000..1568b7b
+--- /dev/null
++++ b/src/shaders/ConkerBlurCS.hlsl
+@@ -0,0 +1,68 @@
++//
++// RT64
++//
++
++// Conker: the pause menu's blurred background (RenderTarget::conkerBlur). One pass of three, by Mode:
++// 0 and 1 blur a picture across and down (a separable Gaussian, Radius texels each way), and 2 scales
++// the blurred picture back up to the target's size, bilinearly. Texels are read with Load, so no
++// sampler is involved and the picture's edges are clamped to.
++// Mode 3 (RenderTarget::conkerGrey, It's War's intro) turns the picture grey: each texel's green in all three channels,
++// as Conker greys the frame on the N64.
++
++#define BLOCK_SIZE 8
++
++struct ConkerBlurCB {
++    uint2 InputResolution;
++    uint2 OutputResolution;
++    uint Mode;
++    uint Radius;
++    float Sigma;
++    uint Padding;
++};
++
++[[vk::push_constant]] ConstantBuffer<ConkerBlurCB> gConstants : register(b0);
++Texture2D<float4> gInput : register(t1);
++RWTexture2D<float4> gOutput : register(u2);
++
++float4 LoadClamped(int2 coord) {
++    int2 maxCoord = int2(gConstants.InputResolution) - int2(1, 1);
++    return gInput.Load(int3(clamp(coord, int2(0, 0), maxCoord), 0));
++}
++
++[numthreads(BLOCK_SIZE, BLOCK_SIZE, 1)]
++void CSMain(uint2 coord : SV_DispatchThreadID) {
++    if ((coord.x >= gConstants.OutputResolution.x) || (coord.y >= gConstants.OutputResolution.y)) {
++        return;
++    }
++
++    if (gConstants.Mode == 3) {
++        const float4 texel = gInput.Load(int3(coord, 0));
++        gOutput[coord] = float4(texel.g, texel.g, texel.g, texel.a);
++        return;
++    }
++
++    if (gConstants.Mode < 2) {
++        const int2 step = (gConstants.Mode == 0) ? int2(1, 0) : int2(0, 1);
++        const float twoSigmaSquared = 2.0f * gConstants.Sigma * gConstants.Sigma;
++        float4 sum = 0.0f;
++        float weightSum = 0.0f;
++        const int radius = int(gConstants.Radius);
++        for (int i = -radius; i <= radius; i++) {
++            const float weight = exp(-float(i * i) / twoSigmaSquared);
++            sum += LoadClamped(int2(coord) + step * i) * weight;
++            weightSum += weight;
++        }
++
++        gOutput[coord] = sum / weightSum;
++    }
++    else {
++        // The output texel's middle, in the input's texels.
++        const float2 scale = float2(gConstants.InputResolution) / float2(gConstants.OutputResolution);
++        const float2 position = (float2(coord) + 0.5f) * scale - 0.5f;
++        const int2 base = int2(floor(position));
++        const float2 t = position - float2(base);
++        const float4 top = lerp(LoadClamped(base), LoadClamped(base + int2(1, 0)), t.x);
++        const float4 bottom = lerp(LoadClamped(base + int2(0, 1)), LoadClamped(base + int2(1, 1)), t.x);
++        gOutput[coord] = lerp(top, bottom, t.y);
++    }
++}

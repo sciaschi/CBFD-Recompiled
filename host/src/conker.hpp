@@ -4,6 +4,7 @@
 #include <array>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <span>
 #include <string>
@@ -36,6 +37,17 @@ namespace conker {
         void update(uint8_t* rdram);
         // conker_config.cpp: whether the setting is 4:3.
         bool in_4x3();
+        // Whether this frame is a cutscene drawn with the 4:3 bars (set by update).
+        bool pillarboxed();
+        // For save states (host_state.cpp): where the ring of its display lists is.
+        uint32_t dl_ring();
+        void set_dl_ring(uint32_t slot);
+    }
+
+    // grey_frame.cpp: It's War's black and white newspaper, greyed by RT64 (issue #162).
+    namespace grey_frame {
+        // Whether the frame whose display list is being made is greyed once drawn.
+        bool this_frame(uint8_t* rdram);
     }
 
     // rom_versions.cpp: the ROMs the game accepts, and the versions of them kept for the
@@ -66,6 +78,136 @@ namespace conker {
     // null_renderer.cpp
     std::unique_ptr<ultramodern::renderer::RendererContext> create_null_renderer(
         uint8_t* rdram, ultramodern::renderer::WindowHandle window_handle, bool developer_mode);
+
+    // netplay/profile.cpp: the netplay settings profile. While it's active (the harness is
+    // used), the settings that change the game or its memory are fixed: each reader checks it.
+    namespace netplay_profile {
+#if defined(CONKER_NETPLAY)
+        bool active();
+        void set_active(bool active);
+        // XXH3-64 of the profile's description, for recordings.
+        uint64_t hash();
+        // Whether no mods but texture packs are on, for recordings and replays (false: each was printed).
+        bool check_mods();
+        // A hash of the mods on but texture packs, in load order: each one's id, version, file and saved
+        // settings (0 for none), for netplay's handshake: everyone in a match needs the same.
+        uint64_t mods_hash();
+        // The mods on but texture packs, in load order, for the player: "Name 1.2.0, Other 0.3.1" (empty for
+        // none).
+        std::string mods_text();
+#else
+        inline bool active() { return false; }
+#endif
+        // How much wider than 4:3 the culls and sprites are widened in it, whatever the window: 16:9's.
+        inline constexpr float widescreen_ratio = (16.0f / 9.0f) / (4.0f / 3.0f);
+    }
+
+    // Mouse and gyro while the harness is used (netplay/motion.cpp): each player's movement is part of their
+    // input for each controller read, taken by the hooks of their camera (look_aim.cpp, mouse_camera.cpp),
+    // with their own Controls (netplay/net/packets.hpp): the settings that change what it does.
+    namespace netplay {
+        struct Motion;
+    }
+    namespace motion {
+        // A read's movement for one player: the mouse in pixels (sensitivity applied), gyro in recompinput's
+        // unit (sensitivity applied), the scroll wheel in notches.
+        struct Turn {
+            float mouse_x = 0, mouse_y = 0, gyro_x = 0, gyro_y = 0;
+            int wheel = 0;
+        };
+        // Controls' bits.
+        inline bool mouse_direct(uint32_t c) { return (c & 0x1) != 0; }
+        inline bool gyro_direct(uint32_t c) { return (c & 0x2) != 0; }
+        inline bool stick_direct(uint32_t c) { return (c & 0x4) != 0; }
+        inline bool mouse_turns_camera(uint32_t c) { return (c & 0x8) == 0; }
+        // 0 none, 1 X, 2 Y, 3 both.
+        inline int mouse_invert(uint32_t c) { return (c >> 4) & 3; }
+        inline int gyro_invert(uint32_t c) { return (c >> 6) & 3; }
+        inline int stick_invert(uint32_t c) { return (c >> 8) & 3; }
+        // Aiming: Swap Sticks.
+        inline bool swap_sticks(uint32_t c) { return (c & 0x10000) != 0; }
+        // Their camera's field of view in degrees (vertical), or 0 for the game's own (packets.hpp's codes).
+        inline float field_of_view(uint32_t c) {
+            const int code = (c >> 10) & 0x3F;
+            return code == 0 ? 0.0f : (float)(34 + (code < 46 ? code : 46));
+        }
+        // The code for a setting in degrees (0 for none).
+        inline uint32_t field_of_view_code(double degrees) {
+            if (!(degrees > 0.0)) return 0;
+            const double clamped = degrees < 35.0 ? 35.0 : degrees > 80.0 ? 80.0 : degrees;
+            return (uint32_t)((int)(clamped + 0.5) - 34);
+        }
+        // Every setting's default (the stick's Invert Y), for a port with no player and recordings from before.
+        constexpr uint32_t default_controls = 0x0200;
+        // This machine's player's (look_aim.cpp, from their settings).
+        uint32_t local_controls();
+#if defined(CONKER_NETPLAY)
+        // From the input thread, after each poll: adds its movement for the next read.
+        void on_input_poll();
+        // On the game thread, at a read: this machine's movement since the last read, with its player's
+        // Controls as they are now; and dropping it.
+        void capture(netplay::Motion& out);
+        void clear_local();
+        // At each read, every port's movement and Controls (4).
+        void set_read(const netplay::Motion* motions);
+        // The current read's movement for `port`, once each for the aiming modes and the orbit (false: taken).
+        bool take_aim(int port, Turn& out);
+        bool take_orbit(int port, Turn& out);
+        // A port's Controls at the current read (the defaults for a port with no player).
+        uint32_t controls(int port);
+        // Aiming: Swap Sticks (look_aim.cpp): a port's camera ran an aiming mode (game thread); whether it did at
+        // this read or the two before (any thread).
+        void note_aim(int port);
+        bool aimed_lately(int port);
+        // The port this machine's controller `controller` (0 to 3) plays: its player's in a netplay match (-1 for
+        // none), otherwise its own.
+        int local_port(int controller);
+        // For save states (host_state.cpp): the current read's movement and what took it.
+        std::vector<uint32_t> state();
+        void set_state(const std::vector<uint32_t>& words);
+#else
+        inline bool take_aim(int, Turn&) { return false; }
+        inline bool take_orbit(int, Turn&) { return false; }
+        inline uint32_t controls(int) { return default_controls; }
+        inline void note_aim(int) {}
+        inline bool aimed_lately(int) { return false; }
+        inline int local_port(int controller) { return controller; }
+#endif
+    }
+
+#if defined(CONKER_NETPLAY)
+    // The determinism harness (netplay/harness.cpp): records and replays the game's inputs, and logs a
+    // hash of its memory at each controller read.
+    namespace harness {
+        // A command line option of the harness's, taking its value too (true if it was one).
+        bool parse_option(int argc, char** argv, int& i);
+        // Checks the options and opens the files, before the game starts (false: a message was printed).
+        bool prepare();
+        // Recording, replaying or hashing.
+        bool active();
+        // The game's entrypoint: while active, it starts from an empty save.
+        void entrypoint(uint8_t* rdram, recomp_context* ctx);
+        // A netplay match connected from the menu (lockstep.hpp) is about to start: the harness is used
+        // for it, and says the match is over with `on_match_over` (why, for the player; on the game
+        // thread) instead of quitting.
+        void begin_menu_match(std::function<void(const std::string&)> on_match_over);
+        void start(uint8_t* rdram);
+        void finish();
+        bool replaying();
+        // Whether every player sees only their own view of the split screen: a match's rule (the host's), a
+        // replay's (its recording's), or --own-view's. It changes the game's culls (netplay/view.cpp).
+        bool own_view_rule();
+        // The ports whose views are shown two to a window under that rule (bit n: port n; each machine with two
+        // players'): a match's (Start), a replay's, or --view-pairs'. It changes their culls too.
+        uint8_t view_pairs();
+        // The most characters in a multiplayer game (more_bots.cpp; 0: the game's own, 12 or 16), while the netplay
+        // settings profile is active: a match's rule (the host's), a replay's (its recording's), or --characters'.
+        int characters_rule();
+        // While recording, replaying or hashing, the game sees fixed controllers (--ports, no paks).
+        bool fixes_ports();
+        ultramodern::input::connected_device_info_t connected_device_info(int controller_num);
+    }
+#endif
 
 #if defined(CONKER_RT64)
     inline constexpr const char* program_name = "Conker's Bad Fur Day: Recompiled";
@@ -108,12 +250,25 @@ namespace conker {
         void update_unpacking();
         // gliden64_packs.cpp: the mod id of the pack a .htc unpacks into.
         std::string gliden64_pack_id(const std::filesystem::path& htc);
+        // The Hotkeys (frontend.cpp): Texture Pack On/Off, switching between the texture packs and the game's own
+        // textures (F8 by default).
+        void toggle_originals();
+        // On the General tab (conker_config.cpp): Texture Pack Notifications, the F8 line.
+        void add_notification_options(recomp::config::Config& config);
         // The Texture Pack setting, at the end of the Graphics tab, listing the packs in the mods
         // folder (a .htc as the pack it unpacks into).
         void add_options(recomp::config::Config& config);
         // Turns on the pack chosen in the settings and the others off (unless it's left to the
         // Mods menu). Needs the runtime to have opened the mods.
         void apply();
+        // Whether a mod (by its id) is a texture pack in the mods folder.
+        bool is_pack(const std::string& mod_id);
+    }
+
+    // more_bots.cpp: Multiplayer Characters, more bots in a multiplayer game (discussion #105).
+    namespace more_bots {
+        // The option, on the General tab.
+        void add_options(recomp::config::Config& config);
     }
 
     // rumble.cpp: the Rumble Pak, sent to each port's controller.
@@ -140,13 +295,28 @@ namespace conker {
         // The Mouse: Turn the Camera setting: whether the mouse turns the third-person camera
         // (mouse_camera.cpp).
         bool mouse_turns_camera();
-        // The Right Stick: Free Camera setting (issue #65), in single player: whether the right stick
-        // turns the third-person camera (mouse_camera.cpp) instead of pressing the C-buttons.
-        bool stick_free_camera();
+        // The Right Stick: Free Camera setting (issue #65), in single player: whether a player's (0 to 3) right
+        // stick turns their third-person camera (mouse_camera.cpp) instead of pressing the C-buttons. Player 1's
+        // is the option; players 2-4's are set on the Controls tab (issue #160), as is Swap Sticks.
+        bool stick_free_camera(int player = 0);
+        void set_stick_free_camera(int player, bool on);
+        // A player's Aiming: Swap Sticks setting, and setting it (also for the controller presets that go with
+        // it, conker_config.cpp).
+        bool swap_sticks_setting(int player);
+        void set_swap_sticks(int player, bool on);
+        // The Controls tab's toggles of both for the player picked (conker_config.cpp, before the tab is made).
+        void add_player_toggles();
+        // Turns the mouse camera on (Mouse: Sensitivity 50 if it was 0, and Mouse: Turn the Camera), for the
+        // keyboard's Standard preset, which has Z and R on the mouse buttons (conker_config.cpp).
+        void turn_on_mouse_camera();
+        // Each frame, on the main thread (frontend.cpp): with `mouse_used` (a mouse button or the wheel in play since
+        // the last frame), turns the mouse on (Mouse: Sensitivity 50) if it has never been on.
+        void update_mouse_first_use(bool mouse_used);
         // Aiming: Swap Sticks (issue #84): whether a player (0 to 3) is aiming now (either aiming mode
         // ran for their camera in the last few frames) with the setting on, so their controller's sticks
         // are swapped (frontend.cpp): the right stick aims and the left moves. Not with recompinput's own
-        // multiplayer mode (players assigned in its menus), which maps each controller itself.
+        // multiplayer mode (players assigned in its menus), which maps each controller itself. While the harness
+        // is used, by each player's own setting (their Controls) and the reads since they aimed (motion.cpp).
         bool swap_sticks_now(int player = 0);
         // Whether the player's character is aiming the shotgun (state 0x3B), where Z (the laser sight) makes
         // C-Left and C-Right turn the aim: the swapped left stick leaves them out while Z is held (frontend.cpp).
@@ -157,10 +327,17 @@ namespace conker {
         void leap_frame(uint8_t* rdram);
         bool leaping_now();
         void leap_stick(float& x, float& y);
+        // Aiming: Swap Sticks in a leap (issue #138): player 1's sticks swapped, the right stick moving the
+        // crosshair (the game's stick) and the left the camera (the C-buttons), as when aiming elsewhere.
+        bool swap_sticks_in_leap();
         // Camera: Invert Turning, for the free camera's stick: turning (x) and tilting (y).
         void free_camera_invert(bool& x, bool& y);
         // Camera: Turning Speed, 1 at 100%.
         float camera_turn_speed();
+        // For save states (host_state.cpp): what each player's mouse turned of the aiming angle that was too
+        // small to take yet.
+        std::vector<uint32_t> state();
+        void set_state(const std::vector<uint32_t>& words);
         // Camera: Field of View: the normal camera's vertical field of view, degrees.
         float camera_field_of_view();
     }
@@ -168,6 +345,32 @@ namespace conker {
     // conker_config.cpp: whether the Graphics tab's settings exist (not with --headless, which makes
     // no menus). Their readers fall back to the defaults without them.
     bool graphics_config_ready();
+
+    // conker_config.cpp: General's Start Game Directly (issue #133), read from the General tab's saved file
+    // (main asks before the tabs exist).
+    bool start_game_directly();
+    // The Quit prompt's Return to Launcher (main.cpp): quits the game, then starts the program again at the
+    // launcher.
+    void return_to_launcher();
+
+    // cheat_codes.cpp: General: Remember Cheat Codes (issue #166), the game's cheat codes kept on from one time it's
+    // played to the next.
+    namespace cheat_codes {
+        // conker_config.cpp: the option, on the General tab.
+        void add_options(recomp::config::Config& config);
+        // From the game thread, as the game starts a frame's display list: the codes entered are kept.
+        void game_frame(uint8_t* rdram);
+    }
+
+    // sound_volumes.cpp: the Sound tab's Music, Sound Effects and Speech volumes, and Sound Mode.
+    namespace sound_volumes {
+        // conker_config.cpp: the options, on the Sound tab.
+        void add_options(recomp::config::Config& config);
+        // From the game thread, as the game starts a frame's display list: the volumes are read from the settings.
+        void game_frame(uint8_t* rdram);
+        // The same, with that hook's context (for calling the game): Sound Mode kept the same as the game's own.
+        void sound_mode_frame(uint8_t* rdram, recomp_context* ctx);
+    }
 
     // Graphics: Overscan Borders (conker_config.cpp; the crop is set in widescreen.cpp).
     namespace overscan_borders {
@@ -185,12 +388,19 @@ namespace conker {
     namespace shadows {
         // From the game thread, as the game starts a frame's display list.
         void game_frame();
+        // For save states (host_state.cpp): the game frames so far and when each shadow was last drawn.
+        std::vector<uint32_t> drawn();
+        void set_drawn(const std::vector<uint32_t>& words);
     }
 
-    // reticle.cpp: Aiming: Reticle, a ring in the middle of the screen while aiming (issue #74).
+    // reticle.cpp: Aiming: Reticle, a ring, crosshair or dot in the middle of the screen while aiming (issues #74, #124).
     namespace reticle {
-        // look_aim.cpp: whether the setting is on.
-        bool enabled();
+        // Aiming: Reticle (Ring has the key and value the setting's On had) and Aiming: Reticle Size.
+        enum class Style : uint32_t { Ring, Off, Crosshair, Dot };
+        enum class Size : uint32_t { Small, Medium, Large };
+        // look_aim.cpp: the settings.
+        Style style();
+        Size size();
         // From the game thread, each frame a camera aims in the second aiming mode (conker_aim_stick,
         // $s0 the camera state): player 1's shows the reticle, unless zoomed in or in split screen.
         void aim_frame(uint8_t* rdram, gpr camera);
@@ -207,31 +417,143 @@ namespace conker {
     namespace local_achievements {
         // At start (frontend.cpp, once the config folder is known): reads the unlocks so far.
         void init();
-        // With the other settings tabs (conker_config.cpp): the Achievements tab.
+        // With the other settings tabs (conker_config.cpp): the Achievements tab, and on the General tab,
+        // Achievement Notifications (issue #128).
         void add_tab();
+        void add_options(recomp::config::Config& config);
         // From the game thread, as the game starts a frame's display list: unlocks what the save has reached.
         void game_frame(uint8_t* rdram);
         // Save states (save_states.cpp), as one is loaded: the scenes it has are put back with the game's memory,
         // so they count for nothing, as a save's do.
         void state_loaded();
+        // For achievement_play.cpp: unlocks the achievement `id` (false if it was already, or there's none).
+        bool earn(const char* id);
     }
+
+    // achievement_play.cpp: the achievements earned by how you play (issue #171), told by local_achievements.cpp.
+    namespace achievement_play {
+        // With local_achievements::init: reads the game's run so far.
+        void init();
+        // Each game frame; in_play is false at the menus.
+        void game_frame(uint8_t* rdram, bool in_play);
+        // A scene's bit set in play (not a save's, read in).
+        void scene_reached(int scene);
+        // A save's bits read in, at the menus: a new game's (new_game), or another save's.
+        void save_loaded(const std::vector<bool>& bits, bool new_game);
+        // A save state loaded.
+        void state_loaded();
+        // The end of the game (its million).
+        void finished_game();
+        // Player 1's cash collected in the story.
+        void cash_added(int64_t amount);
+    }
+
+#if defined(CONKER_RT64) && defined(CONKER_NETPLAY)
+    // netplay/menu.cpp: the launcher's Netplay menu: host or join a match.
+    namespace netplay_menu {
+        // The game to start, and where its ROM is stored (to hash it before the game loads it).
+        void init(const std::u8string& game_id, const std::filesystem::path& stored_rom);
+        // Opens the menu (the launcher's Netplay option).
+        void open();
+        // On the main thread (update_gfx): says when a match is over.
+        void update();
+        // The Esc menu's Netplay tab (conker_config.cpp): during a match, its players, with Kick (the host's)
+        // and Block, and Leave match.
+        void add_tab();
+    }
+
+    // netplay/status.cpp: the match's status on screen: waiting for a player, a player leaving, and with
+    // the Netplay tab's Netplay Details, the input delay and each player's round trip in a corner.
+    namespace netplay_status {
+        // Netplay Details, kept with the General tab's options (conker_config.cpp) but not shown there: the Netplay tab
+        // (menu.cpp) sets it, beside the match, with details_wanted() and set_details_wanted() (saved at once), with details_description.
+        void add_options(recomp::config::Config& config);
+        bool details_wanted();
+        void set_details_wanted(bool on);
+        extern const char* const details_description;
+        // From the launcher's init (frontend.cpp): recompui's UI exists now.
+        void on_ui_ready();
+        // On the main thread (update_gfx).
+        void update();
+    }
+
+    // netplay/view.cpp: "my view only", the window showing only this player's part of the split screen.
+    namespace netplay_view {
+        void set_mine_only(bool on);
+        bool is_mine_only();
+        // Replaying a recording (to try "my view only"): the players whose views are shown (bit n: port n), as on
+        // a machine with them (player 1 by default).
+        void set_replay_ports(uint8_t ports);
+        // At the start of each game frame's display list (widescreen.cpp's conker_frame_dl_begin).
+        void game_frame(uint8_t* rdram);
+    }
+#endif
 
     // notices.cpp: a line in the top-left corner for a few seconds, one at a time (an unlock, a save state's
     // "State saved"...).
+    namespace log_file {
+        // From then on, stdout and stderr go to `folder`/conker.log, or else `otherwise`/conker.log (log_file.cpp):
+        // for a game whose output would go nowhere.
+        void start(const std::filesystem::path& folder, const std::filesystem::path& otherwise);
+        // As the frontend updates: a log past its most stops there.
+        void check();
+        // Whether stdout and stderr go to conker.log: a file players post with bug reports, so nothing that
+        // lets someone in (a join or room code) or says where a player is (an address) is printed then.
+        bool active();
+    }
     namespace notices {
         // From any thread. With replace, it's shown at once in place of what's shown (and of an earlier one to
         // replace), as a save state's slot is as F6 is pressed again and again.
         void show(const std::string& text, bool replace = false);
+        // A line saying something couldn't be done: shown whatever the notification settings are.
+        void show_failure(const std::string& text);
+        // On the General tab (conker_config.cpp): Notifications, all of them on or off.
+        void add_options(recomp::config::Config& config);
         // From the launcher's init (frontend.cpp): recompui's UI exists now, so the line's context can be made.
         void on_ui_ready();
         // On the main thread (update_gfx): shows the waiting lines, one at a time, once the game has started.
         void update();
     }
 
+    // host_state.cpp: what the host keeps outside game memory that decides what it writes into it, so a
+    // save state holds it too (save_states.cpp, the harness) and a load goes on as the state did: the
+    // song marks (ultra_extras.cpp), where our display lists' rings are (widescreen.cpp,
+    // cutscene_aspect.cpp), when each shadow was last drawn (interpolation.cpp), and the sound buffers
+    // still playing on the timeline (audio_clock.cpp).
+    namespace host_state {
+        std::vector<uint8_t> save();
+        // Empty, or cut short (a state from before it was held): what's missing starts afresh.
+        void load(const std::vector<uint8_t>& bytes);
+    }
+    // Parts of it (the others are with their modules' functions above), as 32-bit words.
+    // audio_clock.cpp: in deterministic mode the game's sound buffers play on the timeline, not on the
+    // sound device's pace. wrap gives the callbacks to register in place of the device's.
+    namespace audio_clock {
+        ultramodern::audio_callbacks_t wrap(const ultramodern::audio_callbacks_t& device);
+        std::vector<uint32_t> state();
+        void set_state(const std::vector<uint32_t>& words);
+    }
+    namespace songs {
+        std::vector<uint32_t> marks();
+        void set_marks(const std::vector<uint32_t>& words);
+    }
+    namespace widescreen {
+        uint32_t dl_ring();
+        void set_dl_ring(uint32_t offset);
+    }
+
     // save_states.cpp: save states (issue #94), F5 to save, F7 to load, F6 for the next slot.
     namespace save_states {
-        // At start (frontend.cpp): the keys, and the runtime's idle moment that states are taken at.
+        // At start (frontend.cpp): the runtime's idle moment that states are taken at.
         void init();
+        // The Hotkeys (frontend.cpp): Save State, Load State and Next Save State Slot.
+        void save();
+        void load();
+        void next_slot();
+        // As the program ends: the states still being written are (5 s at most).
+        void wait_for_writes();
+        // On the General tab (conker_config.cpp): Save State Notifications (issue #133).
+        void add_options(recomp::config::Config& config);
     }
 
     // fps_counter.cpp: Show FPS, the frame rate counter.
@@ -251,6 +573,9 @@ namespace conker {
         // From updateCullScales_1510B958's return (widescreen.cpp): with the setting widening the
         // camera's view, works the cull scales out for the view it draws.
         void adjust_cull_scales(uint8_t* rdram, uint64_t camera);
+        // For save states (host_state.cpp): how much each camera's view is widened now.
+        std::vector<uint32_t> state();
+        void set_state(const std::vector<uint32_t>& words);
     }
 
     // mouse_camera.cpp: the free orbit camera, turned by the mouse and the right stick.
@@ -258,10 +583,17 @@ namespace conker {
         // Whether last frame's camera update was the normal camera (where the C-buttons turn it: not
         // R-Look, aiming, cutscenes or other special cameras).
         bool normal_camera();
-        // Whether the right stick turned the orbit last frame's camera update could run (the setting
-        // on, the normal camera, not R-Look or aiming): the controller's input then leaves the right
+        // The same for a player's camera while the harness is used (each player's orbit).
+        bool normal_camera_of(int player);
+        // Whether a player's (0 to 3) right stick turned their orbit last frame's camera update could run (their
+        // setting on, the normal camera, not R-Look or aiming): the controller's input then leaves the right
         // stick off the C-buttons (frontend.cpp). Safe from any thread.
-        bool stick_turns_camera();
+        bool stick_turns_camera(int player = 0);
+        // The scroll wheel's notches since this was last called (netplay/motion.cpp, from the input thread).
+        int take_wheel_notches();
+        // For save states (host_state.cpp): every orbit, which writes the camera's eye.
+        std::vector<uint32_t> state();
+        void set_state(const std::vector<uint32_t>& words);
     }
 
     // SDL sound output (audio_output.cpp).

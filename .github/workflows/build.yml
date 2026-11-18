@@ -7,7 +7,8 @@
 # skipped rather than failed. It has no pull request trigger, so the ROM token is never
 # exposed to code from forks.
 #
-# Like release.yml, it uses no third-party actions: git and the GitHub CLI only.
+# Like release.yml, it uses no third-party actions: git, the GitHub CLI and GitHub's own
+# actions/cache (for ccache).
 name: build
 
 on:
@@ -25,6 +26,17 @@ concurrency:
 
 env:
   GIT_TERMINAL_PROMPT: '0'
+  # ccache keeps the game's compiled objects between runs, so a push only recompiles what it
+  # changed (RT64, RmlUi and most of RecompiledFuncs rarely do). Every run restores the newest
+  # cache saved by a push to the default branch; only those pushes save one, so other branches
+  # don't fill the repository's cache space.
+  CCACHE_DIR: ${{ github.workspace }}/.ccache
+  CCACHE_MAXSIZE: 1G
+  # For the game's configure (build.sh and build.cmd pass them on). Precompiled headers are off
+  # because ccache can't cache what's compiled with one (RmlUi uses one).
+  CCACHE_CMAKE_ARGS: >-
+    -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+    -DCMAKE_DISABLE_PRECOMPILE_HEADERS=ON
 
 jobs:
   rom:
@@ -63,9 +75,41 @@ jobs:
           ROM_REPO_TOKEN: ${{ secrets.ROM_REPO_TOKEN }}
         run: git clone -q --depth 1 "https://x-access-token:$ROM_REPO_TOKEN@github.com/$ROM_REPO.git" rom-src
 
+      - name: Restore ccache's cache
+        uses: actions/cache/restore@v5
+        with:
+          path: .ccache
+          key: ccache-build-windows-${{ github.run_id }}
+          restore-keys: ccache-build-windows-
+
+      # ccache 4.6 or later caches MSVC's compiles; the runner has none.
+      - name: Install ccache
+        shell: bash
+        run: |
+          curl -fsSL --retry 3 -o ccache.zip https://github.com/ccache/ccache/releases/download/v4.14.1/ccache-4.14.1-windows-x86_64.zip
+          echo "6219f3865ca59aec41ee4b678df171d5d35855ecb2b6dbbbd20690b3a68af7b4  ccache.zip" | sha256sum -c -
+          unzip -q -j ccache.zip '*/ccache.exe' -d ccache-bin
+          rm ccache.zip
+          echo "$GITHUB_WORKSPACE\\ccache-bin" >> "$GITHUB_PATH"
+
+      # The debug information goes in each object (/Z7) rather than a shared PDB (/Zi), which
+      # ccache can't cache.
       - name: Build
         shell: cmd
-        run: build.cmd rom-src\baserom.us.z64
+        run: |
+          set CONKER_CMAKE_ARGS=%CCACHE_CMAKE_ARGS% -DCMAKE_POLICY_DEFAULT_CMP0141=NEW -DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded
+          ccache -z
+          rem Without call, cmd doesn't come back from build.cmd.
+          call build.cmd rom-src\baserom.us.z64 || exit /b 1
+          ccache -s
+
+      # Right after the build, so a later step failing doesn't throw it away.
+      - name: Save ccache's cache
+        if: always() && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        uses: actions/cache/save@v5
+        with:
+          path: .ccache
+          key: ccache-build-windows-${{ github.run_id }}
 
   linux:
     needs: rom
@@ -87,10 +131,30 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y git python3 cmake ninja-build clang lld pkg-config libsdl2-dev libdbus-1-dev libfreetype-dev
+          sudo apt-get install -y git python3 cmake ninja-build clang lld pkg-config libsdl2-dev libdbus-1-dev libfreetype-dev ccache
+
+      - name: Restore ccache's cache
+        uses: actions/cache/restore@v5
+        with:
+          path: .ccache
+          key: ccache-build-linux-${{ github.run_id }}
+          restore-keys: ccache-build-linux-
 
       - name: Build
-        run: ./build.sh rom-src/baserom.us.z64 < /dev/null
+        env:
+          CONKER_CMAKE_ARGS: ${{ env.CCACHE_CMAKE_ARGS }}
+        run: |
+          ccache -z
+          ./build.sh rom-src/baserom.us.z64 < /dev/null
+          ccache -s
+
+      # Right after the build, so a later step failing doesn't throw it away.
+      - name: Save ccache's cache
+        if: always() && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        uses: actions/cache/save@v5
+        with:
+          path: .ccache
+          key: ccache-build-linux-${{ github.run_id }}
 
       # As release.yml does, so a mod that stops building is found before a release.
       - name: Build the mods
@@ -116,9 +180,32 @@ jobs:
 
       - name: Install dependencies
         run: |
-          brew install cmake ninja pkg-config sdl2 freetype dylibbundler
+          brew install cmake ninja pkg-config sdl2 freetype dylibbundler ccache
           # Xcode 26 and later download the Metal compiler separately.
           xcrun -sdk macosx metal --version || xcodebuild -downloadComponent MetalToolchain
 
+      - name: Restore ccache's cache
+        uses: actions/cache/restore@v5
+        with:
+          path: .ccache
+          key: ccache-build-macos-${{ github.run_id }}
+          restore-keys: ccache-build-macos-
+
+      # RT64 and the game have Objective-C(++) parts on macOS.
       - name: Build
-        run: ./build.sh rom-src/baserom.us.z64 < /dev/null
+        env:
+          CONKER_CMAKE_ARGS: >-
+            ${{ env.CCACHE_CMAKE_ARGS }}
+            -DCMAKE_OBJC_COMPILER_LAUNCHER=ccache -DCMAKE_OBJCXX_COMPILER_LAUNCHER=ccache
+        run: |
+          ccache -z
+          ./build.sh rom-src/baserom.us.z64 < /dev/null
+          ccache -s
+
+      # Right after the build, so a later step failing doesn't throw it away.
+      - name: Save ccache's cache
+        if: always() && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        uses: actions/cache/save@v5
+        with:
+          path: .ccache
+          key: ccache-build-macos-${{ github.run_id }}

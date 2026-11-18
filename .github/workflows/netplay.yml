@@ -1,0 +1,114 @@
+# The determinism check for netplay (issue #126), on a push that touches what decides the game's
+# determinism (netplay's code, the runtime and RT64 patches, the host's hooks into game memory), or
+# run by hand: lockstep netplay only works if the same inputs always give the same game, so a change
+# that breaks that is found when it's pushed. A full game build, so not on every push. It builds the game with CONKER_NETPLAY=ON and runs tools/netplay/check.sh, which
+# replays a made-up recording headless four ways (twice, with random sleeps in the host, and
+# through a save state) and fails if the game's memory differs between them at any read.
+#
+# It needs the ROM the same way build.yml and release.yml do, from the ROM_REPO and
+# ROM_REPO_TOKEN secrets (see the setup in release.yml). Where they aren't set, the check is
+# skipped rather than failed. It has no pull request trigger, so the ROM token is never exposed
+# to code from forks.
+#
+# Like the other workflows, it uses no third-party actions: git and GitHub's own actions/cache
+# (for ccache, set up as in build.yml).
+name: netplay
+
+on:
+  push:
+    branches: ['**']
+    paths:
+      - 'host/src/**'
+      - 'host/CMakeLists.txt'
+      - 'recomp/*.patch'
+      - 'conker.toml'
+      - 'tools/netplay/**'
+      - '.github/workflows/netplay.yml'
+      - '!**.md'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: netplay-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GIT_TERMINAL_PROMPT: '0'
+  # ccache, as in build.yml: every run restores the newest cache saved by a push to the default
+  # branch, and only those pushes save one.
+  CCACHE_DIR: ${{ github.workspace }}/.ccache
+  CCACHE_MAXSIZE: 1G
+  CCACHE_CMAKE_ARGS: >-
+    -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+    -DCMAKE_DISABLE_PRECOMPILE_HEADERS=ON
+
+jobs:
+  rom:
+    runs-on: ubuntu-latest
+    outputs:
+      available: ${{ steps.check.outputs.available }}
+    steps:
+      - name: Check the ROM secrets are set
+        id: check
+        env:
+          ROM_REPO: ${{ secrets.ROM_REPO }}
+          ROM_REPO_TOKEN: ${{ secrets.ROM_REPO_TOKEN }}
+        run: |
+          if [ -n "$ROM_REPO" ] && [ -n "$ROM_REPO_TOKEN" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::ROM_REPO and ROM_REPO_TOKEN aren't set, so the determinism check is skipped (see release.yml)."
+          fi
+
+  determinism:
+    needs: rom
+    if: needs.rom.outputs.available == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Checkout
+        run: |
+          git clone -q --no-checkout "https://github.com/$GITHUB_REPOSITORY" .
+          git checkout -q "$GITHUB_SHA"
+
+      - name: Get the ROM
+        env:
+          ROM_REPO: ${{ secrets.ROM_REPO }}
+          ROM_REPO_TOKEN: ${{ secrets.ROM_REPO_TOKEN }}
+        run: git clone -q --depth 1 "https://x-access-token:$ROM_REPO_TOKEN@github.com/$ROM_REPO.git" rom-src
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git python3 cmake ninja-build clang lld pkg-config libsdl2-dev libdbus-1-dev libfreetype-dev libprotobuf-dev protobuf-compiler libssl-dev ccache
+
+      - name: Restore ccache's cache
+        uses: actions/cache/restore@v5
+        with:
+          path: .ccache
+          key: ccache-netplay-linux-${{ github.run_id }}
+          restore-keys: ccache-netplay-linux-
+
+      # The game as players build it, with the harness: the check runs it with --headless.
+      - name: Build
+        env:
+          CONKER_CMAKE_ARGS: -DCONKER_NETPLAY=ON ${{ env.CCACHE_CMAKE_ARGS }}
+        run: |
+          ccache -z
+          ./build.sh rom-src/baserom.us.z64 < /dev/null
+          ccache -s
+
+      # Right after the build, so a later step failing doesn't throw it away.
+      - name: Save ccache's cache
+        if: always() && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        uses: actions/cache/save@v5
+        with:
+          path: .ccache
+          key: ccache-netplay-linux-${{ github.run_id }}
+
+      # Judged by what the runs print (check.sh stops each once its last read is logged).
+      # check.sh prints where the runs first differ if they do.
+      - name: Check the same inputs give the same game
+        run: tools/netplay/check.sh --out netplay-check

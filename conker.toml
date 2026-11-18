@@ -386,6 +386,33 @@ func = "func_15130A9C"
 before_vram = 0x15131168
 text = "{ extern void conker_emit_sprite_texrect(uint8_t*, recomp_context*); conker_emit_sprite_texrect(rdram, ctx); goto L_15131360; }"
 
+# Widescreen: the bullet holes and cracks on the screen (issue #138). func_150E76D0 puts each against a side of
+# the 4:3 screen; it's moved out to the window's edge: the left one's x at $sp + 0x54, the right one's in $f18
+# (stored there in the branch's delay slot).
+[[patches.hook]]
+func = "func_150E76D0"
+before_vram = 0x150E789C
+text = "{ extern void conker_widen_left_hole(uint8_t*, recomp_context*); conker_widen_left_hole(rdram, ctx); }"
+
+[[patches.hook]]
+func = "func_150E76D0"
+before_vram = 0x150E7880
+text = "{ extern void conker_widen_right_hole(uint8_t*, recomp_context*); conker_widen_right_hole(rdram, ctx); }"
+
+# func_15154D80's overlay pieces (the holes, the wasp hive turret's frame...): a piece against a side of the
+# 4:3 screen is stretched to the window's ($f14 its middle, $f18 its half width, at 0x15155100).
+[[patches.hook]]
+func = "func_15154D80"
+before_vram = 0x15155100
+text = "{ extern void conker_widen_overlay_piece(uint8_t*, recomp_context*); conker_widen_overlay_piece(rdram, ctx); }"
+
+# func_15154D80's rectangles (the holes) clamp their left edge at 0; once the rectangle is written ($t4 is 8
+# past it), it's rewritten as RT64's extended one.
+[[patches.hook]]
+func = "func_15154D80"
+before_vram = 0x15155470
+text = "{ extern void conker_emit_overlay_texrect(uint8_t*, recomp_context*); conker_emit_overlay_texrect(rdram, ctx); }"
+
 [[patches.hook]]
 func = "func_15130A9C"
 before_vram = 0x15130DA0
@@ -443,8 +470,8 @@ func = "func_15111AF4"
 before_vram = 0x15111BC4
 text = "{ extern void conker_widen_backdrop_sectors(uint8_t*, recomp_context*); conker_widen_backdrop_sectors(rdram, ctx); }"
 
-# Widescreen: the pause menu's blurred background, a saved copy of the 4:3 frame
-# drawn as tiles, is stretched over the whole width (host/src/widescreen.cpp).
+# Widescreen: a saved copy of the frame drawn as tiles is stretched over the whole
+# width, and the pause menu's is blurred by RT64 (host/src/widescreen.cpp).
 [[patches.hook]]
 func = "func_151D5E90"
 before_vram = 0x151D5E94
@@ -465,6 +492,32 @@ func = "func_151D6418"
 before_vram = 0x151D66E8
 text = "{ extern void conker_frame_copy_end(uint8_t*, recomp_context*); conker_frame_copy_end(rdram, ctx); }"
 
+# The Haybot's red view (Barn Boys, issue #138): func_151A5170 draws the frame back over itself in strips,
+# tinted, as the pause's copy above is drawn; stretched across the window the same way (host/src/widescreen.cpp).
+[[patches.hook]]
+func = "func_151A5170"
+before_vram = 0x151A5170
+text = "{ extern void conker_tint_copy_begin(uint8_t*, recomp_context*); conker_tint_copy_begin(rdram, ctx); }"
+
+[[patches.hook]]
+func = "func_151A5170"
+before_vram = 0x151A55A4
+text = "{ extern void conker_frame_copy_end(uint8_t*, recomp_context*); conker_frame_copy_end(rdram, ctx); }"
+
+# The pause's copy of the frame isn't blurred on the CPU by func_151D61B0 ($a0, the picture):
+# RT64 blurs its high resolution copy instead (host/src/widescreen.cpp).
+[[patches.hook]]
+func = "func_151D61B0"
+before_vram = 0x151D61B0
+text = "{ extern int conker_pause_skip_blur(uint8_t*, recomp_context*); if (conker_pause_skip_blur(rdram, ctx)) return; }"
+
+# It's War's black and white newspaper isn't greyed on the CPU by func_150AF790 (a frame effect, after the RDP
+# drew the frame): RT64 greys its picture instead (host/src/grey_frame.cpp, issue #162).
+[[patches.hook]]
+func = "func_150AF790"
+before_vram = 0x150AF790
+text = "{ extern int conker_grey_skip_cpu(uint8_t*, recomp_context*); if (conker_grey_skip_cpu(rdram, ctx)) return; }"
+
 # Graphics: Conker's Detail: each game frame func_1502C6E8 picks every object's model by how far
 # it is from the camera; at 0x1502C92C the level is picked ($v1) and not yet compared with the
 # object's last, and Conker's is set to 0, his most detailed (host/src/model_detail.cpp).
@@ -472,6 +525,13 @@ text = "{ extern void conker_frame_copy_end(uint8_t*, recomp_context*); conker_f
 func = "func_1502C6E8"
 before_vram = 0x1502C92C
 text = "{ extern void conker_model_detail(uint8_t*, recomp_context*); conker_model_detail(rdram, ctx); }"
+
+# Shadow smoothing: func_15184368 moves a shadow's light point 0.3 of the way to the nearest light each time; at
+# 0x15184658 that step has just been loaded into $f14, and it's made smaller (host/src/shadow_smoothing.cpp).
+[[patches.hook]]
+func = "func_15184368"
+before_vram = 0x15184658
+text = "{ extern void conker_shadow_light_step(uint8_t*, recomp_context*); conker_shadow_light_step(rdram, ctx); }"
 
 # Frame interpolation: each game object's drawing (func_1502CCFC) is wrapped in an
 # RT64 matrix group naming the object, so RT64 pairs its matrices with the same
@@ -509,6 +569,18 @@ text = "{ extern void conker_iris_begin(uint8_t*, recomp_context*); conker_iris_
 func = "func_15180580"
 before_vram = 0x151814F4
 text = "{ extern void conker_iris_end(uint8_t*, recomp_context*); conker_iris_end(rdram, ctx); }"
+
+# Widescreen: a split-screen view's tint (the fade after its wipe closes) is drawn as wide as the view
+# (host/src/widescreen.cpp).
+[[patches.hook]]
+func = "func_1517F08C"
+before_vram = 0x1517F08C
+text = "{ extern void conker_view_tint_begin(uint8_t*, recomp_context*); conker_view_tint_begin(rdram, ctx); }"
+
+[[patches.hook]]
+func = "func_1517F08C"
+before_vram = 0x1517F398
+text = "{ extern void conker_view_tint_end(uint8_t*, recomp_context*); conker_view_tint_end(rdram, ctx); }"
 
 # The look mode (hold R): gyro and mouse, and smooth or direct response for each input
 # (host/src/look_aim.cpp). The first three can turn the stick's axes around, the fourth is
@@ -564,6 +636,20 @@ text = "{ extern void conker_look_currents(uint8_t*, recomp_context*); conker_lo
 func = "func_15126378"
 before_vram = 0x15126EA0
 text = "{ extern void conker_aim_stick(uint8_t*, recomp_context*); conker_aim_stick(rdram, ctx); }"
+
+# Aiming: Swap Sticks with the sniper scope (issue #84, host/src/look_aim.cpp): the scope zooms with C-Up and C-Down,
+# its buttons loaded into $t3 by 0x15127054; with Swap Sticks those are walking, and the zoom goes by D-pad Up and Down.
+[[patches.hook]]
+func = "func_15126378"
+before_vram = 0x15127054
+text = "{ extern void conker_scope_zoom(uint8_t*, recomp_context*); conker_scope_zoom(rdram, ctx); }"
+
+# The same: Conker's movement (func_1504CB98) has just put the held buttons through the C-buttons it walks by ($a0
+# by 0x1504DD1C), C-Left and C-Right alone while scoped; with Swap Sticks all four go through.
+[[patches.hook]]
+func = "func_1504CB98"
+before_vram = 0x1504DD1C
+text = "{ extern void conker_scope_walk(uint8_t*, recomp_context*); conker_scope_walk(rdram, ctx); }"
 
 # Camera: Invert Turning and Turning Speed (host/src/look_aim.cpp). func_1512D390 turns the
 # follow camera with C-Left and C-Right (by default also the right stick). It stores the direction,
@@ -691,6 +777,13 @@ func = "func_151408A4"
 before_vram = 0x151409A0
 text = "{ extern void conker_widen_light_glow_right(uint8_t*, recomp_context*); conker_widen_light_glow_right(rdram, ctx); }"
 
+# The follow camera's depth row (host/src/render_fixes.cpp): on the harness (netplay), func_1512AD54 reads a row
+# of the depth buffer the renderer doesn't write back; it's made the farthest depth first, for every player's camera.
+[[patches.hook]]
+func = "func_1512AD54"
+before_vram = 0x1512AD58
+text = "{ extern void conker_camera_depth_row(uint8_t*, recomp_context*); conker_camera_depth_row(rdram, ctx); }"
+
 # TEMP-DEBUG: switches for the game's mid-frame depth-buffer copies (host/src/render_fixes.cpp).
 [[patches.hook]]
 func = "func_1510B9D0"
@@ -771,3 +864,95 @@ text = "{ extern void conker_bubble_end(uint8_t*, recomp_context*); conker_bubbl
 func = "func_15085710"
 before_vram = 0x15085710
 text = "{ extern void conker_stat_change(uint8_t*, recomp_context*); conker_stat_change(rdram, ctx); }"
+
+# A multiplayer match over (host/src/achievement_play.cpp, issue #171): func_151E53E8 (0 for a match played out, else
+# left) ends it, its shots counted, and goes on to who won.
+[[patches.hook]]
+func = "func_151E53E8"
+before_vram = 0x151E53E8
+text = "{ extern void conker_match_decided(uint8_t*, recomp_context*); conker_match_decided(rdram, ctx); }"
+
+# Sound: the Music, Sound Effects and Speech volumes (host/src/sound_volumes.cpp). __n_vsVol's
+# voice states ($a0) are the sequence players', the music's; a voice's volume is scaled as it's set,
+# by the Music or Sound Effects volume.
+[[patches.hook]]
+func = "__n_vsVol"
+before_vram = 0x1001B200
+text = "{ extern void conker_music_note_volume(uint8_t*, recomp_context*); conker_music_note_volume(rdram, ctx); }"
+
+[[patches.hook]]
+func = "n_alSynStartVoiceParams"
+before_vram = 0x1001E170
+text = "{ extern void conker_voice_start_volume(uint8_t*, recomp_context*); conker_voice_start_volume(rdram, ctx); }"
+
+[[patches.hook]]
+func = "n_alSynSetVol"
+before_vram = 0x1001C910
+text = "{ extern void conker_voice_set_volume(uint8_t*, recomp_context*); conker_voice_set_volume(rdram, ctx); }"
+
+# The streamed speech (the MP3 player): its volume (D_800E0D8E), just read into $t9 and $t6 to work
+# out the left and right levels, scaled by the Speech volume.
+[[patches.hook]]
+func = "func_151F2E88"
+before_vram = 0x151F366C
+text = "{ extern int32_t conker_stream_volume(uint8_t*, int32_t); ctx->r25 = conker_stream_volume(rdram, (int32_t)ctx->r25); }"
+
+[[patches.hook]]
+func = "func_151F2E88"
+before_vram = 0x151F36E4
+text = "{ extern int32_t conker_stream_volume(uint8_t*, int32_t); ctx->r14 = conker_stream_volume(rdram, (int32_t)ctx->r14); }"
+
+# Remember Cheat Codes (issue #166): func_151EEFF0 has just cleared the cheats' bits (D_800E9D00) as the game
+# boots, and the codes kept are put back (host/src/cheat_codes.cpp).
+[[patches.hook]]
+func = "func_151EEFF0"
+before_vram = 0x151EEFF8
+text = "{ extern void conker_cheat_codes_boot(uint8_t*, recomp_context*); conker_cheat_codes_boot(rdram, ctx); }"
+
+# Sound: when the Music or Sound Effects volume changes, the playing voices are set to it as the
+# synthesizer starts its next audio frame (host/src/sound_volumes.cpp).
+[[patches.hook]]
+func = "n_alAudioFrame"
+before_vram = 0x10019498
+text = "{ extern void conker_audio_frame(uint8_t*, recomp_context*); conker_audio_frame(rdram, ctx); }"
+
+# The 3D HUD's models at the window's sides (issue #138, the tank's timer): func_1508FD38 has just drawn them ($s0
+# where it started, $v0 its end), and one to a side is moved out to the window's edge (host/src/widescreen.cpp).
+[[patches.hook]]
+func = "func_150198FC"
+before_vram = 0x15019B70
+text = "{ extern void conker_hud_models_to_sides(uint8_t*, recomp_context*); conker_hud_models_to_sides(rdram, ctx); }"
+
+# Multiplayer Characters: more bots in a multiplayer game (host/src/more_bots.cpp). As the game starts, its 8MB
+# layout (the heap's end) for 16 characters; the most characters in the Deathmatch and Tank bot menu ($s4, just
+# loaded from its table) and in the team games' ($s3 and $a1, just loaded from their map's record); and the rank
+# names past 12th, the HUD's (two ways) and the pause and match-end scores'.
+[[patches.hook]]
+func = "func_10003BD0"
+before_vram = 0x10003BD0
+text = "{ extern void conker_more_bots_memory(uint8_t*, recomp_context*); conker_more_bots_memory(rdram, ctx); }"
+
+[[patches.hook]]
+func = "func_151E1214"
+before_vram = 0x151E1350
+text = "{ extern void conker_more_bots_row(uint8_t*, recomp_context*); conker_more_bots_row(rdram, ctx); }"
+
+[[patches.hook]]
+func = "func_151E1744"
+before_vram = 0x151E18E4
+text = "{ extern void conker_more_bots_teams(uint8_t*, recomp_context*); conker_more_bots_teams(rdram, ctx); }"
+
+[[patches.hook]]
+func = "func_150918EC"
+before_vram = 0x1509201C
+text = "{ extern void conker_more_bots_rank_name(uint8_t*, recomp_context*); conker_more_bots_rank_name(rdram, ctx); }"
+
+[[patches.hook]]
+func = "func_150918EC"
+before_vram = 0x15092FF0
+text = "{ extern void conker_more_bots_rank_name_other(uint8_t*, recomp_context*); conker_more_bots_rank_name_other(rdram, ctx); }"
+
+[[patches.hook]]
+func = "func_151EA15C"
+before_vram = 0x151EABC0
+text = "{ extern void conker_more_bots_score_rank_name(uint8_t*, recomp_context*); conker_more_bots_score_rank_name(rdram, ctx); }"

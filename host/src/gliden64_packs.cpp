@@ -20,6 +20,13 @@
 // format (low byte) and size (high byte), uint32 data size, then the data. Only RGBA8 textures are
 // unpacked (caches built with texture compression store S3TC). tools/texture_packs/gliden64_to_rt64.py
 // converts the same packs to a database-based pack instead, from textures dumped while playing.
+//
+// GLideN64's texture storage (.hts, src/GLideNHQ/TxCache.cpp, TxFileStorage) holds the same textures,
+// read from the file as they're needed instead of all at once: not gzipped. An int32 version (the same;
+// older storages, again without the N64 format and size, start with the config and aren't unpacked), an
+// int32 config, an int64 offset of the index; the textures as the .htc's, without their checksums (from
+// width to the data); then, at the offset, the index: an int32 count, and per texture its uint64
+// checksum and an int64 whose low 48 bits are its offset. Packs are made in it now too (GameBeast92's).
 
 #include <algorithm>
 #include <atomic>
@@ -205,18 +212,164 @@ namespace {
         };
     }
 
-    // progress is given the share of the .htc read so far, in percent.
-    bool unpack(const std::filesystem::path& htc, const std::filesystem::path& folder, const std::function<void(int)>& progress) {
+    // One texture of a pack, written to the folder as its Rice-named PNG. False if it's skipped (not RGBA8,
+    // or its data isn't what its header says).
+    bool write_texture(const std::filesystem::path& folder, uint64_t checksum, uint32_t width, uint32_t height, uint32_t gl_format,
+        uint16_t pixel_type, uint16_t formatsize, const std::vector<uint8_t>& data, std::vector<uint8_t>& pixels) {
+        const size_t rgba_size = size_t(width) * height * 4;
+        const uint8_t* rgba = data.data();
+        if (gl_format & gl_texfmt_gz) {
+            pixels.resize(rgba_size);
+            mz_ulong length = (mz_ulong)pixels.size();
+            if (mz_uncompress(pixels.data(), &length, data.data(), (mz_ulong)data.size()) != MZ_OK || length != rgba_size) {
+                return false;
+            }
+            rgba = pixels.data();
+        }
+        else if (data.size() != rgba_size) {
+            return false;
+        }
+        if (pixel_type != gl_unsigned_byte || width == 0 || height == 0) {
+            return false;
+        }
+
+        const uint32_t crc = uint32_t(checksum), palette = uint32_t(checksum >> 32);
+        char name[128];
+        if (palette != 0) {
+            std::snprintf(name, sizeof(name), "%s#%08X#%d#%d#%08X_all.png", rom_name, crc, formatsize & 0xFF, formatsize >> 8, palette);
+        }
+        else {
+            std::snprintf(name, sizeof(name), "%s#%08X#%d#%d_all.png", rom_name, crc, formatsize & 0xFF, formatsize >> 8);
+        }
+        return write_png(folder / name, width, height, rgba);
+    }
+
+    // A texture's header, after its checksum: the same in both formats.
+    struct TextureHeader {
+        uint32_t width = 0, height = 0, gl_format = 0, data_size = 0;
+        uint16_t texture_format = 0, pixel_type = 0, formatsize = 0;
+        uint8_t is_hires = 0;
+    };
+
+    template <typename Reader>
+    bool read_texture_header(Reader& reader, TextureHeader& header) {
+        return reader.read_value(header.width) && reader.read_value(header.height) && reader.read_value(header.gl_format) &&
+            reader.read_value(header.texture_format) && reader.read_value(header.pixel_type) && reader.read_value(header.is_hires) &&
+            reader.read_value(header.formatsize) && reader.read_value(header.data_size);
+    }
+
+    // A plain file, read as the gzip reader is, for the .hts.
+    class FileReader {
+    public:
+        explicit FileReader(const std::filesystem::path& path) : file(path, std::ios::binary) {}
+        bool read(void* destination, size_t size) {
+            return bool(file.read(static_cast<char*>(destination), (std::streamsize)size));
+        }
+        template <typename T>
+        bool read_value(T& value) {
+            return read(&value, sizeof(value));
+        }
+        bool seek(uint64_t offset) {
+            file.clear();
+            return bool(file.seekg((std::streamoff)offset, std::ios::beg));
+        }
+    private:
+        std::ifstream file;
+    };
+
+    // The textures of a .htc, one after another in its gzip stream. False if it isn't one this can read.
+    bool unpack_htc(const std::filesystem::path& htc, const std::filesystem::path& folder, const std::function<void(int)>& progress,
+        size_t& written, size_t& skipped) {
         std::error_code ec;
         const uint64_t total = std::max<uint64_t>(std::filesystem::file_size(htc, ec), 1);
         GzipReader reader(htc);
         int32_t version = 0, config = 0;
         if (!reader.read_value(version) || version != htc_version || !reader.read_value(config)) {
-            std::fprintf(stderr, "[texture packs] %s: not a GLideN64 texture cache this can unpack (an older cache, or not a .htc)\n",
-                utf8(htc.filename()).c_str());
             return false;
         }
+        std::vector<uint8_t> data, pixels;
+        while (true) {
+            progress(int(std::min<uint64_t>(reader.bytes_read() * 100 / total, 100)));
+            uint64_t checksum = 0;
+            TextureHeader header;
+            if (!reader.read_value(checksum) || !read_texture_header(reader, header)) {
+                break;
+            }
+            data.resize(header.data_size);
+            if (!reader.read(data.data(), data.size())) {
+                break;
+            }
+            if (write_texture(folder, checksum, header.width, header.height, header.gl_format, header.pixel_type, header.formatsize, data, pixels)) {
+                written++;
+            }
+            else {
+                skipped++;
+            }
+        }
+        if (reader.failed()) {
+            std::fprintf(stderr, "[texture packs] %s: the file ends early or is damaged; unpacked what was readable\n",
+                utf8(htc.filename()).c_str());
+        }
+        return true;
+    }
 
+    // The textures of a .hts, found through its index. False if it isn't one this can read.
+    bool unpack_hts(const std::filesystem::path& hts, const std::filesystem::path& folder, const std::function<void(int)>& progress,
+        size_t& written, size_t& skipped) {
+        std::error_code ec;
+        const uint64_t file_size = std::filesystem::file_size(hts, ec);
+        FileReader reader(hts);
+        int32_t version = 0, config = 0;
+        int64_t index_offset = 0;
+        if (!reader.read_value(version) || version != htc_version || !reader.read_value(config) || !reader.read_value(index_offset) ||
+            index_offset <= 0 || (uint64_t)index_offset >= file_size || !reader.seek((uint64_t)index_offset)) {
+            return false;
+        }
+        int32_t count = 0;
+        if (!reader.read_value(count) || count <= 0 || (uint64_t)count > (file_size - (uint64_t)index_offset) / 16) {
+            return false;
+        }
+        std::vector<std::pair<uint64_t, uint64_t>> entries; // checksum, offset
+        entries.reserve((size_t)count);
+        for (int32_t i = 0; i < count; i++) {
+            uint64_t checksum = 0;
+            int64_t value = 0;
+            if (!reader.read_value(checksum) || !reader.read_value(value)) {
+                return false;
+            }
+            entries.push_back({ checksum, (uint64_t)value & 0xFFFFFFFFFFFFull });
+        }
+        // In the file's order, so it's read front to back.
+        std::sort(entries.begin(), entries.end(), [](const auto& a, const auto& b) { return a.second < b.second; });
+
+        std::vector<uint8_t> data, pixels;
+        for (size_t i = 0; i < entries.size(); i++) {
+            progress(int(i * 100 / entries.size()));
+            const uint64_t checksum = entries[i].first, offset = entries[i].second;
+            TextureHeader header;
+            if (offset >= file_size || !reader.seek(offset) || !read_texture_header(reader, header) ||
+                header.data_size > file_size - offset) {
+                skipped++;
+                continue;
+            }
+            data.resize(header.data_size);
+            if (!reader.read(data.data(), data.size())) {
+                skipped++;
+                continue;
+            }
+            if (write_texture(folder, checksum, header.width, header.height, header.gl_format, header.pixel_type, header.formatsize, data, pixels)) {
+                written++;
+            }
+            else {
+                skipped++;
+            }
+        }
+        return true;
+    }
+
+    // progress is given the share of the pack read so far, in percent.
+    bool unpack(const std::filesystem::path& htc, const std::filesystem::path& folder, const std::function<void(int)>& progress) {
+        std::error_code ec;
         std::filesystem::create_directories(folder, ec);
         for (const auto& entry : std::filesystem::directory_iterator{ folder, ec }) {
             if (entry.path().extension() == ".png") {
@@ -225,61 +378,12 @@ namespace {
         }
 
         size_t written = 0, skipped = 0;
-        std::vector<uint8_t> data, pixels;
-        while (true) {
-            progress(int(std::min<uint64_t>(reader.bytes_read() * 100 / total, 100)));
-            uint64_t checksum;
-            if (!reader.read_value(checksum)) {
-                break;
-            }
-            uint32_t width, height, gl_format, data_size;
-            uint16_t texture_format, pixel_type, formatsize;
-            uint8_t is_hires;
-            if (!reader.read_value(width) || !reader.read_value(height) || !reader.read_value(gl_format) ||
-                !reader.read_value(texture_format) || !reader.read_value(pixel_type) || !reader.read_value(is_hires) ||
-                !reader.read_value(formatsize) || !reader.read_value(data_size)) {
-                break;
-            }
-            data.resize(data_size);
-            if (!reader.read(data.data(), data.size())) {
-                break;
-            }
-
-            const size_t rgba_size = size_t(width) * height * 4;
-            const uint8_t* rgba = data.data();
-            if (gl_format & gl_texfmt_gz) {
-                pixels.resize(rgba_size);
-                mz_ulong length = (mz_ulong)pixels.size();
-                if (mz_uncompress(pixels.data(), &length, data.data(), (mz_ulong)data.size()) != MZ_OK || length != rgba_size) {
-                    skipped++;
-                    continue;
-                }
-                rgba = pixels.data();
-            }
-            else if (data.size() != rgba_size) {
-                skipped++;
-                continue;
-            }
-            if (pixel_type != gl_unsigned_byte || width == 0 || height == 0) {
-                skipped++;
-                continue;
-            }
-
-            const uint32_t crc = uint32_t(checksum), palette = uint32_t(checksum >> 32);
-            char name[128];
-            if (palette != 0) {
-                std::snprintf(name, sizeof(name), "%s#%08X#%d#%d#%08X_all.png", rom_name, crc, formatsize & 0xFF, formatsize >> 8, palette);
-            }
-            else {
-                std::snprintf(name, sizeof(name), "%s#%08X#%d#%d_all.png", rom_name, crc, formatsize & 0xFF, formatsize >> 8);
-            }
-            if (write_png(folder / name, width, height, rgba)) {
-                written++;
-            }
-        }
-        if (reader.failed()) {
-            std::fprintf(stderr, "[texture packs] %s: the file ends early or is damaged; unpacked what was readable\n",
+        const bool readable = htc.extension() == ".hts" ? unpack_hts(htc, folder, progress, written, skipped)
+                                                        : unpack_htc(htc, folder, progress, written, skipped);
+        if (!readable) {
+            std::fprintf(stderr, "[texture packs] %s: not a GLideN64 texture pack this can unpack (an older one, or not a .htc or .hts)\n",
                 utf8(htc.filename()).c_str());
+            return false;
         }
 
         const std::string stem = utf8(htc.stem());
@@ -331,7 +435,7 @@ namespace {
         std::error_code ec;
         for (const auto& entry : std::filesystem::directory_iterator{ mods, std::filesystem::directory_options::skip_permission_denied, ec }) {
             const std::filesystem::path& htc = entry.path();
-            if (!entry.is_regular_file(ec) || htc.extension() != ".htc" ||
+            if (!entry.is_regular_file(ec) || (htc.extension() != ".htc" && htc.extension() != ".hts") ||
                 std::find(failed.begin(), failed.end(), htc) != failed.end()) {
                 continue;
             }

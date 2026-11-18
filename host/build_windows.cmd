@@ -9,6 +9,8 @@ set "PATH=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer;%PATH%"
 call "%VSDIR%\VC\Auxiliary\Build\vcvars64.bat" >nul || exit /b 1
 
 set "ROOT=%~dp0.."
-cmake -S "%ROOT%\host" -B "%ROOT%\host\build-win" -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo || exit /b 1
+rem CONKER_CMAKE_ARGS: more CMake options, e.g. -DCONKER_NETPLAY=ON (netplay, which gets protobuf
+rem from Visual Studio's vcpkg: host/src/netplay/net/vcpkg.cmake).
+cmake -S "%ROOT%\host" -B "%ROOT%\host\build-win" -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo %CONKER_CMAKE_ARGS% || exit /b 1
 cmake --build "%ROOT%\host\build-win" %* || exit /b 1
 echo Built %ROOT%\host\build-win\ConkerRecomp.exe

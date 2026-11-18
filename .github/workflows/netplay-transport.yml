@@ -1,0 +1,134 @@
+# Builds and tests netplay's transport (host/src/netplay/net) on Windows, Linux and
+# macOS: GameNetworkingSockets and its dependencies, the packets' and join codes' tests, and matches
+# between copies of netplay_probe over loopback, directly and through ICE with the signalling server
+# (test.sh). On Linux it also plays matches through the TURN relay with the servers' Docker setup
+# (tools/netplay/server/test.sh) and fuzzes the packets for a minute (libFuzzer). It needs no ROM: the
+# transport builds without the game.
+#
+# Like the other workflows, it uses no third-party actions: git, and on Windows the vcpkg on GitHub's
+# runners (for protobuf, from host/src/netplay/net/vcpkg.json) and GitHub's own actions/cache (for
+# vcpkg's builds).
+name: netplay-transport
+
+on:
+  push:
+    branches: ['**']
+    paths:
+      - 'host/src/netplay/net/**'
+      - 'tools/netplay/server/**'
+      - '.github/workflows/netplay-transport.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: netplay-transport-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GIT_TERMINAL_PROMPT: '0'
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        run: |
+          git clone -q --no-checkout "https://github.com/$GITHUB_REPOSITORY" .
+          git checkout -q "$GITHUB_SHA"
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build clang libprotobuf-dev protobuf-compiler libssl-dev
+
+      - name: Build
+        run: |
+          cmake -S host/src/netplay/net -B build -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          cmake --build build
+
+      - name: Test
+        run: sh host/src/netplay/net/test.sh build
+        env:
+          LAN_BROADCAST: '1'   # no firewall here: LAN discovery's broadcast alone must be heard
+
+      - name: Test the relay (Docker)
+        run: sh tools/netplay/server/test.sh build relay-test
+
+      - name: Fuzz the packets
+        run: |
+          cmake -S host/src/netplay/net -B build-fuzz -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DCONKER_NETPLAY_FUZZ=ON
+          cmake --build build-fuzz --target fuzz_packets
+          mkdir -p corpus
+          build-fuzz/fuzz_packets corpus -max_total_time=60 -max_len=512
+
+  macos:
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        run: |
+          git clone -q --no-checkout "https://github.com/$GITHUB_REPOSITORY" .
+          git checkout -q "$GITHUB_SHA"
+
+      - name: Install dependencies
+        run: brew install cmake ninja protobuf openssl@3
+
+      - name: Build
+        run: |
+          cmake -S host/src/netplay/net -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DOPENSSL_ROOT_DIR="$(brew --prefix openssl@3)"
+          cmake --build build
+
+      - name: Test
+        run: sh host/src/netplay/net/test.sh build
+
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        shell: bash
+        run: |
+          git clone -q --no-checkout "https://github.com/$GITHUB_REPOSITORY" .
+          git checkout -q "$GITHUB_SHA"
+
+      # vcpkg keeps the protobuf and abseil it builds (about 15 minutes) in this folder. A cache's
+      # key can't be overwritten, so each save has its own key and a run restores the newest. A push
+      # to the default branch saves one for every branch; this workflow runs on few of those, so a
+      # branch that found none saves its own (other branches can't read it).
+      - name: Restore vcpkg's cache
+        id: vcpkg-cache
+        uses: actions/cache/restore@v5
+        with:
+          path: vcpkg-cache
+          key: vcpkg-transport-${{ hashFiles('host/src/netplay/net/vcpkg.json', 'host/src/netplay/net/triplets/*') }}-${{ github.run_id }}
+          restore-keys: vcpkg-transport-${{ hashFiles('host/src/netplay/net/vcpkg.json', 'host/src/netplay/net/triplets/*') }}-
+
+      # protobuf from the runner's vcpkg through the manifest, as a developer's build gets it from
+      # Visual Studio's (host/src/netplay/net/vcpkg.cmake): it builds it, with abseil, unless it's in
+      # vcpkg's cache; release builds only (the triplet in host/src/netplay/net/triplets), as this is
+      # a Release build. The crypto is Windows' own (bcrypt).
+      - name: Build
+        shell: bash
+        run: |
+          export VCPKG_ROOT="$VCPKG_INSTALLATION_ROOT"
+          export VCPKG_BINARY_SOURCES="clear;files,$GITHUB_WORKSPACE\\vcpkg-cache,readwrite"
+          mkdir -p vcpkg-cache
+          cmake -S host/src/netplay/net -B build -DVCPKG_OVERLAY_TRIPLETS="$(cygpath -m "$PWD")/host/src/netplay/net/triplets" \
+            -DVCPKG_TARGET_TRIPLET=x64-windows-static-md-release
+          cmake --build build --config Release
+
+      - name: Save vcpkg's cache
+        if: >-
+          always() && (github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+          || steps.vcpkg-cache.outputs.cache-matched-key == '')
+        uses: actions/cache/save@v5
+        with:
+          path: vcpkg-cache
+          key: vcpkg-transport-${{ hashFiles('host/src/netplay/net/vcpkg.json', 'host/src/netplay/net/triplets/*') }}-${{ github.run_id }}
+
+      - name: Test
+        shell: bash
+        run: sh host/src/netplay/net/test.sh build/Release

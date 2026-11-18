@@ -4,7 +4,7 @@
 // remappable keyboard/controller input (frontend.cpp) and plays sound
 // (audio_output.cpp); otherwise, or with --headless, it runs with a null renderer,
 // no input and no sound output.
-// Usage: ConkerRecomp [--rom <baserom.us.z64>] [--seconds N] [--headless] [--window WxH]
+// Usage: ConkerRecomp [--rom <baserom.us.z64>] [--seconds N] [--headless] [--window WxH] [--data DIR]
 //   --rom PATH   the US ROM (a bare path works too, e.g. a ROM dropped onto the exe);
 //                only needed once, it is then kept with the game's data. The window
 //                build can also load it from the launcher.
@@ -12,8 +12,14 @@
 //   --headless   null renderer, no window, input or sound
 //   --window WxH open the window at this size, e.g. 2520x1080 to try a 21:9 screen
 //                (the window mode, windowed or fullscreen, is still the setting's)
+//   --my-view-only  in a netplay match, show only this machine's players' parts of the split screen
+//   --my-view-ports <players>  replaying a recording with --my-view-only: whose views are shown, e.g. 12
+//                (players 1 and 2), as on a machine with those players (1 by default)
+//   --data DIR   keep the game's data (the stored ROM, saves, settings) in DIR instead,
+//                created if need be: e.g. to run two copies at once, as netplay's tests do
 
 #include <atomic>
+#include <cerrno>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -42,6 +48,7 @@ static uint8_t* crash_rdram = nullptr;
 #if defined(__linux__) || defined(__APPLE__)
 #include <csignal>
 #include <execinfo.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #if defined(__APPLE__)
 #include <mach-o/dyld.h>
@@ -68,6 +75,7 @@ static void install_crash_handler() {
 }
 #elif defined(_WIN32)
 #include <Windows.h>
+#include <shellapi.h>
 #include <DbgHelp.h>
 #include <atomic>
 #include <csignal>
@@ -104,7 +112,7 @@ static void crash_add_stack(CrashReport& report, void* const* frames, USHORT cou
             DWORD displacement = 0;
             if (SymGetLineFromAddr64(process, (DWORD64)frames[i], &displacement, &line)) {
                 crash_add(report, "  %s+0x%llx (%s:%lu)\n", symbol->Name, (unsigned long long)offset,
-                    std::filesystem::path(line.FileName).filename().string().c_str(), line.LineNumber);
+                    reinterpret_cast<const char*>(std::filesystem::path(line.FileName).filename().u8string().c_str()), line.LineNumber);
             }
             else {
                 crash_add(report, "  %s+0x%llx\n", symbol->Name, (unsigned long long)offset);
@@ -118,6 +126,7 @@ static void crash_add_stack(CrashReport& report, void* const* frames, USHORT cou
 
 // The console window closes with the process, so also keep the report in
 // crash.log next to the executable, and show it with where it was saved.
+constexpr uintmax_t crash_log_most_bytes = 1024 * 1024;
 static void crash_publish(const CrashReport& report) {
     std::fputs(report.c_str(), stderr);
     std::fflush(stderr);
@@ -125,14 +134,20 @@ static void crash_publish(const CrashReport& report) {
     DWORD length = GetModuleFileNameW(nullptr, exe, MAX_PATH);
     std::filesystem::path log_path = (length > 0 && length < MAX_PATH)
         ? std::filesystem::path(exe).parent_path() / "crash.log" : std::filesystem::path("crash.log");
+    // (Begun afresh once it has grown big, so it keeps the latest reports.)
+    std::error_code size_error;
+    if (std::filesystem::file_size(log_path, size_error) > crash_log_most_bytes && !size_error) {
+        std::filesystem::remove(log_path, size_error);
+    }
     if (FILE* log = _wfopen(log_path.c_str(), L"a")) {
         std::fputs(report.c_str(), log);
         std::fputs("\n", log);
         std::fclose(log);
     }
-    std::string message = "Conker's Bad Fur Day (recompiled) crashed. The report below was saved to " +
-        log_path.string() + ".\n\n" + report;
-    MessageBoxA(nullptr, message.c_str(), "Conker's Bad Fur Day (recompiled)", MB_OK | MB_ICONERROR);
+    // (Wide: a path with characters outside the system's code page can't be made narrow, and threw here.)
+    std::wstring message = L"Conker's Bad Fur Day (recompiled) crashed. The report below was saved to " +
+        log_path.wstring() + L".\n\n" + std::wstring(report.begin(), report.end());
+    MessageBoxW(nullptr, message.c_str(), L"Conker's Bad Fur Day (recompiled)", MB_OK | MB_ICONERROR);
 }
 
 static LONG WINAPI crash_handler(EXCEPTION_POINTERS* info) {
@@ -210,6 +225,43 @@ static void install_crash_handler() {
 static void install_crash_handler() {}
 #endif
 
+#if defined(_WIN32)
+// On Windows the program is a GUI app (host/CMakeLists.txt: WIN32_EXECUTABLE), so no console window
+// opens beside the game's (issue #128). Its output still goes where it went: a stream already handed
+// over (redirected to a file or a pipe) is kept, and otherwise, started from a terminal, the program
+// writes to that terminal's console. Started from Explorer or Steam there's none, and nothing's shown.
+// Whether what it prints goes somewhere (a stream handed over, or a console): else it's written to conker.log.
+static bool attach_parent_console() {
+    auto handed_over = [](DWORD which) {
+        const HANDLE handle = GetStdHandle(which);
+        return handle != nullptr && handle != INVALID_HANDLE_VALUE && GetFileType(handle) != FILE_TYPE_UNKNOWN;
+    };
+    const bool out_handed_over = handed_over(STD_OUTPUT_HANDLE);
+    const bool err_handed_over = handed_over(STD_ERROR_HANDLE);
+    if (out_handed_over && err_handed_over) {
+        return true;
+    }
+    if (!AttachConsole(ATTACH_PARENT_PROCESS)) {
+        return out_handed_over;
+    }
+    FILE* stream = nullptr;
+    if (!out_handed_over) {
+        freopen_s(&stream, "CONOUT$", "w", stdout);
+    }
+    if (!err_handed_over) {
+        freopen_s(&stream, "CONOUT$", "w", stderr);
+    }
+    return true;
+}
+#else
+// Whether what it prints goes somewhere: a terminal, a file or a pipe (not nowhere, as from a desktop: /dev/null, or a
+// session's journal).
+static bool attach_parent_console() {
+    struct stat info;
+    return isatty(STDOUT_FILENO) || (fstat(STDOUT_FILENO, &info) == 0 && (S_ISREG(info.st_mode) || S_ISFIFO(info.st_mode)));
+}
+#endif
+
 extern "C" void recomp_entrypoint(uint8_t* rdram, recomp_context* ctx);
 // Conker's audio microcode, recompiled by RSPRecomp (recomp/audio_ucode.toml).
 RspExitReason conker_audio_ucode(uint8_t* rdram, uint32_t ucode_addr);
@@ -248,6 +300,10 @@ namespace {
         // reads its id); have the runtime keep it pointing at the running thread.
         constexpr int32_t osRunningThread = 0x8002BE00;
         ultramodern::set_running_thread_variable(osRunningThread);
+
+#if defined(CONKER_NETPLAY)
+        conker::harness::start(rdram);
+#endif
     }
 
     RspUcodeFunc* get_rsp_microcode(const OSTask* task) {
@@ -287,6 +343,11 @@ namespace {
 }
 
 ultramodern::input::connected_device_info_t conker::get_connected_device_info(int controller_num) {
+#if defined(CONKER_NETPLAY)
+    if (conker::harness::fixes_ports()) {
+        return conker::harness::connected_device_info(controller_num);
+    }
+#endif
 #if defined(CONKER_RT64)
     if (!headless) {
         return conker::frontend::get_connected_device_info(controller_num);
@@ -299,20 +360,19 @@ ultramodern::input::connected_device_info_t conker::get_connected_device_info(in
 }
 
 namespace {
-    // conker_data/ (the stored ROM and saves) lives next to the executable, so it's
-    // found however the game is started: double-click, shortcut or another directory.
-    std::filesystem::path exe_directory(const char* argv0) {
+    // The executable, however the game is started: double-click, shortcut or another directory.
+    std::filesystem::path exe_path(const char* argv0) {
 #if defined(_WIN32)
         wchar_t buffer[MAX_PATH];
         DWORD length = GetModuleFileNameW(nullptr, buffer, MAX_PATH);
         if (length > 0 && length < MAX_PATH) {
-            return std::filesystem::path(buffer).parent_path();
+            return std::filesystem::path(buffer);
         }
 #elif defined(__linux__)
         std::error_code error;
         std::filesystem::path exe = std::filesystem::read_symlink("/proc/self/exe", error);
         if (!error) {
-            return exe.parent_path();
+            return exe;
         }
 #elif defined(__APPLE__)
         char buffer[4096];
@@ -321,12 +381,115 @@ namespace {
             std::error_code error;
             std::filesystem::path exe = std::filesystem::canonical(buffer, error);
             if (!error) {
-                return exe.parent_path();
+                return exe;
             }
         }
 #endif
-        return std::filesystem::absolute(argv0).parent_path();
+        return std::filesystem::absolute(argv0);
     }
+
+    // conker_data/ (the stored ROM and saves) lives next to the executable, so it's
+    // found however the game is started.
+    std::filesystem::path exe_directory(const char* argv0) {
+        return exe_path(argv0).parent_path();
+    }
+
+    // The Quit prompt's Return to Launcher (issue #133): the game quits as ever, and once it has (its saves
+    // written, everything shut down) main starts the program again with --launcher, which opens the
+    // launcher even with Start Game Directly on. A running game can't be stopped and started again in
+    // place. On Linux and macOS the program replaces itself (the same process, which Steam goes on
+    // tracking); on Windows it starts a new one and this one ends. Only --data and --window carry over:
+    // the rest (a ROM, a netplay match or replay, --seconds) was for the game just quit.
+    std::atomic<bool> restart_into_launcher = false;
+
+    template <typename Char>
+    bool carried_over(const Char* option) {
+        const char* kept[] = { "--data", "--window" };
+        for (const char* k : kept) {
+            size_t i = 0;
+            while (k[i] != '\0' && option[i] == (Char)k[i]) {
+                i++;
+            }
+            if (k[i] == '\0' && option[i] == 0) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+#if defined(_WIN32)
+    // An argument quoted as CommandLineToArgvW reads it back, after a space unless it's the first. (A space
+    // before the first made the program's name empty, and the path to the program read as a ROM to open:
+    // Return to Launcher closed the game instead.)
+    void append_quoted(std::wstring& line, const std::wstring& arg) {
+        if (!line.empty()) {
+            line += L' ';
+        }
+        line += L'"';
+        size_t backslashes = 0;
+        for (wchar_t c : arg) {
+            if (c == L'\\') {
+                backslashes++;
+                continue;
+            }
+            line.append(c == L'"' ? backslashes * 2 + 1 : backslashes, L'\\');
+            backslashes = 0;
+            line += c;
+        }
+        line.append(backslashes * 2, L'\\');
+        line += L'"';
+    }
+#endif
+
+    void restart_at_launcher(int argc, char** argv) {
+        const std::filesystem::path exe = exe_path(argv[0]);
+#if defined(_WIN32)
+        int count = 0;
+        wchar_t** wargs = CommandLineToArgvW(GetCommandLineW(), &count);
+        std::wstring command_line;
+        append_quoted(command_line, exe.wstring());
+        for (int i = 1; wargs != nullptr && i + 1 < count; i++) {
+            if (carried_over(wargs[i])) {
+                append_quoted(command_line, wargs[i]);
+                append_quoted(command_line, wargs[++i]);
+            }
+        }
+        if (wargs != nullptr) {
+            LocalFree(wargs);
+        }
+        command_line += L" --launcher";
+        STARTUPINFOW startup{};
+        startup.cb = sizeof(startup);
+        PROCESS_INFORMATION process{};
+        if (!CreateProcessW(exe.c_str(), command_line.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr,
+                &startup, &process)) {
+            std::fprintf(stderr, "[host] couldn't start the program again (error %lu)\n", GetLastError());
+            return;
+        }
+        CloseHandle(process.hThread);
+        CloseHandle(process.hProcess);
+#else
+        std::vector<char*> args{ argv[0] };
+        for (int i = 1; i + 1 < argc; i++) {
+            if (carried_over(argv[i])) {
+                args.push_back(argv[i]);
+                args.push_back(argv[++i]);
+            }
+        }
+        args.push_back((char*)"--launcher");
+        args.push_back(nullptr);
+        const std::string path = exe.string();
+        std::fflush(stdout);
+        std::fflush(stderr);
+        execv(path.c_str(), args.data());
+        std::fprintf(stderr, "[host] couldn't start the program again (%s)\n", std::strerror(errno));
+#endif
+    }
+}
+
+void conker::return_to_launcher() {
+    restart_into_launcher = true;
+    ultramodern::quit();
 }
 
 const char* conker::rom_error_text(recomp::RomValidationError error) {
@@ -392,11 +555,14 @@ namespace {
 }
 
 int main(int argc, char** argv) {
+    const bool output_seen = attach_parent_console();
     // Unbuffered, so diagnostics (e.g. RT64's microcode hashes) survive a crash.
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     install_crash_handler();
     std::filesystem::path rom_path;
+    std::filesystem::path data_dir;
     int seconds = 0;
+    bool show_launcher = false;
 #if defined(CONKER_RT64)
     headless = false;
 #endif
@@ -409,6 +575,28 @@ int main(int argc, char** argv) {
         }
         else if (std::strcmp(argv[i], "--headless") == 0) {
             headless = true;
+        }
+        else if (std::strcmp(argv[i], "--data") == 0 && i + 1 < argc) {
+            data_dir = std::filesystem::absolute(argv[++i]);
+        }
+#if defined(CONKER_NETPLAY)
+        else if (conker::harness::parse_option(argc, argv, i)) {
+        }
+#endif
+#if defined(CONKER_RT64) && defined(CONKER_NETPLAY)
+        else if (std::strcmp(argv[i], "--my-view-only") == 0) {
+            conker::netplay_view::set_mine_only(true);
+        }
+        else if (std::strcmp(argv[i], "--my-view-ports") == 0 && i + 1 < argc) {
+            uint8_t ports = 0;
+            for (const char* c = argv[++i]; *c != '\0'; c++) {
+                if (*c >= '1' && *c <= '4') ports |= (uint8_t)(1u << (*c - '1'));
+            }
+            conker::netplay_view::set_replay_ports(ports);
+        }
+#endif
+        else if (std::strcmp(argv[i], "--launcher") == 0) {
+            show_launcher = true; // Return to Launcher's restart: the launcher, whatever Start Game Directly says
         }
 #if defined(CONKER_RT64)
         else if (std::strcmp(argv[i], "--window") == 0 && i + 1 < argc) {
@@ -432,17 +620,41 @@ int main(int argc, char** argv) {
         // directory: make that the executable's folder, wherever the game is started from.
         std::filesystem::current_path(exe_directory(argv[0]));
         recompui::programconfig::set_program_id(conker::program_id());
+    }
+#endif
+    if (!data_dir.empty()) {
+        recomp::register_config_path(data_dir);
+    }
+#if defined(CONKER_RT64)
+    else if (!headless) {
         recomp::register_config_path(recompui::file::get_app_folder_path());
         migrate_old_data(old_data_dir, recomp::get_config_path());
     }
-    else
 #endif
-    {
+    else {
         recomp::register_config_path(old_data_dir);
     }
     std::filesystem::create_directories(recomp::get_config_path());
+    // conker.log, if what it prints would go nowhere: next to the game, where a player finds it (with crash.log), unless
+    // that's somewhere it can't write (or, on macOS, the app bundle); else in the data folder.
+    if (!output_seen) {
+        std::filesystem::path log_folder = recomp::get_config_path();
+#if !defined(__APPLE__)
+        if (data_dir.empty()) {
+            log_folder = exe_directory(argv[0]);
+        }
+#endif
+        conker::log_file::start(log_folder, recomp::get_config_path());
+    }
     // --seconds (test runs) starts the game directly instead of opening the launcher.
     bool start_directly = headless || seconds > 0;
+#if defined(CONKER_NETPLAY)
+    if (!conker::harness::prepare()) {
+        return EXIT_FAILURE;
+    }
+    // A replay starts the game directly too, from boot.
+    start_directly = start_directly || conker::harness::replaying();
+#endif
 
     recomp::GameEntry game{};
     game.rom_hash = conker::roms::us_rom_hash;
@@ -461,6 +673,10 @@ int main(int argc, char** argv) {
     game.decompression_routine = conker::decompress_rom;
     game.entrypoint_address = (gpr)(int32_t)0x80001000u;
     game.entrypoint = recomp_entrypoint;
+#if defined(CONKER_NETPLAY)
+    // Always: a netplay match can be started from the menu.
+    game.entrypoint = conker::harness::entrypoint;
+#endif
     game.on_init_callback = on_init;
     game.thread_create_callback = on_thread_create;
 #if defined(CONKER_RT64)
@@ -473,6 +689,14 @@ int main(int argc, char** argv) {
     conker::register_overlays();
     conker::register_mod_exports();
 
+#if defined(CONKER_RT64)
+    // General: Start Game Directly (issue #133): the game starts without the launcher once a ROM has been
+    // picked (and the launcher is shown as ever without one), unless Return to Launcher restarted the program.
+    if (!headless && !start_directly && !show_launcher && rom_path.empty() && conker::start_game_directly()) {
+        recomp::check_all_stored_roms();
+        start_directly = recomp::is_rom_valid(game_id);
+    }
+#endif
     if (!select_rom(rom_path, start_directly)) {
         return EXIT_FAILURE;
     }
@@ -500,6 +724,8 @@ int main(int argc, char** argv) {
                                 conker::audio::set_frequency };
     }
 #endif
+    // In deterministic mode the buffers play on the timeline instead, headless or not (audio_clock.cpp).
+    cfg.audio_callbacks = conker::audio_clock::wrap(cfg.audio_callbacks);
     cfg.events_callbacks = { vi_callback, nullptr };
     cfg.error_handling_callbacks = { message_box };
 #if defined(CONKER_RT64)
@@ -519,6 +745,10 @@ int main(int argc, char** argv) {
 
     recomp::start(cfg);
 
+#if defined(CONKER_NETPLAY)
+    conker::harness::finish();
+#endif
+
 #if defined(CONKER_RT64)
     if (!headless) {
         NFD_Quit();
@@ -528,5 +758,16 @@ int main(int argc, char** argv) {
     if (timer.joinable()) {
         timer.join();
     }
-    return EXIT_SUCCESS;
+    // Ended here rather than by returning: some of the runtime's threads (the game's own, the audio's) are never joined,
+    // and destroying the program's statics under them made quitting crash now and then (a message queue freed while one
+    // took from it). Everything kept is written by now (recomp::start joins the game, saving and timer threads; the
+    // settings are written as they change; stdout and stderr aren't buffered), but a save state just taken. Return to
+    // Launcher starts the program again first (on Linux and macOS it replaces this one, so doesn't come back).
+    conker::save_states::wait_for_writes();
+    std::fflush(stdout);
+    std::fflush(stderr);
+    if (restart_into_launcher) {
+        restart_at_launcher(argc, argv);
+    }
+    std::_Exit(EXIT_SUCCESS);
 }

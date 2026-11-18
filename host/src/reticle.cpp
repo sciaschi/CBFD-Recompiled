@@ -1,6 +1,7 @@
 // Aiming: Reticle (Camera tab, issue #74): a green ring with a dot in the middle of the screen while
-// Conker aims, like the one Conker: Live & Reloaded shows. The original game shows nothing, so
-// throwing is aimed by eye; the setting is Off by default, as the original.
+// Conker aims, like the one Conker: Live & Reloaded shows, or a crosshair or a dot instead, in three
+// sizes (Aiming: Reticle Size, issue #124). The original game shows nothing, so throwing is aimed by
+// eye; the setting is Off by default, as the original.
 //
 // Conker aims in one of two modes, each run once a game frame for each camera while it's in it:
 // - the look mode (func_15120158), which R-Look uses too. Its state (saved at 0xA0($sp), what picks
@@ -51,8 +52,15 @@ namespace {
     // so a frame the game takes longer over doesn't make it blink.
     constexpr auto linger = std::chrono::milliseconds(80);
 
-    // The reticle's size, as a share of the window's height: a little smaller than Live & Reloaded's.
-    constexpr float size_share = 0.1f;
+    // The reticle's size, as a share of the window's height, by Aiming: Reticle Size: Medium a little
+    // smaller than Live & Reloaded's.
+    float size_share(conker::reticle::Size size) {
+        switch (size) {
+            case conker::reticle::Size::Small: return 0.06f;
+            case conker::reticle::Size::Large: return 0.14f;
+            default: return 0.1f;
+        }
+    }
 
     // How far above the middle the slingshot's shots and the knives end up, in percent of the
     // window's height: the same for both, matched to where they land in the distance while playing.
@@ -79,8 +87,14 @@ namespace {
     bool created = false;
     recompui::ContextId context = recompui::ContextId::null();
     recompui::Element* holder = nullptr;
+    // Each style's pieces, in a group of its own the size of the holder; only the style chosen shows.
+    recompui::Element* ring_group = nullptr;
+    recompui::Element* crosshair_group = nullptr;
+    recompui::Element* dot_group = nullptr;
+    conker::reticle::Style shown_style = conker::reticle::Style::Off;
     float holder_aspect = 0.0f;
     float holder_raise = -1.0f;
+    float holder_share = 0.0f;
 
     float read_float(uint8_t* rdram, gpr base, int32_t offset) {
         uint32_t word = (uint32_t)MEM_W(offset, base);
@@ -103,11 +117,32 @@ namespace {
         return piece;
     }
 
-    // Live & Reloaded's: a thin green ring, short ticks pointing in from it at the four sides, and a
-    // dot in the middle; translucent, so what's aimed at shows through.
+    // A style's group: the holder's size, at its corner, hidden until chosen.
+    recompui::Element* add_group() {
+        recompui::Element* group = context.create_element<recompui::Element>(holder);
+        group->set_position(recompui::Position::Absolute);
+        group->set_inset(0.0f);
+        group->set_display(recompui::Display::None);
+        return group;
+    }
+
+    // A round dot in the middle of a group, size a share of the holder.
+    recompui::Element* add_dot(recompui::Element* group, float size, recompui::Color color) {
+        recompui::Element* dot = add_piece(group, 0.5f - size / 2, 0.5f - size / 2, size, size, color);
+        // RmlUi takes no percentage for a radius; one past the reticle's size is scaled down to fit, a circle.
+        dot->set_border_radius(4096.0f, recompui::Unit::Px);
+        return dot;
+    }
+
+    // The three styles, all green and translucent, so what's aimed at shows through:
+    // - the ring, Live & Reloaded's: a thin ring, short ticks pointing in from it at the four sides,
+    //   and a dot in the middle;
+    // - the crosshair: four bars pointing in at the middle, which they stop short of, and a dot;
+    // - the dot: a dot alone, with a dark edge so it shows on light ground too.
     void create() {
         const recompui::Color green{ 110, 230, 110, 210 };
         const recompui::Color dim_green{ 110, 230, 110, 150 };
+        const recompui::Color edge{ 0, 0, 0, 140 };
         context = recompui::create_context();
         context.open();
         context.set_captures_input(false);
@@ -115,44 +150,76 @@ namespace {
         holder = context.create_element<recompui::Element>(context.get_root_element());
         holder->set_position(recompui::Position::Absolute);
 
-        recompui::Element* ring = context.create_element<recompui::Element>(holder);
+        ring_group = add_group();
+        recompui::Element* ring = context.create_element<recompui::Element>(ring_group);
         ring->set_position(recompui::Position::Absolute);
         ring->set_inset(0.0f);
         ring->set_border_width(3.0f);
         ring->set_border_color(green);
-        // RmlUi takes no percentage for a radius; one past the reticle's size is scaled down to fit, a circle.
         ring->set_border_radius(4096.0f, recompui::Unit::Px);
-
         // The ticks: from the ring to a third of the way in. The bars are about 2 of the ring's
         // 100 thick (a share of the holder, so they scale with it).
-        constexpr float thick = 0.03f, length = 0.2f, start = 0.04f;
-        add_piece(holder, 0.5f - thick / 2, start, thick, length, dim_green);
-        add_piece(holder, 0.5f - thick / 2, 1.0f - start - length, thick, length, dim_green);
-        add_piece(holder, start, 0.5f - thick / 2, length, thick, dim_green);
-        add_piece(holder, 1.0f - start - length, 0.5f - thick / 2, length, thick, dim_green);
-        constexpr float dot = 0.07f;
-        recompui::Element* centre = add_piece(holder, 0.5f - dot / 2, 0.5f - dot / 2, dot, dot, green);
-        centre->set_border_radius(4096.0f, recompui::Unit::Px);
+        {
+            constexpr float thick = 0.03f, length = 0.2f, start = 0.04f;
+            add_piece(ring_group, 0.5f - thick / 2, start, thick, length, dim_green);
+            add_piece(ring_group, 0.5f - thick / 2, 1.0f - start - length, thick, length, dim_green);
+            add_piece(ring_group, start, 0.5f - thick / 2, length, thick, dim_green);
+            add_piece(ring_group, 1.0f - start - length, 0.5f - thick / 2, length, thick, dim_green);
+            add_dot(ring_group, 0.07f, green);
+        }
+
+        crosshair_group = add_group();
+        {
+            // From the holder's edge to a gap round the middle. The dot is as thick as the bars: each
+            // piece's edges are rounded to whole pixels on their own, and a dot of another size could
+            // round a pixel off the line the bars meet on (it did, at the small size).
+            constexpr float thick = 0.06f, gap = 0.12f, length = 0.5f - gap;
+            add_piece(crosshair_group, 0.5f - thick / 2, 0.0f, thick, length, green);
+            add_piece(crosshair_group, 0.5f - thick / 2, 0.5f + gap, thick, length, green);
+            add_piece(crosshair_group, 0.0f, 0.5f - thick / 2, length, thick, green);
+            add_piece(crosshair_group, 0.5f + gap, 0.5f - thick / 2, length, thick, green);
+            add_dot(crosshair_group, thick, green);
+        }
+
+        dot_group = add_group();
+        recompui::Element* dot = add_dot(dot_group, 0.16f, green);
+        dot->set_border_width(2.0f);
+        dot->set_border_color(edge);
 
         context.close();
+        shown_style = conker::reticle::Style::Off;
         created = true;
+    }
+
+    // Shows the chosen style's group, the others hidden.
+    void show_style(conker::reticle::Style style) {
+        if (style == shown_style) {
+            return;
+        }
+        shown_style = style;
+        context.open();
+        ring_group->set_display(style == conker::reticle::Style::Ring ? recompui::Display::Block : recompui::Display::None);
+        crosshair_group->set_display(style == conker::reticle::Style::Crosshair ? recompui::Display::Block : recompui::Display::None);
+        dot_group->set_display(style == conker::reticle::Style::Dot ? recompui::Display::Block : recompui::Display::None);
+        context.close();
     }
 
     // Puts the holder in the middle of the window, raised by raise_percent of its height, square: its
     // height a share of the window's, and its width the same share of the height in terms of the
     // window's width.
-    void place(float raise_percent) {
+    void place(float raise_percent, float share) {
         int width = 0, height = 0;
         if (window != nullptr) {
             SDL_GetWindowSize(window, &width, &height);
         }
         const float aspect = (width > 0 && height > 0) ? (float)width / (float)height : 16.0f / 9.0f;
-        if (aspect == holder_aspect && raise_percent == holder_raise) {
+        if (aspect == holder_aspect && raise_percent == holder_raise && share == holder_share) {
             return;
         }
         holder_aspect = aspect;
         holder_raise = raise_percent;
-        const float h = size_share * 100.0f;
+        holder_share = share;
+        const float h = share * 100.0f;
         const float w = h / aspect;
         context.open();
         holder->set_width(w, recompui::Unit::Percent);
@@ -204,7 +271,8 @@ void conker::reticle::on_ui_ready() {
 void conker::reticle::update() {
     const int64_t since = clock::now().time_since_epoch().count() - last_aim_ticks.load();
     const bool aiming = since >= 0 && clock::duration(since) < linger && last_aim_shown.load();
-    const bool wanted = ui_ready && conker::reticle::enabled() && ultramodern::is_game_started() && aiming;
+    const conker::reticle::Style style = ui_ready ? conker::reticle::style() : conker::reticle::Style::Off;
+    const bool wanted = ui_ready && style != conker::reticle::Style::Off && ultramodern::is_game_started() && aiming;
     if (!wanted) {
         if (created && recompui::is_context_shown(context)) {
             recompui::hide_context(context);
@@ -214,7 +282,8 @@ void conker::reticle::update() {
     if (!created) {
         create();
     }
-    place(last_aim_state.load() == no_state ? 0.0f : thrown_raise_percent);
+    show_style(style);
+    place(last_aim_state.load() == no_state ? 0.0f : thrown_raise_percent, size_share(conker::reticle::size()));
     if (!recompui::is_context_shown(context)) {
         recompui::show_context(context, "");
     }

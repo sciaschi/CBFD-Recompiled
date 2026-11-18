@@ -9,11 +9,27 @@ cmake_minimum_required(VERSION 3.20)
 #   cmake -S host -B host/build -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_BUILD_TYPE=RelWithDebInfo
 #   cmake --build host/build
 
+# Netplay (issue #126), off until it has been reviewed and tested. So far: the determinism harness
+# (--record, --replay, --hash-log: src/netplay/harness.cpp) and the transport (src/netplay/net).
+option(CONKER_NETPLAY "Build the netplay work in progress" OFF)
+if (CONKER_NETPLAY)
+    # On Windows, protobuf from vcpkg: set up before project().
+    include("${CMAKE_CURRENT_SOURCE_DIR}/src/netplay/net/vcpkg.cmake")
+endif()
+
 project(ConkerRecomp C CXX)
 if (APPLE)
     # RT64 and RecompFrontend have Objective-C++ sources (Metal, Cocoa); rt64 enables
     # the languages only in its own directory.
     enable_language(OBJC OBJCXX)
+endif()
+
+# Netplay runs the same game on every machine, so every compiler has to turn its floating-point code into the
+# same arithmetic. Clang fuses a multiply and an add into one instruction (one rounding instead of two) where the
+# processor has it, as ARM's always does (Apple Silicon); MSVC doesn't unless asked. So no fusing, for every
+# target here (the recompiled game, the runtime, the host).
+if (CONKER_NETPLAY AND NOT MSVC)
+    add_compile_options(-ffp-contract=off)
 endif()
 
 set(CMAKE_CXX_STANDARD 20)
@@ -80,19 +96,27 @@ endif()
 
 add_executable(ConkerRecomp
     src/main.cpp
+    src/log_file.cpp
     src/null_renderer.cpp
     src/overlays.cpp
     src/ultra_extras.cpp
+    src/host_state.cpp
+    src/audio_clock.cpp
     src/mod_api.cpp
     src/rom_versions.cpp
     src/widescreen.cpp
     src/cutscene_aspect.cpp
+    src/grey_frame.cpp
     src/field_of_view.cpp
     src/interpolation.cpp
     src/model_detail.cpp
+    src/shadow_smoothing.cpp
     src/render_fixes.cpp
+    src/more_bots.cpp
     src/look_aim.cpp
     src/mouse_camera.cpp
+    src/sound_volumes.cpp
+    src/cheat_codes.cpp
     # The audio microcode, recompiled by RSPRecomp (recomp/audio_ucode.toml, run by recomp/recompile.py).
     "${REPO_ROOT}/RecompiledFuncs/rsp/audio_ucode.cpp"
 )
@@ -104,6 +128,24 @@ target_include_directories(ConkerRecomp PRIVATE
     "${REPO_ROOT}/RecompiledFuncs"
 )
 target_link_libraries(ConkerRecomp PRIVATE RecompiledFuncs librecomp ultramodern)
+
+if (CONKER_NETPLAY)
+    target_sources(ConkerRecomp PRIVATE src/netplay/harness.cpp src/netplay/profile.cpp src/netplay/hello.cpp
+        src/netplay/lockstep.cpp src/netplay/motion.cpp)
+    target_compile_definitions(ConkerRecomp PRIVATE CONKER_NETPLAY)
+    # The build id for the handshake (src/netplay/hello.cpp), from git at every build.
+    set(CONKER_BUILD_ID_CPP "${CMAKE_CURRENT_BINARY_DIR}/netplay_build_id.cpp")
+    add_custom_target(conker_build_id
+        COMMAND "${CMAKE_COMMAND}" -DSOURCE_DIR=${REPO_ROOT} -DOUT=${CONKER_BUILD_ID_CPP}
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/src/netplay/build_id.cmake"
+        BYPRODUCTS "${CONKER_BUILD_ID_CPP}")
+    target_sources(ConkerRecomp PRIVATE "${CONKER_BUILD_ID_CPP}")
+    add_dependencies(ConkerRecomp conker_build_id)
+    # The transport (src/netplay/net): GameNetworkingSockets, which needs protobuf (on Windows from
+    # vcpkg) and, but on Windows, OpenSSL.
+    add_subdirectory(src/netplay/net)
+    target_link_libraries(ConkerRecomp PRIVATE conker_netplay_net)
+endif()
 
 if (CONKER_RT64)
     set(RT64_STATIC ON CACHE BOOL "" FORCE)
@@ -164,10 +206,17 @@ if (CONKER_RT64)
     add_custom_command(TARGET ConkerRecomp POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_CURRENT_SOURCE_DIR}/assets" "$<TARGET_FILE_DIR:ConkerRecomp>/assets")
 
-    target_sources(ConkerRecomp PRIVATE src/frontend.cpp src/conker_config.cpp src/audio_output.cpp src/rumble.cpp src/fps_counter.cpp src/reticle.cpp src/pad_mappings.cpp src/texture_packs.cpp src/gliden64_packs.cpp src/notices.cpp src/local_achievements.cpp src/save_states.cpp)
+    target_sources(ConkerRecomp PRIVATE src/frontend.cpp src/conker_config.cpp src/audio_output.cpp src/rumble.cpp src/fps_counter.cpp src/reticle.cpp src/pad_mappings.cpp src/texture_packs.cpp src/gliden64_packs.cpp src/notices.cpp src/local_achievements.cpp src/achievement_play.cpp src/save_states.cpp)
 
     # CONKER_RT64 selects the window build; the rest are what rt64 compiles its own headers with.
     target_compile_definitions(ConkerRecomp PRIVATE CONKER_RT64 HLSL_CPU)
+    if (CONKER_NETPLAY)
+        # The launcher's Netplay menu, "my view only", and the match's status on screen.
+        target_sources(ConkerRecomp PRIVATE src/netplay/menu.cpp src/netplay/view.cpp src/netplay/status.cpp)
+        # Desync recovery compresses the host's game with RT64's zstd (lockstep.cpp).
+        target_link_libraries(ConkerRecomp PRIVATE libzstd_static)
+        target_include_directories(ConkerRecomp PRIVATE "${RT64_DIR}/src/contrib/zstd/lib")
+    endif()
     if (WIN32)
         target_compile_definitions(ConkerRecomp PRIVATE NOMINMAX)
     endif()
@@ -214,8 +263,15 @@ elseif (WIN32)
     # The crash handler symbolises the stack with DbgHelp.
     target_link_libraries(ConkerRecomp PRIVATE DbgHelp)
     # Mods replace recompiled functions by patching their machine code, so identical
-    # functions must not be folded into one.
-    target_link_options(ConkerRecomp PRIVATE /OPT:NOICF)
+    # functions must not be folded into one, nor linked incrementally (issue #178): RelWithDebInfo
+    # links with /INCREMENTAL, which points every function pointer at a 5-byte jmp thunk in a table
+    # of them, and a mod's 12-byte patch there overwrote the next two thunks, so calling those
+    # functions crashed (the left stick's, for one hook).
+    target_link_options(ConkerRecomp PRIVATE /OPT:NOICF /INCREMENTAL:NO)
+    # A GUI app, so no console window opens beside the game's (issue #128), still entered at main
+    # (main.cpp's attach_parent_console keeps the output going to a terminal it's started from).
+    set_target_properties(ConkerRecomp PROPERTIES WIN32_EXECUTABLE TRUE)
+    target_link_options(ConkerRecomp PRIVATE /ENTRY:mainCRTStartup)
 endif()
 if (APPLE)
     # Mods patch the recompiled functions' machine code, which needs __TEXT's maximum protection

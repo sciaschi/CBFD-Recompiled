@@ -1,0 +1,7 @@
+{
+  "$comment": "Netplay's one dependency from vcpkg, on Windows only (vcpkg.cmake): protobuf, for GameNetworkingSockets. The baseline pins its version (vcpkg 2026.07.29: protobuf 6.33.4).",
+  "name": "conker-netplay",
+  "version-string": "0",
+  "dependencies": [ "protobuf" ],
+  "builtin-baseline": "9e593bb18ea69cc5095e012465dcd675a822ed0d"
+}

@@ -4,6 +4,11 @@
 // (osAiSetNextBuffer) and paces itself by how much is still queued
 // (osAiGetLength), so the SDL device is used in queue mode: the reported
 // remaining frames are what SDL hasn't played yet.
+//
+// In deterministic mode (replays, netplay) the game is paced by the timeline
+// instead (audio_clock.cpp), and the device only plays: it waits for a cushion
+// before it starts (and again whenever it runs dry), and drops what comes while
+// it's far behind, so its own pace never reaches the game.
 
 #include <cstdio>
 #include <mutex>
@@ -11,12 +16,18 @@
 
 #include <SDL.h>
 
+#include "ultramodern/timeline.hpp"
+
 #include "recompui/config.h"
 
 #include "conker.hpp"
 
 namespace {
     constexpr int channels = 2;
+    // Deterministic mode: the frames queued before the device starts playing (about 70 ms at 22 kHz),
+    // and the most it holds (about 270 ms), past which buffers are dropped.
+    constexpr uint32_t cushion_frames = 2 * 736;
+    constexpr uint32_t most_frames = 8 * 736;
 
     std::mutex audio_mutex;
     SDL_AudioDeviceID device = 0;
@@ -61,12 +72,25 @@ void conker::audio::queue_samples(int16_t* samples, size_t sample_count) {
     // samples read back swapped: [i + 1] is the left channel and [i] the right.
     // Scaled by the main volume from the Sound settings (0-100).
     const float scale = static_cast<float>(recompui::config::sound::get_main_volume()) / (100.0f * 32768.0f);
+    if (ultramodern::timeline::enabled()) {
+        const uint32_t queued = SDL_GetQueuedAudioSize(device) / (channels * sizeof(float));
+        if (queued + sample_count / channels > most_frames) {
+            return;
+        }
+        if (queued == 0) {
+            SDL_PauseAudioDevice(device, 1);
+        }
+    }
     convert_buffer.resize(sample_count);
     for (size_t i = 0; i + 1 < sample_count; i += channels) {
         convert_buffer[i + 0] = samples[i + 1] * scale;
         convert_buffer[i + 1] = samples[i + 0] * scale;
     }
     SDL_QueueAudio(device, convert_buffer.data(), (Uint32)(sample_count * sizeof(float)));
+    if (ultramodern::timeline::enabled() && SDL_GetAudioDeviceStatus(device) == SDL_AUDIO_PAUSED &&
+        SDL_GetQueuedAudioSize(device) / (channels * sizeof(float)) >= cushion_frames) {
+        SDL_PauseAudioDevice(device, 0);
+    }
 }
 
 size_t conker::audio::get_frames_remaining() {

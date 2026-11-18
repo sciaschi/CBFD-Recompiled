@@ -2,6 +2,11 @@
 // while the game runs (an achievement unlocked, a save state saved...). Anyone may call conker::notices::show,
 // from any thread; the main thread shows them (update, from update_gfx).
 //
+// General: Notifications (add_options) turns them all off; each kind has its own setting too (Achievement,
+// Save State and Texture Pack Notifications), which its sender checks. A line saying something couldn't be
+// done (show_failure: a save state not saved or loaded) is shown whatever they're set to, as nothing else
+// would tell.
+//
 // It's a recompui context of its own that takes no input and no mouse (as the FPS counter's), so the game and
 // the menus work as before. The lines wait for the game to start: recompui shows the launcher only while no
 // context is shown, so a line shown at the launcher kept the screen black until it went. And the context is
@@ -14,7 +19,11 @@
 #include <deque>
 #include <mutex>
 #include <string>
+#include <variant>
+#include <vector>
 
+#include "librecomp/config.hpp"
+#include "recompui/config.h"
 #include "recompui/recompui.h"
 #include "elements/ui_label.h"
 #include "ultramodern/ultramodern.hpp"
@@ -59,16 +68,50 @@ namespace {
     }
 }
 
+namespace {
+    // General: Notifications, On or Off.
+    const std::string notifications_option = "notifications";
+    enum class Notifications : uint32_t { On, Off };
+
+    // A line for the main thread to show.
+    void queue(const std::string& text, bool replace) {
+        std::printf("[notice] %s\n", text.c_str());
+        std::fflush(stdout);
+        std::lock_guard lock{notices_mutex};
+        if (replace) {
+            replacing = text;
+        }
+        else {
+            waiting.push_back(text);
+        }
+    }
+}
+
+void conker::notices::add_options(recomp::config::Config& config) {
+    static const std::vector<recomp::config::ConfigOptionEnumOption> choices = {
+        {Notifications::On, "On", "On"},
+        {Notifications::Off, "Off", "Off"},
+    };
+    config.add_enum_option(notifications_option, "Notifications",
+        "Shows lines in the corner for what the program does while you play: an achievement unlocked, a save state "
+        "saved or loaded, the texture pack switched with F8. <recomp-color primary>Off</recomp-color> turns them all "
+        "off; the settings below turn each kind off on its own. A line saying a save state couldn't be saved or loaded "
+        "is still shown.",
+        choices, Notifications::On);
+}
+
 void conker::notices::show(const std::string& text, bool replace) {
-    std::printf("[notice] %s\n", text.c_str());
-    std::fflush(stdout);
-    std::lock_guard lock{notices_mutex};
-    if (replace) {
-        replacing = text;
+    recomp::config::Config* config = recompui::config::find_option_config(notifications_option);
+    if (config != nullptr && static_cast<Notifications>(std::get<uint32_t>(config->get_option_value(notifications_option))) == Notifications::Off) {
+        std::printf("[notice] (not shown: Notifications is off) %s\n", text.c_str());
+        std::fflush(stdout);
+        return;
     }
-    else {
-        waiting.push_back(text);
-    }
+    queue(text, replace);
+}
+
+void conker::notices::show_failure(const std::string& text) {
+    queue(text, false);
 }
 
 void conker::notices::on_ui_ready() {

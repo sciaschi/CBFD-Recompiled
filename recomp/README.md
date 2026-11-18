@@ -319,6 +319,15 @@ to the right, so the game doesn't clamp it, and moved back as an extended
 rectangle. They write no sync to hold the enable, so it's put early in the
 frame, in place of the pipe sync each camera's pass starts with.
 
+The 3D HUD's models (issue #138: the tank's timer in It's War, a box on a chain
+with a pipe running off to the right) are drawn by `func_1508FD38` with a
+perspective projection and the model's matrix loaded on its own. RT64 widens the
+projection, so the model stayed in the middle 4:3 and the timer's pipe ended in
+view. Just after it (`func_150198FC` at 0x15019B70) a model to one side is moved
+out by (ratio - 1) of the half width the projection shows at its depth, so it's
+as near the window's edge as it was the N64 screen's; not while a cutscene is
+shown in 4:3 with bars (`widescreen.cpp`, `conker_hud_models_to_sides`).
+
 `func_15095D34` also draws the tickly bees of Windy's pollination quest (issue
 #101). Whether a piece is drawn at all is decided first by `func_15095B08`, which
 works out its rectangle on screen and flags it visible only where that overlaps
@@ -376,6 +385,11 @@ framebuffer pair's scissor:
   view. A view widened in any pair of the frame is widened in all of them
   (`Workload::widensView`), in `FramebufferRenderer` and `ProjectionProcessor`
   alike.
+- Beach draws its views two to a pair (the top two in one, the bottom two in
+  another), so no pair held a view alone and the top two weren't widened (their
+  sides black). A view whose row of side-by-side views spans the pair together
+  is widened as if it had the pair to itself (`Workload::pairWidensView`, which
+  the renderer's list of widened views uses too).
 - The HUD is drawn with a scissor across the frame, each player's inside their
   view's 4:3 area. A rect wholly inside a widened split-screen view is scaled
   about that view's middle (an origin there) instead of the frame's, so each HUD
@@ -395,6 +409,25 @@ how much of the picture's width to crop off each side each frame
 renderer zooms the picture about its middle by as much both ways, so it isn't
 stretched and as much comes off its top and bottom. Widening the 3D scissor to
 the full frame instead pillarboxed the picture.
+
+Netplay's "my view only" (`host/src/netplay/view.cpp`) draws one player's view
+of the split screen across the whole frame (`src/common/rt64_conker_view_focus.h`,
+set with `RT64::setViewFocusRedraw` from that player's camera rectangle while the
+split is on and the game isn't paused). It applies only to what's drawn into the
+frame itself (an image as wide as it), not the game's small images of its own,
+such as a shadow's 64-pixel silhouette. `RSP::setViewport` stretches the view's
+viewport with it to the whole frame (one inside the view goes to the same place
+in the stretched view) and records how much more it stretched across than down;
+the projection processor scales the projection's height by as much, so nothing
+is stretched and more of the scene shows, and the widescreen widening then widens
+it as any full-frame view. The other views' viewports collapse to nothing.
+`RDP::setScissor` stretches the view's scissors the same way and empties the
+others'. `RDP::drawRect` moves the 2D: the view's own with its nearest edges
+(never scaled: the game draws a split's 2D at full size), its clears to the whole
+frame, what's at the line between the top and bottom views (the match timer,
+War's and Beach's team scores, Heist's $$$ row) to the bottom, and leaves the
+other views' out. Game memory is untouched (Render to RAM is off in netplay), so
+it can't desync.
 
 The patch also changes frame interpolation (a frame rate above the game's 30).
 RT64 draws frames between the game's by pairing each transform with last
@@ -431,6 +464,15 @@ order drawn. In RT64:
   through `RT64::setInterpolationPaused`). The blur blends each frame with a
   copy of the last; blended on the frames drawn between the game's, that copy
   was only a fraction of a frame old, and the blur was all but gone (issue #77).
+- a split screen's views stay apart (`GameFrame::isSceneCompatible` and the
+  scenes' pairing): each player's view is its own scene, paired with last frame's
+  in the same part of the frame (their scissors overlap), and a scene with no
+  scissor only with another without one. The views' cameras look alike to RT64
+  (the same projection, the camera in the model matrices), so they were grouped
+  and paired across players: the frames between were drawn from between two
+  players' cameras, the level culled for one of them, and the split screen
+  flickered; then a scene drawing nothing scissored took player 2's place, and
+  player 2's camera jittered.
 
 A character's shadow (`func_15186794`) is the ground under it, clipped anew
 every frame and drawn with the shadow's texture projected onto it from the
@@ -490,6 +532,39 @@ hashes (`ReverseDXT`, `CalculateMaxCI`, the tile and block dimensions) are Rice
 Video's (mupen64plus-video-rice, GPL 2 or later). Its header says so; see
 [the licenses](../README.md#license) for what that means for builds.
 
+RT64 also reuses its tile copies again at any resolution. A tile copy (a texture
+and a framebuffer the game's reads of a framebuffer as a texture are copied into)
+was found again by its texture's size (`FramebufferManager::findTileCopyId`), but
+that size is the one scaled by the resolution (set in `createTileCopySetup`) and
+the size looked for isn't, so above 1x no copy was ever reused: every request
+made a new one, never freed. The pause menu reads the frame back in strips every
+frame, so each pause added hundreds. On D3D12 they ran its render target
+descriptor heap (16384) out after a few pauses, and then the pause background was
+black, the log filled with `Allocator was unable to find free space for the set.`
+and game memory was corrupted, up to a crash; on Vulkan the game only got slower.
+A tile copy now keeps the size it was asked for (`TileCopy::requestWidth` and
+`requestHeight`), unscaled, and is found by that.
+
+Render to RAM can be turned off by the host (`RT64::setRenderToRAMOff`,
+`rt64_workload.cpp`), whatever the emulator's setting or the game's extended
+command, for netplay's deterministic mode (issue #126;
+`host/src/netplay/profile.cpp`). It copies each frame's colour and depth images
+back into the game's memory from the graphics thread, whenever that thread gets
+to the display list, so a window run differed from a headless one (which has no
+renderer) from the second read, and the copies raced the game. RT64 still draws
+everything; only the copy back is skipped.
+
+RT64 can present its last frame again (`Application::presentAgain`, for
+netplay: while the game waits for the others, it makes no frame, and the UI
+drawn over the last one would stay as it was). It repeats the last present,
+paused, as its debugger's pause does, but not the workload: nothing of the
+game's is drawn again. A repeated present (`Present::repeated`) shows the
+frame once, not the frames interpolated before it again, and counts the frames
+as presented as a present of one frame does (left alone, a workload could wait
+on them for ever).
+ultramodern's renderer interface has it as `present_again` (RecompFrontend's
+RT64 context calls RT64's); the runtime queues one at a time.
+
 RecompFrontend (`recompfrontend.patch`): mouse buttons can be bound, with the
 keyboard's controls (and in single player with the controller's too, as both are
 read then). recompinput already had a mouse input type, but reading it
@@ -522,7 +597,9 @@ The output is 22020 Hz stereo. `host/src/audio_output.cpp` queues it on an SDL
 device. The audio thread (`func_100095A0`) sizes each buffer from AI_LEN: 736
 frames, or 552 when 249 or more samples are still playing. So the host reports
 only what is queued beyond one buffer, as AI_LEN counts only the buffer playing
-now. Reporting the whole queue made the game fall behind and pop.
+now. Reporting the whole queue made the game fall behind and pop. In netplay's
+deterministic mode the buffers play on the timeline instead
+(`host/src/audio_clock.cpp`), and AI_LEN is what's left of the one playing there.
 
 ## Host (`host/`)
 
@@ -594,6 +671,17 @@ third-person shooter:
 - With the shotgun, R alone shows the laser sight and the gun-up walk, as R and
   Z do: +0x8A of +0x31C |= 0x20, D_800CC2B0 = 1, +0x1B4 |= 4, and the walk 0x224
   played as 0x31B (`conker_shotgun_laser`, `conker_shotgun_laser_walk`).
+- With the sniper scope he walks any way, and the D-pad zooms. Scoped (state
+  0x80), the scope's camera (`func_15126378`) zooms with C-Up and C-Down, and
+  `func_1504CB98` walks him by the C-buttons through its table of 16 directions
+  (`D_8009917C`) but masks them to C-Left and C-Right (0x1504DD18): strafing only.
+  With Swap Sticks on, scoped, all four go through (`conker_scope_walk`), and the
+  zoom goes by D-pad Up and Down instead (`conker_scope_zoom`, at 0x15127054).
+  Both read only the game's buttons, and in a netplay match each player's own
+  Swap Sticks (their Controls, by their character's object index, the first four
+  objects being the players). D-pad Up and Down default to I and K, and
+  to the mouse wheel: RecompFrontend binds the wheel as two more mouse inputs
+  (Wheel Up, Wheel Down, ids 33 and 34), each notch held 100 ms with a gap.
 
 Aiming: Lock-On (on by default, as the original) can turn off the game's lock-on:
 `func_15063A38` turns the aim by the stick, or, while an enemy is there to lock on
@@ -608,6 +696,11 @@ levels, one closer when nearly still) and stores the level at +0x1C8, so he
 flipped between levels 0, 1 and 2 as the camera pulled back and as he started and
 stopped walking; a hook sets the level to 0 for him before it's compared with his
 last. The multiplayer arenas (`D_800BE616`) keep the original's level 1.
+Shadows are smoothed (`shadow_smoothing.cpp`): `func_15184368`
+casts each shadow from a point it moves 0.3 of the way (`D_800A7354`) toward the
+nearest dynamic light (`D_800DCD78`) each time, and a fire's light hops a couple
+of hundred units every few frames, so the shadow snapped from side to side; a
+hook makes the step 0.06, so it sways instead and turns over to the next light.
 `patches/` holds the headers recompui includes for the
 game-side patch code that mods will use. `null_renderer.cpp` is used with
 `--headless`, and in a build configured with `-DCONKER_RT64=OFF` (no window, input

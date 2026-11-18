@@ -1,0 +1,25 @@
+# GameNetworkingSockets 1.6.1 (d534c19): in relay-only ICE (P2P_Transport_ICE_Enable = relay), don't check
+# candidate pairs from the host socket. Those checks go straight to the peer's relay candidates, where the
+# TURN server drops them (it has no permission for this address); and as only one pair per remote
+# candidate is checked at a time, host pairs first, they hold up the relay pairs until the connection
+# times out. Found with a real relay server behind NAT: on one machine the checks came from the relay's
+# own address and passed. host/src/netplay/net/CMakeLists.txt applies it (patches/apply.cmake).
+diff --git a/src/steamnetworkingsockets/clientlib/steamnetworkingsockets_ice_client.cpp b/src/steamnetworkingsockets/clientlib/steamnetworkingsockets_ice_client.cpp
+index e5a4814..d58a973 100644
+--- a/src/steamnetworkingsockets/clientlib/steamnetworkingsockets_ice_client.cpp
++++ b/src/steamnetworkingsockets/clientlib/steamnetworkingsockets_ice_client.cpp
+@@ -2385,8 +2385,12 @@ void CSteamNetworkingICESession::Think_TestPeerConnectivity()
+             ICELocalCandidate localCandidates[2];
+             int nLocalCandidates = 0;
+ 
+-            // Host candidate -- always present.
+-            localCandidates[nLocalCandidates++] = { pIntf.get(), {} };
++            // Host candidate -- unless only relay candidates are permitted.  Then checks from the
++            // host socket would go straight to the peer's relay candidates, whose TURN server drops
++            // them (no permission for this address), and they'd hold up the relay pairs to the same
++            // remote candidates (one pair per foundation at a time) until the connection times out.
++            if ( m_nPermittedCandidateTypes & ~k_EICECandidate_Any_Relay )
++                localCandidates[nLocalCandidates++] = { pIntf.get(), {} };
+ 
+             // Relay candidate -- only when an allocation has succeeded.
+             if ( pIntf->m_addrTURNServer.IsValid() && !pIntf->m_bRelayFailed )

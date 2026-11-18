@@ -14,8 +14,17 @@
 // runs) and its assets differ. So a ROM whose code region isn't the US ROM's byte for byte
 // has .init compared as it is, and .game's code unpacked and compared with the US code the
 // recompiled game was made from, embedded in the executable (as is .debugger's).
+//
+// Some translations show a boot screen of their own first: the Brazilian Portuguese one
+// (issue #131) changes the ROM's entry point (ROM 0x1000, 16 bytes) into a jump to a loader it
+// writes over a debug message in .init's data (ROM 0x2C6B0 to 0x2C700, "snd %d has been freed
+// too early"), which shows the screen and then boots the game. The recompiled game never runs
+// the ROM's boot code, only the US code it was made from, so the screen isn't shown and the rest
+// plays as it is; the message is only ever printed on a sound error. .init is accepted with
+// those two left out too.
 
 #include <algorithm>
+#include <cctype>
 #include <atomic>
 #include <chrono>
 #include <cstdio>
@@ -57,6 +66,9 @@ namespace {
         { conker::roms::us_rom_hash, "original", "US Original" },
         { 0xAC445026C8F77A94ULL, "uncensored", "US Uncensored" }, // the bleeped words restored
         { 0xB97E9AFFEA6ED925ULL, "russian", "US Russian" },       // the fan translation into Russian
+        { 0xFA76F05BA7E6D7D9ULL, "german", "US German" },         // the German voices and text (ConkerDeutschMod 0.2.0, issue #129)
+        { 0x140A66314ED14EE4ULL, "portuguese", "US Brazilian Portuguese" }, // the Brazilian Portuguese translation (1.0.1, issue #131)
+        { 0x02D824D676A58D29ULL, "portuguese-uncensored", "US Brazilian Portuguese Uncensored" }, // its uncensored version
     };
 
     // Where the code is in the ROM (recomp/unpack_rom.py): .init as it is from code_start to
@@ -65,6 +77,13 @@ namespace {
     // 4-byte length and a raw deflate stream of the code, and .debugger as it is.
     constexpr size_t init_end = 0x2D4B0;
     constexpr uint32_t us_init_crc = 0x35984403;
+    // The same without a translation's boot screen (see above): the CRC-32 of .init with the entry point and
+    // the debug message the loader is written over left out.
+    struct Range {
+        size_t start, end;
+    };
+    constexpr Range boot_screen_ranges[] = { { 0x1000, 0x1010 }, { 0x2C6B0, 0x2C700 } };
+    constexpr uint32_t us_init_crc_without_boot_screen = 0xE6DD4A19;
     constexpr size_t game_rzip = 0x42450;
     constexpr uint32_t game_xor = 0x8039CCCA;
     constexpr size_t debugger_start = 0x19EA88;
@@ -79,7 +98,16 @@ namespace {
             return false;
         }
         if (mz_crc32(MZ_CRC32_INIT, rom.data() + code_start, init_end - code_start) != us_init_crc) {
-            return false;
+            mz_ulong crc = MZ_CRC32_INIT;
+            size_t at = code_start;
+            for (const Range& range : boot_screen_ranges) {
+                crc = mz_crc32(crc, rom.data() + at, range.start - at);
+                at = range.end;
+            }
+            crc = mz_crc32(crc, rom.data() + at, init_end - at);
+            if (crc != us_init_crc_without_boot_screen) {
+                return false;
+            }
         }
         for (size_t i = 0; i < conker_debugger_segment_size / 4; i++) {
             if (read_word(rom, debugger_start + i * 4) != conker_debugger_segment[i]) {
@@ -145,7 +173,27 @@ namespace {
             }
         }
         // hack-<hash>: the hash's first 8 digits tell hacks apart.
-        return "US ROM hack (" + slug.substr(5, 8) + ")";
+        if (slug.rfind("hack-", 0) == 0 && slug.size() > 5) {
+            return "US ROM hack (" + slug.substr(5, 8) + ")";
+        }
+        // A version another build of the program named (kept as <slug>.z64), which this one doesn't know: its
+        // slug, its words capitalised ("portuguese-uncensored" is "US Portuguese Uncensored"). It was read as a
+        // hash, and showed a slice of the name ("US ROM hack (guese-un)").
+        std::string name = "US";
+        bool word_start = true;
+        for (char c : slug) {
+            if (c == '-' || c == '_') {
+                word_start = true;
+                continue;
+            }
+            if (word_start) {
+                name += ' ';
+                c = (char)std::toupper((unsigned char)c);
+                word_start = false;
+            }
+            name += c;
+        }
+        return name;
     }
 
     // The versions kept, named ones first in the order above, then hacks.

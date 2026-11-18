@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstdio>
 #include <fstream>
 #include <mutex>
@@ -42,6 +43,9 @@ void conker_mouse_camera_init();
 
 namespace {
     std::vector<char> thumbnail;
+
+    // The Controls tab's Hotkeys, each frame (below, with the controller reading it uses).
+    void update_hotkeys();
 
     // Each poll also tells the look mode that the next mouse and gyro movement is in.
     void poll_inputs() {
@@ -145,6 +149,19 @@ namespace {
         return 1;
     }
 
+    // A mouse button or the wheel used in play (the game running, its menu closed) since the main thread last
+    // looked, for the mouse's first use (look_aim.cpp). Watched as it's announced, before the click is handled, so
+    // the click that closes the menu doesn't count. Touches sent as the mouse don't.
+    std::atomic<bool> mouse_used_in_play = false;
+    int SDLCALL watch_mouse(void*, SDL_Event* event) {
+        const bool used = (event->type == SDL_MOUSEBUTTONDOWN && event->button.which != SDL_TOUCH_MOUSEID)
+            || (event->type == SDL_MOUSEWHEEL && event->wheel.which != SDL_TOUCH_MOUSEID);
+        if (used && ultramodern::is_game_started() && !recompinput::game_input_disabled()) {
+            mouse_used_in_play = true;
+        }
+        return 1;
+    }
+
     void* create_gfx() {
         SDL_SetHint(SDL_HINT_WINDOWS_DPI_AWARENESS, "permonitorv2");
         SDL_SetHint(SDL_HINT_GAMECONTROLLER_USE_BUTTON_LABELS, "0");
@@ -184,6 +201,7 @@ namespace {
             std::printf("[frontend] controller mappings: %d added\n", controller_mappings);
         }
         SDL_AddEventWatch(watch_controllers, nullptr);
+        SDL_AddEventWatch(watch_mouse, nullptr);
         // The controllers connected at start were announced before the watch.
         for (int index = 0; index < SDL_NumJoysticks(); index++) {
             print_controller(index);
@@ -235,9 +253,16 @@ namespace {
 
     void update_gfx(void*) {
         recompinput::handle_events();
+        conker::look_aim::update_mouse_first_use(mouse_used_in_play.exchange(false));
         conker::texture_packs::update_unpacking();
         conker::fps_counter::update();
         conker::notices::update();
+        conker::log_file::check();
+#if defined(CONKER_NETPLAY)
+        conker::netplay_menu::update();
+        conker::netplay_status::update();
+#endif
+        update_hotkeys();
         conker::reticle::update();
         std::string title;
         {
@@ -310,6 +335,99 @@ namespace {
         });
     }
 
+    // The launcher's leaves, drifting in from the sides: where (percent of the window from its own side,
+    // and from the top), how tall (dp), turned how far, which and how faint. Each is a picture of its
+    // own, so a window of any shape keeps them leaf-shaped (recompui stretches an SVG to its box).
+    struct LauncherLeaf {
+        bool right;
+        float side, top, height, degrees;
+        const char* picture;
+        float opacity;
+    };
+    constexpr LauncherLeaf launcher_leaves[] = {
+        { false, 5.5f, 11.0f, 112.0f, -30.0f, "launcher/leaf_orange.svg", 0.55f },
+        { false, 14.0f, 26.0f, 77.0f, 25.0f, "launcher/leaf_rust.svg", 0.45f },
+        { false, 3.5f, 47.0f, 91.0f, 70.0f, "launcher/leaf_amber.svg", 0.35f },
+        { false, 9.5f, 73.0f, 126.0f, -60.0f, "launcher/leaf_orange.svg", 0.4f },
+        { false, 26.0f, 5.0f, 56.0f, 110.0f, "launcher/leaf_amber.svg", 0.25f },
+        { true, 6.0f, 14.0f, 105.0f, 40.0f, "launcher/leaf_amber.svg", 0.5f },
+        { true, 13.0f, 34.0f, 70.0f, -20.0f, "launcher/leaf_orange.svg", 0.4f },
+        { true, 3.0f, 54.0f, 98.0f, -75.0f, "launcher/leaf_rust.svg", 0.45f },
+        { true, 9.0f, 76.0f, 119.0f, 15.0f, "launcher/leaf_orange.svg", 0.35f },
+        { true, 25.0f, 4.0f, 63.0f, -120.0f, "launcher/leaf_orange.svg", 0.25f },
+    };
+
+    // The launcher's look, in the game's autumn colours: a backdrop of warm browns
+    // (assets/launcher/background.svg, stretched over any window shape) with leaves, a title of
+    // its own in place of recompui's and the options as pills, the focused one ringed in orange.
+    void style_launcher(recompui::LauncherMenu* menu, recompui::GameOptionsMenu* options) {
+        using namespace recompui;
+        const Color cream{ 255, 233, 199, 255 };
+        const Color cream_dim{ 236, 210, 176, 190 };
+        const Color orange{ 240, 140, 40, 255 };
+        const Color pill{ 70, 30, 10, 200 };
+        ContextId context = get_current_context();
+
+        Svg* backdrop = context.create_element<Svg>(menu->get_background_wrapper(), "launcher/background.svg");
+        backdrop->set_position(Position::Absolute);
+        backdrop->set_inset(0.0f);
+        backdrop->set_width(100.0f, Unit::Percent);
+        backdrop->set_height(100.0f, Unit::Percent);
+        for (const LauncherLeaf& leaf : launcher_leaves) {
+            Svg* picture = context.create_element<Svg>(menu->get_background_wrapper(), leaf.picture);
+            picture->set_position(Position::Absolute);
+            if (leaf.right) {
+                picture->set_right(leaf.side, Unit::Percent);
+            }
+            else {
+                picture->set_left(leaf.side, Unit::Percent);
+            }
+            picture->set_top(leaf.top, Unit::Percent);
+            picture->set_height(leaf.height);
+            picture->set_width(leaf.height * 72.0f / 88.0f); // leaf_*.svg's shape
+            picture->set_rotation(leaf.degrees);
+            picture->set_opacity(leaf.opacity);
+        }
+
+        menu->remove_default_title();
+        Element* title = context.create_element<Element>(menu, 0, "div", false);
+        title->set_position(Position::Absolute);
+        title->set_top(26.0f, Unit::Percent);
+        title->set_left(50.0f, Unit::Percent);
+        title->set_translate_2D(-50.0f, -50.0f, Unit::Percent);
+        title->set_display(Display::Flex);
+        title->set_flex_direction(FlexDirection::Column);
+        title->set_align_items(AlignItems::Center);
+        title->set_gap(6.0f);
+        Label* name = context.create_element<Label>(title, "CONKER'S BAD FUR DAY", theme::Typography::Header1);
+        name->set_color(cream);
+        name->set_white_space(WhiteSpace::Nowrap);
+        Label* recompiled = context.create_element<Label>(title, "RECOMPILED", theme::Typography::LabelMD);
+        recompiled->set_color(orange);
+        recompiled->set_letter_spacing(14.0f);
+
+        options->set_gap(10.0f);
+        for (GameOption* option : options->get_options()) {
+            // (A fixed width: recompui's layout doesn't fit a button's border to its text when it's auto.)
+            option->set_width(440.0f);
+            option->set_padding_top(10.0f);
+            option->set_padding_bottom(10.0f);
+            option->set_padding_left(36.0f);
+            option->set_padding_right(36.0f);
+            option->set_border_radius(40.0f);
+            option->set_border_width(2.0f);
+            option->set_border_color(Color{ 0, 0, 0, 0 });
+            option->set_color(cream_dim);
+            option->get_label()->set_font_size(28.0f);
+            option->hover_style.set_background_color(Color{ 240, 140, 40, 40 });
+            option->hover_style.set_color(cream);
+            // (Its text pulses between the theme's orange and cream while focused: GameOption's update.)
+            option->focus_style.set_background_color(pill);
+            option->focus_style.set_border_color(orange);
+            option->apply_styles();
+        }
+    }
+
     // The launcher's options: RecompFrontend's usual ones, with Version and Add ROM after Start Game.
     void init_launcher(recompui::LauncherMenu* menu) {
         const recomp::GameEntry& game = supported_games[0];
@@ -331,12 +449,18 @@ namespace {
         conker::local_achievements::init();
         conker::reticle::on_ui_ready();
         options->add_start_game_or_load_rom_option();
+#if defined(CONKER_NETPLAY)
+        conker::netplay_status::on_ui_ready();
+        conker::netplay_menu::init(game.game_id, recomp::get_config_path() / game.stored_filename());
+        options->add_option("Netplay", conker::netplay_menu::open);
+#endif
         version_option = options->add_option("Version", on_version_selected);
         add_rom_option = options->add_option("Add ROM", on_add_rom_selected);
         options->add_setup_controls_option();
         options->add_settings_option();
         options->add_mods_option();
         options->add_exit_option();
+        style_launcher(menu, options);
         show_version();
     }
 
@@ -368,8 +492,9 @@ void conker::frontend::on_vi() {
 // 1, with the keyboard, the next player 2, and so on. A controller that disconnects
 // gives up its port, and the ones after it move up. As many ports as there are
 // controllers report as plugged in (at least one), so the game sees player 2's port
-// from the start; it gets that controller's input once it presses a button. Every
-// controller uses the single-player controller bindings.
+// from the start; it gets that controller's input once it presses a button. Controls'
+// Assign controllers sets the order instead, until the game is closed, and each port
+// plays with the controller profile picked for it there, player 1's by default (#160).
 namespace {
     constexpr int max_ports = 4;
 
@@ -426,6 +551,18 @@ namespace {
         return count;
     }
 
+    // Controls' Assign controllers (issue #160): the controllers, in the order they pressed a button there, take
+    // ports 1-4. The others take the ports after them as they press one, as before.
+    void assign_ports(const std::vector<SDL_GameController*>& assigned) {
+        std::lock_guard lock{ port_mutex };
+        port_order.clear();
+        for (SDL_GameController* controller : assigned) {
+            if (controller != nullptr && (int)port_order.size() < max_ports) {
+                port_order.push_back(SDL_JoystickInstanceID(SDL_GameControllerGetJoystick(controller)));
+            }
+        }
+    }
+
     // The stick axis read for an axis bound: with swap (Aiming: Swap Sticks, issue #84), the left stick's
     // axes are read from the right stick and the right's from the left, so whatever the profile binds to
     // either stick (by default the N64 stick to the left, the C-buttons to the right) moves to the other.
@@ -478,6 +615,61 @@ namespace {
         return field.input_type == recompinput::InputType::Keyboard || field.input_type == recompinput::InputType::Mouse;
     }
 
+    // Whether one of the Controls tab's Hotkeys is held: player 1's, by its keyboard and mouse bindings, or by
+    // its controller bindings on the first controller (or the mouse, bound there).
+    bool hotkey_held(recompinput::GameInput input) {
+        std::array<SDL_GameController*, max_ports> controllers{};
+        get_port_controllers(controllers);
+        SDL_GameController* controller = controllers[0];
+        const int cont_profile = recompinput::profiles::get_sp_controller_profile_index();
+        const int kb_profile = recompinput::profiles::get_sp_keyboard_profile_index();
+        for (size_t i = 0; i < recompinput::num_bindings_per_input; i++) {
+            if (kb_profile >= 0) {
+                const recompinput::InputField& field = recompinput::profiles::get_input_binding(kb_profile, input, i);
+                if (is_keyboard_or_mouse(field) && recompinput::get_input_digital(0, field)) {
+                    return true;
+                }
+            }
+            if (cont_profile >= 0) {
+                const recompinput::InputField& field = recompinput::profiles::get_input_binding(cont_profile, input, i);
+                if (field.input_type == recompinput::InputType::Mouse) {
+                    if (recompinput::get_input_digital(0, field)) {
+                        return true;
+                    }
+                }
+                else if (field.input_type != recompinput::InputType::None && controller != nullptr && controller_field_digital(controller, field)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    // The Hotkeys, each frame on the main thread: each acts as it's pressed (not again until it's let go),
+    // while the game runs and no menu is open.
+    void update_hotkeys() {
+        using recompinput::GameInput;
+        struct Hotkey {
+            GameInput input;
+            void (*action)();
+            bool held;
+        };
+        static Hotkey hotkeys[] = {
+            { GameInput::SAVE_STATE, conker::save_states::save, false },
+            { GameInput::LOAD_STATE, conker::save_states::load, false },
+            { GameInput::NEXT_STATE_SLOT, conker::save_states::next_slot, false },
+            { GameInput::TOGGLE_TEXTURE_PACK, conker::texture_packs::toggle_originals, false },
+        };
+        const bool active = ultramodern::is_game_started() && !recompinput::game_input_disabled();
+        for (Hotkey& hotkey : hotkeys) {
+            const bool held = active && hotkey_held(hotkey.input);
+            if (held && !hotkey.held) {
+                hotkey.action();
+            }
+            hotkey.held = held;
+        }
+    }
+
     // A binding to the right stick (either axis, either way).
     bool is_right_stick(const recompinput::InputField& field) {
         if (field.input_type != recompinput::InputType::ControllerAnalog) {
@@ -487,11 +679,12 @@ namespace {
         return axis == SDL_CONTROLLER_AXIS_RIGHTX || axis == SDL_CONTROLLER_AXIS_RIGHTY;
     }
 
-    // One controller (or none) and/or the keyboard and mouse, through the single-player bindings.
+    // One controller (or none), through the controller profile `cont_profile`, and/or the keyboard and mouse, through
+    // the single-player keyboard profile.
     // With free_stick (Right Stick: Free Camera, while the stick turns the camera), the controller's
     // right stick presses no button: it turns the camera instead (mouse_camera.cpp). With swap_sticks
     // (Aiming: Swap Sticks, while aiming), the controller's two sticks are read the other way round.
-    void read_port(SDL_GameController* controller, bool keyboard, bool free_stick, bool swap_sticks, bool z_turns_aim, uint16_t* buttons, float* x, float* y) {
+    void read_port(SDL_GameController* controller, int cont_profile, bool keyboard, bool free_stick, bool swap_sticks, bool z_turns_aim, uint16_t* buttons, float* x, float* y) {
         using recompinput::GameInput;
         static constexpr uint16_t button_values[] = {
             0x8000, 0x4000, 0x2000, 0x0020, 0x0010, 0x1000, 0x0008,
@@ -499,7 +692,6 @@ namespace {
         };
         // A..C Right, then the D-pad (N64_BUTTON_COUNT stops at C Right).
         static_assert(std::size(button_values) == (size_t)GameInput::DPAD_RIGHT - (size_t)GameInput::N64_BUTTON_START + 1);
-        const int cont_profile = recompinput::profiles::get_sp_controller_profile_index();
         const int kb_profile = recompinput::profiles::get_sp_keyboard_profile_index();
         auto binding = [](int profile, GameInput input, size_t i) -> const recompinput::InputField& {
             return recompinput::profiles::get_input_binding(profile, input, i);
@@ -635,9 +827,16 @@ namespace {
             return false;
         }
         if (!recompinput::game_input_disabled()) {
+            // The player aiming with this controller: while the harness is used, its player's port in a netplay
+            // match (this machine's player of the same number).
+            const int player = conker::netplay_profile::active() ? conker::motion::local_port(port) : port;
             // Port 1 has the keyboard, and its controller once one has pressed a button.
-            read_port(port < count ? controllers[port] : nullptr, port == 0,
-                port == 0 && conker::mouse_camera::stick_turns_camera(), conker::look_aim::swap_sticks_now(port), conker::look_aim::z_turns_aim(port), buttons, x, y);
+            // In the bank's leaps with Aiming: Swap Sticks, player 1's right stick moves the crosshair: not the
+            // free camera's (which doesn't turn in a leap anyway: mouse_camera.cpp), and swapped.
+            const bool leap_swap = port == 0 && conker::look_aim::swap_sticks_in_leap();
+            read_port(port < count ? controllers[port] : nullptr, recompinput::profiles::get_sp_port_controller_profile_index(port), port == 0,
+                !leap_swap && conker::mouse_camera::stick_turns_camera(port),
+                leap_swap || conker::look_aim::swap_sticks_now(player), conker::look_aim::z_turns_aim(player), buttons, x, y);
         }
         return true;
     }
@@ -680,10 +879,13 @@ void conker::frontend::init(recomp::GameEntry& game) {
     // Versions of the ROM (the original, an uncensored ROM hack...) to switch between.
     recompui::register_launcher_init_callback(init_launcher);
     recompui::register_launcher_update_callback(update_launcher);
+    // While playing, the Quit prompt also offers Return to Launcher (issue #133).
+    recompui::register_return_to_launcher_action(conker::return_to_launcher);
 
     recompui::register_primary_font("InterVariable.ttf", "Inter Variable");
     recompui::register_ui_exports();
     recompinput::players::set_single_player_mode(true);
+    recompinput::playerassignment::set_single_player_callback(assign_ports);
     conker::init_config();
 
     // Texture packs (texture_packs.cpp).

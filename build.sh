@@ -21,6 +21,11 @@ for arg in "$@"; do
     esac
 done
 MACOS=
+# Netplay (CONKER_CMAKE_ARGS with -DCONKER_NETPLAY=ON, below) also needs protobuf and OpenSSL.
+NETPLAY=
+case " ${CONKER_CMAKE_ARGS:-} " in
+    *" -DCONKER_NETPLAY=ON "*) NETPLAY=1 ;;
+esac
 if [ "$(uname -s)" = Darwin ]; then
     MACOS=1
     # The decompilation's Makefiles need GNU coreutils (sha1sum --check, split
@@ -56,6 +61,12 @@ else
     cmds="git python3 cmake ninja clang pkg-config"
     libs="sdl2 dbus-1 freetype2"
 fi
+if [ -n "$NETPLAY" ]; then
+    cmds="$cmds protoc"
+    libs="$libs protobuf"
+    # Homebrew's OpenSSL isn't on pkg-config's path; CMake is pointed at it below.
+    [ -n "$MACOS" ] || libs="$libs openssl"
+fi
 for cmd in $cmds; do
     command -v "$cmd" >/dev/null 2>&1 || missing="$missing $cmd"
 done
@@ -68,6 +79,14 @@ if [ -n "$MACOS" ]; then
     packages="git python3 cmake ninja pkg-config sdl2 freetype"
 else
     packages="git python3 cmake ninja-build clang pkg-config libsdl2-dev libdbus-1-dev libfreetype-dev"
+fi
+if [ -n "$NETPLAY" ]; then
+    if [ -n "$MACOS" ]; then
+        packages="$packages protobuf openssl@3"
+        command -v brew >/dev/null 2>&1 && [ -d "$(brew --prefix openssl@3 2>/dev/null)" ] || missing="$missing openssl@3"
+    else
+        packages="$packages libprotobuf-dev protobuf-compiler libssl-dev"
+    fi
 fi
 if [ -n "$DECOMP" ]; then
     for cmd in make mips-linux-gnu-as; do
@@ -287,9 +306,12 @@ else
     HOST_CC=clang
     HOST_CXX=clang++
 fi
+# CONKER_CMAKE_ARGS: more options for that first configure, e.g. -DCONKER_NETPLAY=ON
+# (the CI's determinism check, netplay.yml). Later runs keep what host/build was configured with.
 if [ ! -f host/build/build.ninja ]; then
     cmake -S host -B host/build -G Ninja -DCMAKE_C_COMPILER="$HOST_CC" -DCMAKE_CXX_COMPILER="$HOST_CXX" \
-        -DCMAKE_BUILD_TYPE=RelWithDebInfo
+        -DCMAKE_BUILD_TYPE=RelWithDebInfo ${CONKER_CMAKE_ARGS:-} \
+        ${NETPLAY:+${MACOS:+-DOPENSSL_ROOT_DIR=$(brew --prefix openssl@3)}}
 fi
 cmake --build host/build
 

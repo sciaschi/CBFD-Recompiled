@@ -8,6 +8,7 @@
 #include "recomp.h"
 #include "librecomp/addresses.hpp"
 #include "librecomp/game.hpp"
+#include "ultramodern/timeline.hpp"
 #include "ultramodern/error_handling.hpp"
 #include "ultramodern/ultra64.h"
 
@@ -64,11 +65,39 @@ extern "C" void conker_spin_wait_pass(uint8_t* rdram, recomp_context* ctx) {
 // and the level's music played on, very loud). Waiting for the audio thread there doesn't work: it
 // takes the song up only once the game goes on. So until it has, the player reads as playing:
 // marked as just started when func_10008CE8 starts its song, and the mark cleared once the player
-// plays, when the game stops it, or after 500 ms (should the song never start).
+// plays, when the game stops it, or after 500 ms (should the song never start), on the game's clock:
+// in a replay or netplay that's the virtual timeline's (ultramodern/timeline.hpp), the same every run.
+extern "C" uint32_t osGetCount();
+
+namespace {
+    // The time the song marks go by: the game's clock, or in deterministic mode the timeline's time, which
+    // reading doesn't move (reading the game's clock there moves it a step, which the game would then see).
+    uint32_t song_clock() {
+        return ultramodern::timeline::enabled() ? (uint32_t)ultramodern::timeline::delivery_time() : osGetCount();
+    }
+}
 namespace {
     constexpr int sequence_players = 3; // D_8003C900
-    std::chrono::steady_clock::time_point song_started_at[sequence_players];
+    uint32_t song_started_at[sequence_players];
     bool song_just_started[sequence_players] = {};
+}
+
+// For save states (conker::host_state): each player's mark and when it was made.
+std::vector<uint32_t> conker::songs::marks() {
+    std::vector<uint32_t> out;
+    for (int player = 0; player < sequence_players; player++) {
+        out.push_back(song_just_started[player] ? 1 : 0);
+        out.push_back(song_started_at[player]);
+    }
+    return out;
+}
+
+void conker::songs::set_marks(const std::vector<uint32_t>& words) {
+    const bool complete = words.size() == 2 * sequence_players;
+    for (int player = 0; player < sequence_players; player++) {
+        song_just_started[player] = complete && words[2 * player] != 0;
+        song_started_at[player] = complete ? words[2 * player + 1] : 0;
+    }
 }
 
 // func_10008CE8 at 0x10008EC4, just after it starts the song: its player number is its first
@@ -79,7 +108,7 @@ extern "C" void conker_song_started(uint8_t* rdram, recomp_context* ctx) {
         return;
     }
     song_just_started[player] = true;
-    song_started_at[player] = std::chrono::steady_clock::now();
+    song_started_at[player] = song_clock();
 }
 
 // func_10008F24 (stop a player) at its start: $a0 the player number.
@@ -92,12 +121,13 @@ extern "C" void conker_song_stopped(uint8_t* rdram, recomp_context* ctx) {
 
 // func_1000853C (a player's state) at 0x10008560, after reading it: $v0 the state, $a1 the player.
 extern "C" void conker_song_state(uint8_t* rdram, recomp_context* ctx) {
-    constexpr auto start_limit = std::chrono::milliseconds(500);
+    constexpr uint32_t start_limit = 500 * 46'875; // ticks: the N64's clock runs at 46,875 a millisecond
     const uint32_t player = (uint32_t)ctx->r5 & 0xFF;
     if (player >= sequence_players || !song_just_started[player]) {
         return;
     }
-    if ((int32_t)ctx->r2 != 0 || std::chrono::steady_clock::now() - song_started_at[player] > start_limit) {
+    // (A difference of counts, so it's right across the count's wrap.)
+    if ((int32_t)ctx->r2 != 0 || song_clock() - song_started_at[player] > start_limit) {
         song_just_started[player] = false;
         return;
     }

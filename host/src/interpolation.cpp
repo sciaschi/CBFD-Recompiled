@@ -31,6 +31,7 @@
 // smoothing; on the frame after, all is right. Anywhere else a shadow shows up a frame
 // late, 1/30 of a second, after a cutscene or a load.
 
+#include <algorithm>
 #include <cstdint>
 #include <unordered_map>
 
@@ -102,6 +103,27 @@ namespace {
 
 void conker::shadows::game_frame() {
     game_frames++;
+}
+
+// For save states (conker::host_state): the game frames so far, then each shadow drawn and when, in
+// order (so the same state gives the same words).
+std::vector<uint32_t> conker::shadows::drawn() {
+    std::vector<std::pair<uint32_t, uint32_t>> shadows(shadow_last_drawn.begin(), shadow_last_drawn.end());
+    std::sort(shadows.begin(), shadows.end());
+    std::vector<uint32_t> out{ game_frames };
+    for (const auto& [shadow, frame] : shadows) {
+        out.push_back(shadow);
+        out.push_back(frame);
+    }
+    return out;
+}
+
+void conker::shadows::set_drawn(const std::vector<uint32_t>& words) {
+    shadow_last_drawn.clear();
+    game_frames = words.empty() ? 0 : words[0];
+    for (size_t i = 1; i + 1 < words.size(); i += 2) {
+        shadow_last_drawn[words[i]] = words[i + 1];
+    }
 }
 
 // func_1502CCFC, after its first instruction (the stack frame): $a0 is where it

@@ -1,5 +1,6 @@
 // The settings menu (recompui's config tabs) for the RT64 build.
 
+#include <cctype>
 #include <stdexcept>
 #include <filesystem>
 #include <fstream>
@@ -107,6 +108,11 @@ namespace {
         }
     }
 
+    // General: Start Game Directly (issue #133). main reads it before the tabs exist (start_game_directly), from
+    // the General tab's file, as the game is started then or the launcher shown.
+    const std::string start_directly_option = "start_game_directly";
+    enum class StartDirectly : uint32_t { Off, On };
+
     // The tabs the General tab's camera and aiming settings moved to (look_aim.cpp), and the Texture
     // Packs tab's one setting, moved to the end of the Graphics tab.
     const std::string camera_tab_id = "camera";
@@ -114,7 +120,7 @@ namespace {
     void carry_over_moved_settings() {
         carry_over(recompui::config::general::id, camera_tab_id, {
             "camera_invert_turning", "camera_turn_speed", "stick_free_camera", "camera_field_of_view_degrees",
-            "look_stick_response", "look_stick_invert", "aim_reticle", "aim_swap_sticks", "aim_lock_on" });
+            "look_stick_response", "look_stick_invert", "aim_reticle", "aim_reticle_size", "aim_swap_sticks", "aim_lock_on" });
         carry_over(recompui::config::general::id, mouse_gyro_tab_id, {
             recompui::config::general::options::mouse_sensitivity, "mouse_turns_camera", "look_mouse_response",
             "look_mouse_invert", recompui::config::general::options::gyro_sensitivity, "look_gyro_response",
@@ -141,10 +147,69 @@ namespace {
         set_game_input_description(GameInput::C_LEFT, "Rotates the camera.");
         set_game_input_description(GameInput::C_RIGHT, "Rotates the camera.");
         const char* dpad = "Unused in the main game. Mods may use it.";
-        set_game_input_description(GameInput::DPAD_UP, dpad);
-        set_game_input_description(GameInput::DPAD_DOWN, dpad);
+        set_game_input_description(GameInput::DPAD_UP, "Zooms the sniper scope in, with Aiming: Swap Sticks on (the stick walks then). "
+            "Otherwise unused in the main game; mods may use it.");
+        set_game_input_description(GameInput::DPAD_DOWN, "Zooms the sniper scope out, with Aiming: Swap Sticks on (the stick walks then). "
+            "Otherwise unused in the main game; mods may use it.");
         set_game_input_description(GameInput::DPAD_LEFT, dpad);
         set_game_input_description(GameInput::DPAD_RIGHT, dpad);
+    }
+
+    // The Controls tab's presets (issue #149), each the defaults (RecompFrontend's input_mapping.cpp: Standard) with
+    // its changes on top. The controller's set Aiming: Swap Sticks too, which Modern plays with.
+    void add_control_presets() {
+        using recompinput::GameInput;
+        using recompinput::InputDevice;
+        using recompinput::InputField;
+        auto button = [](SDL_GameControllerButton b) { return InputField::controller_digital(b); };
+        auto axis = [](SDL_GameControllerAxis a, bool positive) { return InputField::controller_analog(a, positive); };
+        auto key = [](SDL_Scancode k) { return InputField::keyboard(k); };
+
+        recompinput::add_input_preset({ "Standard", InputDevice::Controller, {}, [](int player) {
+            conker::look_aim::set_swap_sticks(player, false);
+        } });
+        // A modern third-person shooter's: LT aims (R), RT fires (Z), the right stick aims while aiming.
+        recompinput::add_input_preset({ "Modern", InputDevice::Controller, {
+            { GameInput::R, { button(SDL_CONTROLLER_BUTTON_RIGHTSHOULDER), axis(SDL_CONTROLLER_AXIS_TRIGGERLEFT, true) } },
+            { GameInput::Z, { axis(SDL_CONTROLLER_AXIS_TRIGGERRIGHT, true) } },
+        }, [](int player) {
+            conker::look_aim::set_swap_sticks(player, true);
+        } });
+        // The defaults before issue #149: the face buttons where an N64 controller has them (B on X, the C-buttons on
+        // Y, B, RB and the right stick's click), R on RT and Z on LT.
+        recompinput::add_input_preset({ "Old Skool", InputDevice::Controller, {
+            { GameInput::B, { button(recompinput::SDL_CONTROLLER_BUTTON_WEST) } },
+            { GameInput::R, { axis(SDL_CONTROLLER_AXIS_TRIGGERRIGHT, true) } },
+            { GameInput::Z, { axis(SDL_CONTROLLER_AXIS_TRIGGERLEFT, true) } },
+            { GameInput::C_LEFT, { axis(SDL_CONTROLLER_AXIS_RIGHTX, false), button(recompinput::SDL_CONTROLLER_BUTTON_NORTH) } },
+            { GameInput::C_RIGHT, { axis(SDL_CONTROLLER_AXIS_RIGHTX, true), button(recompinput::SDL_CONTROLLER_BUTTON_EAST) } },
+            { GameInput::C_UP, { axis(SDL_CONTROLLER_AXIS_RIGHTY, false), button(SDL_CONTROLLER_BUTTON_RIGHTSTICK) } },
+            { GameInput::C_DOWN, { axis(SDL_CONTROLLER_AXIS_RIGHTY, true), button(SDL_CONTROLLER_BUTTON_RIGHTSHOULDER) } },
+            { GameInput::BACK_MENU, { button(recompinput::SDL_CONTROLLER_BUTTON_WEST) } },
+        }, [](int player) {
+            conker::look_aim::set_swap_sticks(player, false);
+        } });
+
+        // With Z and R on the mouse buttons, the mouse turns the camera too (the C-buttons stay on IJKL).
+        recompinput::add_input_preset({ "Standard", InputDevice::Keyboard, {}, [](int) {
+            conker::look_aim::turn_on_mouse_camera();
+        } });
+        // The keyboard's defaults before issue #149.
+        recompinput::add_input_preset({ "Classic", InputDevice::Keyboard, {
+            { GameInput::B, { key(SDL_SCANCODE_LSHIFT) } },
+            { GameInput::L, { key(SDL_SCANCODE_E) } },
+            { GameInput::R, { key(SDL_SCANCODE_R) } },
+            { GameInput::Z, { key(SDL_SCANCODE_Q) } },
+            { GameInput::START, { key(SDL_SCANCODE_RETURN) } },
+            { GameInput::C_LEFT, { key(SDL_SCANCODE_LEFT) } },
+            { GameInput::C_RIGHT, { key(SDL_SCANCODE_RIGHT) } },
+            { GameInput::C_UP, { key(SDL_SCANCODE_UP) } },
+            { GameInput::C_DOWN, { key(SDL_SCANCODE_DOWN) } },
+            { GameInput::DPAD_LEFT, { key(SDL_SCANCODE_J) } },
+            { GameInput::DPAD_RIGHT, { key(SDL_SCANCODE_L) } },
+            { GameInput::DPAD_UP, { key(SDL_SCANCODE_I), InputField::mouse(InputField::mouse_wheel_up) } },
+            { GameInput::DPAD_DOWN, { key(SDL_SCANCODE_K), InputField::mouse(InputField::mouse_wheel_down) } },
+        }, nullptr });
     }
 }
 
@@ -166,7 +231,34 @@ void conker::init_config() {
     general_options.has_rumble_strength = false;
     general_options.has_gyro_sensitivity = false;
     general_options.has_mouse_sensitivity = false;
-    conker::rumble::add_options(recompui::config::create_general_tab(general_options));
+    recomp::config::Config& general_config = recompui::config::create_general_tab(general_options);
+    conker::rumble::add_options(general_config);
+    conker::more_bots::add_options(general_config);
+    conker::notices::add_options(general_config);
+    conker::local_achievements::add_options(general_config);
+    conker::save_states::add_options(general_config);
+    conker::cheat_codes::add_options(general_config);
+    conker::texture_packs::add_notification_options(general_config);
+#if defined(CONKER_NETPLAY)
+    conker::netplay_status::add_options(general_config);
+#endif
+    {
+        static const std::vector<recomp::config::ConfigOptionEnumOption> choices = {
+            {StartDirectly::Off, "Off", "Off"},
+            {StartDirectly::On, "On", "On"},
+        };
+        general_config.add_enum_option(start_directly_option, "Start Game Directly",
+            "Starts the game as soon as the program opens, without the launcher, once a ROM has been picked. Takes "
+            "effect the next time it's opened. To get to the launcher while playing (to install mods or turn them on or "
+            "off), choose <b>Return to Launcher</b> in the Quit prompt (the settings' top right): the program restarts "
+            "at the launcher.",
+            choices, StartDirectly::Off);
+    }
+#if defined(CONKER_NETPLAY)
+    // Netplay next to General, where it's always in sight: with every tab, the last ones are past the bar's
+    // edge, and during a match this is where a player leaves, or the host kicks or moves people.
+    conker::netplay_menu::add_tab();
+#endif
     conker::look_aim::add_camera_options(recompui::config::create_config_tab("Camera", camera_tab_id, false));
     conker::look_aim::add_mouse_gyro_options(recompui::config::create_config_tab("Mouse & Gyro", mouse_gyro_tab_id, false));
 
@@ -175,9 +267,11 @@ void conker::init_config() {
     conker::texture_packs::add_options(graphics_config);
 
     set_control_descriptions();
+    add_control_presets();
+    conker::look_aim::add_player_toggles();
     recompui::config::create_controls_tab();
 
-    recompui::config::create_sound_tab();
+    conker::sound_volumes::add_options(recompui::config::create_sound_tab());
 
     conker::local_achievements::add_tab();
 
@@ -202,7 +296,8 @@ bool conker::graphics_config_ready() {
 }
 
 bool conker::cutscene_aspect::in_4x3() {
-    if (!conker::graphics_config_ready()) {
+    // The netplay settings profile: Expand, the default (the bars are drawn from game memory).
+    if (!conker::graphics_config_ready() || conker::netplay_profile::active()) {
         return false;
     }
     const auto value = recompui::config::get_graphics_config().get_option_value(cutscene_aspect_id);
@@ -218,7 +313,8 @@ bool conker::overscan_borders::hidden() {
 }
 
 bool conker::model_detail::always_highest() {
-    if (!conker::graphics_config_ready()) {
+    // The netplay settings profile: Always Highest, the default.
+    if (!conker::graphics_config_ready() || conker::netplay_profile::active()) {
         return true;
     }
     const auto value = recompui::config::get_graphics_config().get_option_value(conker_detail_id);
@@ -231,4 +327,21 @@ bool conker::fps_counter::enabled() {
     }
     const auto value = recompui::config::get_graphics_config().get_option_value(show_fps_id);
     return static_cast<ShowFps>(std::get<uint32_t>(value)) == ShowFps::On;
+}
+
+bool conker::start_game_directly() {
+    std::ifstream file(recomp::get_config_path() / (recompui::config::general::id + ".json"));
+    if (!file) {
+        return false;
+    }
+    const nlohmann::json json = nlohmann::json::parse(file, nullptr, false);
+    if (!json.is_object() || !json.contains(start_directly_option) || !json[start_directly_option].is_string()) {
+        return false;
+    }
+    // Enum values are kept by their keys, as the config reads them (any case).
+    std::string value = json[start_directly_option].get<std::string>();
+    for (char& c : value) {
+        c = (char)std::tolower((unsigned char)c);
+    }
+    return value == "on";
 }

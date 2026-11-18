@@ -40,8 +40,10 @@ yourself instead, read on.
   stays out of walls, camera turning speed and inversion, and a Field of View
   setting.
 - An aiming **Reticle**, a green ring like Live & Reloaded's, and **Swap Sticks**
-  and **Lock-On** options for aiming.
-- Full audio: music, sound effects and the voice acting.
+  and **Lock-On** options for aiming. With Swap Sticks, Conker walks while aiming,
+  the sniper scope included (zooming with the D-pad or the mouse wheel).
+- Full audio: music, sound effects and the voice acting, each with a volume of its
+  own (Music, Sound Effects and Speech, under the Main Volume).
 - Saving (EEPROM), stored per user.
 - A launcher with settings, controls and a mod menu (RecompFrontend, as in
   Zelda 64: Recompiled and Banjo: Recompiled).
@@ -49,15 +51,20 @@ yourself instead, read on.
   lights (the bar's lantern, the N64 logo), drawn as on the N64.
 - **Conker's Detail** keeps Conker on his most detailed model, and **Show FPS**
   puts a frame rate counter in the corner.
+- Shadows ease toward the light they're cast from, instead of snapping about with
+  flickering lights.
 - Achievements, the program's own, for reaching the game's scenes.
-- ROM hacks that only change the game's assets, such as the uncensored and the
-  Russian translation ROMs, with the launcher switching between them.
+- ROM hacks that only change the game's assets, such as the uncensored ROM and the
+  Russian, German and Brazilian Portuguese translations, with the launcher switching
+  between them.
 - Mod support (`.nrm` mods: function patches and hooks). Three mods are
   included: **Skip Intro**, **Skip Any Cutscene** and **Cheats**.
-- Texture packs (RT64's `.rtz`, and GLideN64's `.htc`), for HD textures and
+- Texture packs (RT64's `.rtz`, and GLideN64's `.htc` and `.hts`), for HD textures and
   other replacements.
 - Save states: save anywhere with F5 and load with F7, in nine slots
   ([how to use them, and how they work](docs/save-states.md)).
+- Netplay (built with the CMake option `CONKER_NETPLAY`, off by default): online
+  multiplayer from the launcher's **Netplay** menu. See [Netplay](#netplay).
 
 ## Status
 
@@ -76,7 +83,9 @@ The game is playable, and has been played through to the end. Known issues:
 
 If the game crashes on Windows, a report is written to `crash.log` next to the
 executable and shown in a message box. On Linux and macOS, the crash report is printed
-to the terminal. Please include it when reporting a problem.
+to the terminal, or, started from the desktop, to `conker.log` next to the game (in your user
+folder on macOS, or where the game's folder can't be written to); the run before is kept as
+`conker.prev.log`. Please include it when reporting a problem.
 
 ## What you need to build it
 
@@ -232,7 +241,10 @@ IDO's macOS build from
 Run `host/build/ConkerRecomp` (Linux and macOS) or `host\build-win\ConkerRecomp.exe`
 (Windows). The first time, pick **Load ROM** in the launcher and select your ROM
 (the same `baserom.us.z64` works). After that it's remembered, so just choose
-**Start Game**.
+**Start Game**. With **Start Game Directly** on the General tab, the game starts as
+soon as the program opens, without the launcher. To get to the launcher while
+playing (to install mods or turn them on or off), choose **Return to Launcher** in
+the settings' Quit prompt: the program restarts at the launcher.
 
 - **Settings** (in the launcher, or Esc / the controller's menu button in game)
   has its options by tab: General (deadzone, rumble), Camera (turning, the free
@@ -243,22 +255,82 @@ Run `host/build/ConkerRecomp` (Linux and macOS) or `host\build-win\ConkerRecomp.
   ones its Chapters menu lists), from the first death to the end credits. They're
   kept on this computer, in `achievements.txt` with the settings, and the
   Achievements tab lists them. Only what you do in play counts: scenes a save
-  had already reached unlock when a new game reaches them.
+  had already reached unlock when a new game reaches them. **Achievement
+  Notifications** on the General tab turns off the line in the corner as one
+  unlocks; they still unlock and are listed. **Notifications** above it turns off
+  every line the program shows in the corner (achievements, save states, the
+  texture pack's F8), and each kind has its own setting too.
 - Saves, settings and the stored ROM live in `~/.config/ConkerRecompiled` on
   Linux, `~/Library/Application Support/ConkerRecompiled` on macOS and
   `%LOCALAPPDATA%\ConkerRecompiled` on Windows. Put an empty `portable.txt` next
   to the executable to keep them there instead.
 - **Save states**: F5 saves the game exactly as it is, F7 loads it back, F6
-  picks the next of the nine slots. They never touch the game's own saves. See
-  [docs/save-states.md](docs/save-states.md).
-- Default keyboard controls: move with WASD, A = Space, B = Left Shift,
-  Z = Q, L = E, R = R, Start = Enter, C buttons = arrow keys, D-pad = IJKL.
-  Everything can be remapped in Controls.
+  picks the next of the nine slots (rebind them, to keys, mouse or controller
+  buttons, in the Controls tab's **Hotkeys**). They never touch the game's own saves. See
+  [docs/save-states.md](docs/save-states.md). **Save State Notifications** on the
+  General tab turns off the line in the corner saying a state was saved or loaded,
+  or another slot picked (one saying it couldn't be still shows).
+- Default controller controls: A = A, B = B, Z = either trigger, L = LB,
+  R = RB, C buttons = right stick (C-Up on its click too), in the menus A accepts
+  and B goes back.
+- Default keyboard controls: move with WASD, A = Space, B = E, Z = left click,
+  R = right click, L = Enter (skips cutscenes), Start = Tab, C buttons = IJKL,
+  D-pad = arrow keys (up and down also on the mouse wheel). The mouse starts off
+  (the cursor free), and the first click or scroll while playing turns it on,
+  at Mouse: Sensitivity 50, so it aims and turns the camera; after that, a
+  sensitivity of 0 you set yourself stays. Everything can be
+  remapped in Controls, and **Reset to defaults** there brings these back for a
+  profile made before they changed.
+- **Presets and profiles** (Controls tab): **Load preset** puts a ready-made
+  layout in the profile: for controllers **Standard** (the defaults), **Modern**
+  (LT = R to aim, RT = Z, and Aiming: Swap Sticks on) and **Old Skool** (the
+  N64-style layout from before, B on X); for the keyboard **Standard** (which
+  also turns the mouse camera on, at Mouse: Sensitivity 50 if it was off) and
+  **Classic** (the old keyboard layout). **New profile** makes your own, a copy
+  of the one in use that you can name and remap; the **Profile** list at the top
+  picks which one you play with, for the controller and the keyboard each.
+- **Players' controllers** (Controls tab, issue #160): controllers take players
+  1-4 in the order they first press a button. **Assign controllers** picks the
+  order instead (each player presses a button on theirs, in turn), until the game
+  is closed. The **Player** list beside the profile picks each player's own
+  controller profile, or **Same as Player 1** (the default). The keyboard and
+  mouse are always player 1's. Beside the keyboard switch at the bottom, **Swap
+  Sticks** and **Free Camera** are the picked player's own Aiming: Swap Sticks
+  and Right Stick: Free Camera (player 1's are the Camera tab's), so in split
+  screen each player can have them on or off; the **Modern** preset turns Swap
+  Sticks on for the player it's loaded for.
 - N64 pads and adapters for real N64 controllers (raphnet-tech's, Mayflash,
   Hyperkin, the NSO and 8BitDo 64 controllers) are mapped from
   `assets/controllerdb.txt`, with the C buttons as the right stick. A controller
   SDL doesn't know can be given a mapping in the `SDL_GAMECONTROLLERCONFIG`
   environment variable, which takes precedence.
+
+## Netplay
+
+Built with `-DCONKER_NETPLAY=ON` (see [tools/netplay/README.md](tools/netplay/README.md) for what it
+needs), the launcher has a **Netplay** menu: every player runs the game on their own computer and sees
+the match on their own screen. Everyone needs the same build and the same ROM, with no mods on.
+
+- **Hosting:** by a join code (your address and a forwarded UDP port), or visible to games on the same
+  network with no code at all. With a netplay server set (Settings; there's none by default, and anyone
+  can run one: [tools/netplay/server](tools/netplay/server/README.md)), also through a room code with no
+  port to forward, a public room list and Quick Match. Matches through a server go through its relay by
+  default, so nobody sees anyone's address.
+- **The waiting room:** players mark themselves Ready and the host starts; the host can kick a player,
+  and anyone can block one. Several players can play on one computer, each with their own controller.
+  Others see you by a name made from a random player id, kept in `netplay.json`. It stays the same in
+  every match and on every server (that's how blocking and coming back to your place work), so players
+  who meet you again can tell it's you. **New name** (Settings) makes a new id.
+- **During a match:** players can leave and come back, and new players or spectators can join a match
+  under way. If one game drifts from the host's (a desync), the host sends its game and the match goes on.
+  Each player gets their own input delay, sized for their connection; a computer that falls behind
+  catches up, and one whose inputs stop is let go of a while and comes back by itself. **Rollback** (the
+  host's choice, on by default) hides lag by predicting the others' inputs and correcting them.
+- **Screens:** by default each player sees only their own view, full screen (the host decides).
+
+Each run writes `conker.log` next to the game (in your user folder on macOS, or where the game's folder
+can't be written to), and keeps the run before as `conker.prev.log`: attach them to netplay reports.
+They don't hold join codes, private room codes or other players' addresses.
 
 ## ROM hacks
 
@@ -268,6 +340,19 @@ US ROM. The recompiled code only comes from the ROM's code, which has to be the 
 ROM's, so hacks that change the game's code are refused. A hack that repacks the
 game's compressed code without changing it, as the Russian fan translation does, is
 checked unpacked and plays too (**Version: US Russian**).
+
+The translations known by name, each a patch you apply to your own US ROM (none is
+included here):
+
+- **US Russian**, the Russian fan translation.
+- **US German**, [ConkerDeutschMod](https://github.com/niehoff90/ConkerDeutschMod) 0.2.0,
+  German voices and text.
+- **US Brazilian Portuguese** and **US Brazilian Portuguese Uncensored**, the
+  translation by João13, Mumm-Ra and By FTR (1.0.1). Its own boot screen isn't shown:
+  the recompiled game doesn't run the ROM's boot code, and the rest plays as it is.
+
+Other versions of these, or other hacks of the US ROM's assets, play too, listed as
+**US ROM hack** with the start of their hash.
 
 The launcher's **Version** option says which ROM is in play, with its region (for
 example **Version: US Original** or **Version: US Uncensored**), and so does the
@@ -316,10 +401,12 @@ Mods menu), then pick it in **Settings > Graphics > Texture Pack**, which turns 
 the other packs off. Packs installed while the game runs are listed there from
 the next start. Its default, **Set in the Mods Menu**, leaves them to the
 **Mods** menu instead, where several can be on at once (later ones in the list
-take precedence).
+take precedence). While playing, **F8** switches between the texture pack and
+the game's own textures, to compare them (**Texture Pack On/Off** in the
+Controls tab's **Hotkeys** binds it to another key or a button).
 
 GLideN64 texture packs (for Project64 and RetroArch) work too. Install the
-pack's `.htc` file the same way (**Install Mods** or dropped onto the Mods menu),
+pack's `.htc` or `.hts` file the same way (**Install Mods** or dropped onto the Mods menu),
 or put it in the `mods` folder and start the game or press the Mods menu's
 refresh button: it's unpacked, once, into a pack folder beside it, with its
 progress shown (a large pack takes a minute or so), and turned on. It's then in
