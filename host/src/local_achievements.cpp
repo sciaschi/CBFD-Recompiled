@@ -8,7 +8,8 @@
 // keeps a bit per scene, set as you reach it: the menu (func_1503FB40) reads the bitfield from the pointer at
 // D_800D2E4C, the scene's bit at its index in the table (func_1509CA98 gives the index of the menu's nth
 // scene). So an achievement here is a scene whose bit is set, and the last one is every scene the game sets
-// in a finished save.
+// in a finished save. The rest, earned by how you play (bosses without losing a life, multiplayer wins), are told by
+// achievement_play.cpp (earn), from the scenes reached here and the game's memory.
 //
 // Each game frame (conker_frame_dl_begin, widescreen.cpp) the bits are read, and an achievement whose scene's
 // bit is set is unlocked: a line in the corner (notices.cpp) and achievements.txt in the config folder
@@ -72,6 +73,8 @@ namespace {
 
     // The scene for each achievement, by its index in the game's table, with the table's name for it.
     constexpr int every_scene = -1;
+    // Not a scene: achievement_play.cpp says when (earn).
+    constexpr int by_play = -2;
     struct Achievement {
         const char* id;
         const char* title;
@@ -117,6 +120,30 @@ namespace {
         // End of Game Cutscene and Credits, though a finished save hasn't its bit: also the end's million (finish_game).
         { "credits", "What a Day", "Finish the game.", 0xC7 },
         { "every_scene", "Every Chapter", "Reach every scene in the Chapters menu.", every_scene },
+        // Earned by how you play (achievement_play.cpp, issue #171): the story's survival and collecting, then
+        // multiplayer.
+        { "sp_haystack", "Needle in a Haystack", "Beat the haystack without losing a life.", by_play },
+        { "sp_poo", "Royal Flush", "Flush the Great Mighty Poo without losing a life.", by_play },
+        { "sp_boiler", "Keep Your Cool", "Beat the boiler without losing a life.", by_play },
+        { "sp_batula", "Fangs for Nothing", "Get past Count Batula without losing a life.", by_play },
+        { "sp_alien", "Game Over, Man", "Beat the alien without losing a life.", by_play },
+        { "sp_chapter", "Clean Chapter", "Get through a whole chapter without losing a life.", by_play },
+        { "sp_iron_squirrel", "Iron Squirrel", "Finish the game from a new game without losing a life.", by_play },
+        { "sp_nine_lives", "Nine Lives", "Have 9 or more squirrel tails at once.", by_play },
+        { "sp_wad_of_cash", "Wad of Cash", "Collect $2,000 in one game, from a new game.", by_play },
+        { "mp_win_deathmatch", "Last Squirrel Standing", "Win a Deathmatch.", by_play },
+        { "mp_win_war", "War Is Hell", "Win a War match.", by_play },
+        { "mp_win_heist", "Smash and Grab", "Win a Heist.", by_play },
+        { "mp_win_beach", "Shore Thing", "Win a Beach match.", by_play },
+        { "mp_win_raptor", "Clever Girl", "Win a Raptor match.", by_play },
+        { "mp_win_tank", "Tank Commander", "Win a Tank match.", by_play },
+        { "mp_win_race", "Pole Position", "Win a Race.", by_play },
+        { "mp_flawless", "Untouchable", "Win a Deathmatch without dying.", by_play },
+        { "mp_sharpshooter", "Sharpshooter", "Win a multiplayer match with 75% accuracy or better, from 20 shots or more.", by_play },
+        { "mp_army", "Against All Odds", "Win a multiplayer match with 12 or more characters in it (Multiplayer Characters).", by_play },
+        { "mp_team", "Team Player", "Win a team match with another player on your side.", by_play },
+        { "mp_four", "Full House", "Play a 4-player multiplayer match to the end.", by_play },
+        { "mp_online", "Net Gain", "Win an online (netplay) match.", by_play },
     };
     constexpr size_t achievement_count = std::size(achievement_list);
 
@@ -174,6 +201,8 @@ namespace {
     bool have_bits = false;
     // A save state was loaded (from the safe point's thread): the next bits read are its, not reached in play.
     std::atomic<bool> state_just_loaded = false;
+    // The same, for achievement_play.cpp (told on the game thread).
+    std::atomic<bool> play_state_just_loaded = false;
     // What the save had before it was played (read at the menus, or loaded at once): reaching those again
     // earns nothing. Only a bit set in play, past this, unlocks.
     std::vector<bool> baseline(scene_count, false);
@@ -254,9 +283,12 @@ namespace {
             add_text(left, "Achievements", recompui::theme::Typography::Header3, recompui::theme::color::Text);
             add_text(left, std::to_string(unlocked.size()) + " of " + std::to_string(achievement_count) + " unlocked",
                 recompui::theme::Typography::Body, recompui::theme::color::Text);
-            add_text(left, "Earned as you reach the game's scenes, the ones its Chapters menu lists. They're kept on this "
-                "computer, in achievements.txt with the other settings.", recompui::theme::Typography::Body, recompui::theme::color::TextDim);
-            add_text(left, "Only what you do in play counts: scenes a save had already reached unlock when a new game reaches them.",
+            add_text(left, "Earned as you reach the game's scenes, the ones its Chapters menu lists, and by how you play: "
+                "bosses and chapters without losing a life, and multiplayer matches won by anyone playing on this computer. "
+                "They're kept on this computer, in achievements.txt with the other settings.",
+                recompui::theme::Typography::Body, recompui::theme::color::TextDim);
+            add_text(left, "Only what you do in play counts: scenes a save had already reached unlock when a new game reaches them. "
+                "Cheats and loading a save state end a no-lives-lost run.",
                 recompui::theme::Typography::Body, recompui::theme::color::TextDim);
 
             recompui::Element* right = body->get_right();
@@ -305,6 +337,7 @@ namespace {
 }
 
 void conker::local_achievements::init() {
+    conker::achievement_play::init();
     unlocks_path = recomp::get_config_path() / "achievements.txt";
     std::ifstream file(unlocks_path);
     std::string line;
@@ -327,6 +360,20 @@ void conker::local_achievements::init() {
 
 void conker::local_achievements::state_loaded() {
     state_just_loaded = true;
+    play_state_just_loaded = true;
+}
+
+bool conker::local_achievements::earn(const char* id) {
+    for (size_t i = 0; i < achievement_count; i++) {
+        if (std::strcmp(achievement_list[i].id, id) == 0) {
+            if (!unlock(i)) {
+                return false;
+            }
+            notify_unlock(achievement_list[i].title);
+            return true;
+        }
+    }
+    return false;
 }
 
 void conker::local_achievements::add_options(recomp::config::Config& config) {
@@ -348,6 +395,15 @@ void conker::local_achievements::add_tab() {
 }
 
 void conker::local_achievements::game_frame(uint8_t* rdram) {
+    {
+        int32_t scene_in_play = 0;
+        std::memcpy(&scene_in_play, rdram + (scene_in_play_address - 0x80000000), sizeof(scene_in_play));
+        const bool at_menu = scene_in_play == scene_logos || scene_in_play == scene_opening || scene_in_play == scene_bar_menu;
+        if (play_state_just_loaded.exchange(false)) {
+            conker::achievement_play::state_loaded();
+        }
+        conker::achievement_play::game_frame(rdram, !at_menu);
+    }
     // The pointer, as the game holds its words; the bits, as its bytes.
     uint32_t pointer = 0;
     std::memcpy(&pointer, rdram + (scenes_reached_pointer - 0x80000000), sizeof(pointer));
@@ -403,17 +459,27 @@ void conker::local_achievements::game_frame(uint8_t* rdram) {
         // What the save already had: it counts for nothing. A new game (bits cleared) starts it over.
         // A new game (bits cleared to a few: 0x00, 0x02, 0x03 and 0xBF, the opening's, set at the menu) starts
         // the baseline empty, so starting the story counts once play begins; another save's, at what it has.
+        const bool new_game = cleared && reached_count <= new_game_bits;
         if (cleared) {
-            baseline = reached_count <= new_game_bits ? std::vector<bool>(scene_count, false) : bits;
+            baseline = new_game ? std::vector<bool>(scene_count, false) : bits;
         }
         else {
             baseline = merged(baseline, bits);
         }
+        conker::achievement_play::save_loaded(bits, new_game);
         return;
     }
 
+    for (uint32_t scene = 0; scene < scene_count; scene++) {
+        if (bits[scene] && !baseline[scene]) {
+            conker::achievement_play::scene_reached((int)scene);
+        }
+    }
     for (size_t i = 0; i < achievement_count; i++) {
         const int scene = achievement_list[i].scene;
+        if (scene == by_play) {
+            continue;
+        }
         const bool earned = scene == every_scene ? (!was_every && every_scene_reached(bits)) : (bits[scene] && !baseline[scene]);
         if (earned && unlock(i)) {
             notify_unlock(achievement_list[i].title);
@@ -449,12 +515,14 @@ extern "C" void conker_stat_change(uint8_t* rdram, recomp_context* ctx) {
     std::memcpy(&cash, rdram + (0x800D2148 - 0x80000000), sizeof(cash));
     // The end of the game gives Conker a million: What a Day, if it's in play (not a menu, where a save's cash
     // is put back).
-    if ((what == 9 || what == 10) && amount >= 1000000 && scene != scene_logos && scene != scene_opening && scene != scene_bar_menu) {
-        for (size_t i = 0; i < achievement_count; i++) {
-            if (std::strcmp(achievement_list[i].id, "credits") == 0 && unlock(i)) {
-                notify_unlock(achievement_list[i].title);
-            }
-        }
+    const bool in_play = scene != scene_logos && scene != scene_opening && scene != scene_bar_menu;
+    if ((what == 9 || what == 10) && amount >= 1000000 && in_play) {
+        conker::local_achievements::earn("credits");
+        conker::achievement_play::finished_game();
+    }
+    // Cash collected, for Wad of Cash (not the end's million).
+    if (what == 10 && in_play) {
+        conker::achievement_play::cash_added(amount);
     }
     std::printf("[cash] %s %d in scene 0x%02X (cash was %d; this run: %lld added, %lld spent)%s\n",
         what == 9 ? "set to" : what == 10 ? "add" : "spend", amount, scene, cash, (long long)added, (long long)taken,
