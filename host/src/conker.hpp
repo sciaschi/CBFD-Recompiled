@@ -44,6 +44,12 @@ namespace conker {
         void set_dl_ring(uint32_t slot);
     }
 
+    // grey_frame.cpp: It's War's black and white newspaper, greyed by RT64 (issue #162).
+    namespace grey_frame {
+        // Whether the frame whose display list is being made is greyed once drawn.
+        bool this_frame(uint8_t* rdram);
+    }
+
     // rom_versions.cpp: the ROMs the game accepts, and the versions of them kept for the
     // launcher to switch between.
     namespace roms {

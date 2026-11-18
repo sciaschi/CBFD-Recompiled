@@ -511,6 +511,13 @@ func = "func_151D61B0"
 before_vram = 0x151D61B0
 text = "{ extern int conker_pause_skip_blur(uint8_t*, recomp_context*); if (conker_pause_skip_blur(rdram, ctx)) return; }"
 
+# It's War's black and white newspaper isn't greyed on the CPU by func_150AF790 (a frame effect, after the RDP
+# drew the frame): RT64 greys its picture instead (host/src/grey_frame.cpp, issue #162).
+[[patches.hook]]
+func = "func_150AF790"
+before_vram = 0x150AF790
+text = "{ extern int conker_grey_skip_cpu(uint8_t*, recomp_context*); if (conker_grey_skip_cpu(rdram, ctx)) return; }"
+
 # Graphics: Conker's Detail: each game frame func_1502C6E8 picks every object's model by how far
 # it is from the camera; at 0x1502C92C the level is picked ($v1) and not yet compared with the
 # object's last, and Conker's is set to 0, his most detailed (host/src/model_detail.cpp).

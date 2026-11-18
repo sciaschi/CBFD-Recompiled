@@ -319,8 +319,9 @@ extern "C" void conker_frame_dl_begin(uint8_t* rdram, recomp_context* ctx) {
         const int32_t frame_width = MEM_W(0, (gpr)(int32_t)0x800BE620); // D_800BE620
         RT64::setPresentationCrop((conker::overscan_borders::hidden() && frame_width > 4) ? 2.0f / (float)frame_width : 0.0f);
     }
-    // The motion blur ran in this frame: no frames drawn between it and the next (conker_motion_blur).
-    RT64::setInterpolationPaused(motion_blur_this_frame);
+    // The motion blur ran in this frame: no frames drawn between it and the next (conker_motion_blur). Nor in a
+    // frame RT64 greys (grey_frame.cpp): the frames between would be drawn in colour.
+    RT64::setInterpolationPaused(motion_blur_this_frame || conker::grey_frame::this_frame(rdram));
     motion_blur_this_frame = false;
     conker::fps_counter::game_frame();
 #endif
