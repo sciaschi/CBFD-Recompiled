@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1920 1080" preserveAspectRatio="none">
+  <!-- The launcher's backdrop (host/src/frontend.cpp): warm browns with a glow behind the title, faint wood
+       grain and a vignette, stretched to the window (nothing in it minds). The leaves are their own
+       pictures, leaf_*.svg, placed at a fixed size. Plain shapes and gradients only (no filters). -->
+  <defs>
+    <radialGradient id="glow" cx="50%" cy="30%" r="75%">
+      <stop offset="0" stop-color="#8a4316"/>
+      <stop offset="0.35" stop-color="#4a210c"/>
+      <stop offset="0.75" stop-color="#22100a"/>
+      <stop offset="1" stop-color="#120806"/>
+    </radialGradient>
+    <radialGradient id="vignette" cx="50%" cy="45%" r="72%">
+      <stop offset="0.6" stop-color="#000000" stop-opacity="0"/>
+      <stop offset="1" stop-color="#000000" stop-opacity="0.6"/>
+    </radialGradient>
+    <linearGradient id="floor" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#000000" stop-opacity="0"/>
+      <stop offset="1" stop-color="#000000" stop-opacity="0.45"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1920" height="1080" fill="url(#glow)"/>
+
+  <!-- Wood grain: long, gentle curves. -->
+  <g fill="none" stroke="#f3b36b" stroke-opacity="0.05" stroke-width="3">
+    <path d="M-40,700 C400,660 700,760 1100,700 S1700,640 1980,690"/>
+    <path d="M-40,760 C380,720 760,820 1120,760 S1680,700 1980,750"/>
+    <path d="M-40,830 C420,790 720,900 1160,830 S1720,770 1980,820"/>
+    <path d="M-40,910 C360,870 780,980 1140,910 S1700,850 1980,900"/>
+    <path d="M-40,1000 C400,960 740,1060 1100,1000 S1660,940 1980,990"/>
+    <path d="M-40,180 C420,220 760,120 1160,180 S1720,240 1980,190"/>
+    <path d="M-40,110 C380,150 800,50 1120,110 S1700,170 1980,120"/>
+  </g>
+  <rect y="540" width="1920" height="540" fill="url(#floor)"/>
+
+  <rect width="1920" height="1080" fill="url(#vignette)"/>
+</svg>

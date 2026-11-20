@@ -41,6 +41,7 @@ namespace {
     constexpr uint32_t rt64_hook_op_enable = 0x1;
     constexpr uint32_t rt64_extended_opcode = 0x64;
     constexpr uint32_t g_ex_fillrect_v1 = 0x000003;
+    constexpr uint32_t g_ex_conkergreyframebuffer_v1 = 0x000035;
     constexpr uint32_t g_ex_origin_none = 0x800;
     // How far past the frame's sides the bars reach, in N64 pixels: past any window's edge.
     constexpr int32_t bar_reach = 2048;
@@ -108,13 +109,19 @@ void conker::cutscene_aspect::update(uint8_t* rdram) {
 
 // func_1501878C at 0x15018C8C: the frame's display list is drawn; its full sync and end come next,
 // written at the pointer $s1 points to.
+//
+// It's War's black and white newspaper (grey_frame.cpp, issue #162) is asked for in the same list: RT64 greys the
+// frame's picture once it's drawn (gEXConkerGreyFramebuffer, of the colour image set then).
 extern "C" void conker_frame_dl_end(uint8_t* rdram, recomp_context* ctx) {
-    if (!pillarbox) {
-        return;
-    }
+#if defined(CONKER_RT64)
+    const bool grey = conker::grey_frame::this_frame(rdram);
+#else
+    const bool grey = false;
+#endif
     const int32_t width = MEM_W(0, (gpr)(int32_t)frame_width);
     const int32_t height = MEM_W(0, (gpr)(int32_t)frame_height);
-    if (width <= 0 || height <= 0 || width > 1024 || height > 1024) {
+    const bool bars = pillarbox && width > 0 && height > 0 && width <= 1024 && height <= 1024;
+    if (!bars && !grey) {
         return;
     }
 
@@ -122,13 +129,18 @@ extern "C" void conker_frame_dl_end(uint8_t* rdram, recomp_context* ctx) {
     bars_dl_next = (bars_dl_next + 1) % bars_dl_slots;
     gpr dl = (gpr)(int32_t)(0x80000000u | bars_dl);
     put_command(rdram, dl, (rt64_hook_opcode << 24) | rt64_hook_magic, (rt64_hook_op_enable << 28) | rt64_extended_opcode);
-    put_command(rdram, dl, 0xE7000000, 0);                          // G_RDPPIPESYNC
-    // The whole frame as the scissor: RT64 widens a scissor that spans the frame to the window.
-    put_command(rdram, dl, 0xED000000, ((uint32_t)(width * 4) << 12) | (uint32_t)(height * 4));
-    put_command(rdram, dl, 0xE3000A01, 0x00300000);                 // G_SETOTHERMODE_H: cycle type fill
-    put_command(rdram, dl, 0xF7000000, 0);                          // G_SETFILLCOLOR: black
-    put_fill(rdram, dl, -bar_reach, 0, bar_overlap, height);
-    put_fill(rdram, dl, width - bar_overlap, 0, width + bar_reach, height);
+    if (bars) {
+        put_command(rdram, dl, 0xE7000000, 0);                      // G_RDPPIPESYNC
+        // The whole frame as the scissor: RT64 widens a scissor that spans the frame to the window.
+        put_command(rdram, dl, 0xED000000, ((uint32_t)(width * 4) << 12) | (uint32_t)(height * 4));
+        put_command(rdram, dl, 0xE3000A01, 0x00300000);             // G_SETOTHERMODE_H: cycle type fill
+        put_command(rdram, dl, 0xF7000000, 0);                      // G_SETFILLCOLOR: black
+        put_fill(rdram, dl, -bar_reach, 0, bar_overlap, height);
+        put_fill(rdram, dl, width - bar_overlap, 0, width + bar_reach, height);
+    }
+    if (grey) {
+        put_command(rdram, dl, (rt64_extended_opcode << 24) | g_ex_conkergreyframebuffer_v1, 0); // the colour image now
+    }
     put_command(rdram, dl, 0xDF000000, 0);                          // G_ENDDL
 
     // The call, in place of where the game's full sync goes (which then follows it).

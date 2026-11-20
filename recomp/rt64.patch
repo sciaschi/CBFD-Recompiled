@@ -27,21 +27,22 @@ index 79dfc38..6467e67 100644
  build_compute_shader(rt64 "src/shaders/HistogramAverageCS.hlsl")
  build_compute_shader(rt64 "src/shaders/HistogramClearCS.hlsl")
 diff --git a/include/rt64_extended_gbi.h b/include/rt64_extended_gbi.h
-index d387090..094290e 100644
+index d387090..7ea51d2 100644
 --- a/include/rt64_extended_gbi.h
 +++ b/include/rt64_extended_gbi.h
-@@ -80,7 +80,9 @@
+@@ -80,7 +80,10 @@
  #define G_EX_SETVERTEXSEGMENT_V1        0x000031
  #define G_EX_SETTEXCOORDWRAPPOINT_V1    0x000032
  #define G_EX_SETRECTASPECT_V1           0x000033
 -#define G_EX_MAX                        0x000034
 +#define G_EX_CONKERBLURFRAMEBUFFER_V1   0x000034 // Conker: see gEXConkerBlurFramebuffer
-+#define G_EX_CONKERFOCUSPLACED_V1       0x000035 // Conker: see gEXConkerFocusPlaced
-+#define G_EX_MAX                        0x000036
++#define G_EX_CONKERGREYFRAMEBUFFER_V1   0x000035 // Conker: see gEXConkerGreyFramebuffer
++#define G_EX_CONKERFOCUSPLACED_V1       0x000036 // Conker: see gEXConkerFocusPlaced
++#define G_EX_MAX                        0x000037
  
  #define G_EX_ORIGIN_NONE            0x800
  #define G_EX_ORIGIN_LEFT            0x0
-@@ -113,6 +115,9 @@
+@@ -113,6 +116,9 @@
  #define G_EX_ASPECT_AUTO            0x0
  #define G_EX_ASPECT_STRETCH         0x1
  #define G_EX_ASPECT_ADJUST          0x2
@@ -51,7 +52,7 @@ index d387090..094290e 100644
  
  #define G_EX_VERTEX_POSITION        0x0
  #define G_EX_VERTEX_VELOCITY        0x1
-@@ -579,4 +584,30 @@ typedef union {
+@@ -579,4 +585,39 @@ typedef union {
          PARAM(aspect, 2, 0) \
      )
  
@@ -63,6 +64,15 @@ index d387090..094290e 100644
 +    G_EX_COMMAND1(cmd, \
 +        PARAM(RT64_EXTENDED_OPCODE, 8, 24) | PARAM(G_EX_CONKERBLURFRAMEBUFFER_V1, 24, 0), \
 +        PARAM(strength, 8, 24) | PARAM(address, 24, 0) \
++    )
++
++// Conker: once the frame's last framebuffer pair drawing into the color image at address (24 bits) is drawn, its high
++// resolution picture is turned grey: each pixel's green in all three channels. The newspaper of It's War's intro (Conker's
++// own greys the frame on the CPU, in RDRAM, after the RDP has drawn it: func_150B1DB0). Address 0: the color image set now.
++#define gEXConkerGreyFramebuffer(cmd, address) \
++    G_EX_COMMAND1(cmd, \
++        PARAM(RT64_EXTENDED_OPCODE, 8, 24) | PARAM(G_EX_CONKERGREYFRAMEBUFFER_V1, 24, 0), \
++        PARAM(address, 24, 0) \
 +    )
 +
 +// Conker: netplay's "my view only" redraws each shown view elsewhere in the frame and moves its rectangles with it
@@ -534,10 +544,10 @@ index 69c35d2..bcea8ec 100644
      };
  
 diff --git a/src/gbi/rt64_gbi_extended.cpp b/src/gbi/rt64_gbi_extended.cpp
-index 20c0d4d..5f0b85d 100644
+index 20c0d4d..5270017 100644
 --- a/src/gbi/rt64_gbi_extended.cpp
 +++ b/src/gbi/rt64_gbi_extended.cpp
-@@ -331,6 +331,16 @@ namespace RT64 {
+@@ -331,6 +331,20 @@ namespace RT64 {
              state->rdp->setRectAspect(aspect);
          }
  
@@ -547,6 +557,10 @@ index 20c0d4d..5f0b85d 100644
 +            state->setConkerBlurFramebuffer(address, strength);
 +        }
 +
++        void conkerGreyFramebufferV1(State *state, DisplayList **dl) {
++            state->setConkerGreyFramebuffer((*dl)->p1(0, 24));
++        }
++
 +        void conkerFocusPlacedV1(State *state, DisplayList **dl) {
 +            state->rdp->setConkerFocusPlaced((*dl)->p1(30, 2), (*dl)->p1(24, 3), (*dl)->p1(8, 10), (*dl)->p1(0, 8));
 +        }
@@ -554,11 +568,12 @@ index 20c0d4d..5f0b85d 100644
          void noOpHook(State *state, DisplayList **dl) {
              uint32_t magicNumber = (*dl)->p0(0, 24);
              if (magicNumber == RT64_HOOK_MAGIC_NUMBER) {
-@@ -439,6 +449,8 @@ namespace RT64 {
+@@ -439,6 +453,9 @@ namespace RT64 {
              Map[G_EX_SETVERTEXSEGMENT_V1] = &setVertexSegmentV1;
              Map[G_EX_SETTEXCOORDWRAPPOINT_V1] = &setTexcoordWrapPointV1;
              Map[G_EX_SETRECTASPECT_V1] = &setRectAspectV1;
 +            Map[G_EX_CONKERBLURFRAMEBUFFER_V1] = &conkerBlurFramebufferV1;
++            Map[G_EX_CONKERGREYFRAMEBUFFER_V1] = &conkerGreyFramebufferV1;
 +            Map[G_EX_CONKERFOCUSPLACED_V1] = &conkerFocusPlacedV1;
              MapInitialized = true;
          }
@@ -2398,7 +2413,7 @@ index 61bb3b1..b76a3d6 100644
          void setVertexSegmentV1(bool isEnabled, uint32_t vertexElement, uint32_t vertexAddress, uint32_t baseSegmentAddress);
          template<uint32_t floatCount, uint32_t vertexSize>
 diff --git a/src/hle/rt64_state.cpp b/src/hle/rt64_state.cpp
-index 2970e71..3e8520a 100644
+index 2970e71..20fd97e 100644
 --- a/src/hle/rt64_state.cpp
 +++ b/src/hle/rt64_state.cpp
 @@ -4,6 +4,8 @@
@@ -2532,7 +2547,7 @@ index 2970e71..3e8520a 100644
      void State::dpInterrupt() {
          *MI_INTR_REG |= MI_INTR_DP;
          checkInterrupts();
-@@ -2727,6 +2789,13 @@ namespace RT64 {
+@@ -2727,6 +2789,20 @@ namespace RT64 {
      void State::setDitherNoiseStrength(float noiseStrength) {
          extended.ditherNoiseStrength = noiseStrength;
      }
@@ -2543,11 +2558,18 @@ index 2970e71..3e8520a 100644
 +        workload.extended.conkerBlurAddress = address & 0x00FFFFFF;
 +        workload.extended.conkerBlurStrength = strength;
 +    }
++
++    // Conker: gEXConkerGreyFramebuffer, for the workload being made (WorkloadQueue greys the picture as it draws it).
++    void State::setConkerGreyFramebuffer(uint32_t address) {
++        Workload &workload = ext.workloadQueue->workloads[ext.workloadQueue->writeCursor];
++        // 0: the color image set now.
++        workload.extended.conkerGreyAddress = ((address != 0) ? address : rdp->colorImage.address) & 0x00FFFFFF;
++    }
      
      void State::setExtendedRDRAM(bool isExtended) {
          extended.extendRDRAM = isExtended;
 diff --git a/src/hle/rt64_state.h b/src/hle/rt64_state.h
-index 7a8c13b..8400363 100644
+index 7a8c13b..bd14d52 100644
 --- a/src/hle/rt64_state.h
 +++ b/src/hle/rt64_state.h
 @@ -153,6 +153,7 @@ namespace RT64 {
@@ -2558,16 +2580,17 @@ index 7a8c13b..8400363 100644
          void dpInterrupt();
          void spInterrupt();
          void advanceFramebufferRenderer();
-@@ -165,6 +166,7 @@ namespace RT64 {
+@@ -165,6 +166,8 @@ namespace RT64 {
          void setDitherNoiseStrength(float noiseStrength);
          void setExtendedRDRAM(bool isExtended);
          void setTexcoordWrapPoint(int16_t wrapU, int16_t wrapV);
 +        void setConkerBlurFramebuffer(uint32_t address, uint8_t strength);
++        void setConkerGreyFramebuffer(uint32_t address);
          void startSpriteCommand(uint64_t replacementHash);
          void endSpriteCommand();
          uint8_t *fromRDRAM(uint32_t rdramAddress) const;
 diff --git a/src/hle/rt64_workload.cpp b/src/hle/rt64_workload.cpp
-index b4c85f5..d025d8b 100644
+index b4c85f5..2793924 100644
 --- a/src/hle/rt64_workload.cpp
 +++ b/src/hle/rt64_workload.cpp
 @@ -4,7 +4,33 @@
@@ -2604,16 +2627,17 @@ index b4c85f5..d025d8b 100644
      // Common functions.
  
      static uint64_t roundUp(uint64_t value, uint64_t powerOf2Alignment) {
-@@ -22,6 +48,8 @@ namespace RT64 {
+@@ -22,6 +48,9 @@ namespace RT64 {
          workloadId = 0;
          extended.testZIndexCount = 0;
          extended.ditherNoiseStrength = 1.0f;
 +        extended.conkerBlurAddress = 0;
 +        extended.conkerBlurStrength = 0;
++        extended.conkerGreyAddress = 0;
  
          commandWarnings.clear();
          spriteCommands.clear();
-@@ -68,6 +96,8 @@ namespace RT64 {
+@@ -68,6 +97,8 @@ namespace RT64 {
          drawData.rspViewports.clear();
          drawData.viewportClipRatios.clear();
          drawData.viewportOrigins.clear();
@@ -2622,7 +2646,7 @@ index b4c85f5..d025d8b 100644
          drawData.rspFog.clear();
          drawData.rspLights.clear();
          drawData.rspLookAt.clear();
-@@ -102,6 +132,8 @@ namespace RT64 {
+@@ -102,6 +133,8 @@ namespace RT64 {
  
          // Push an identity matrix into the transforms by default so rects can use them.
          drawData.rspViewports.push_back(interop::RSPViewport::identity());
@@ -2631,7 +2655,7 @@ index b4c85f5..d025d8b 100644
          drawData.viewTransforms.push_back(interop::float4x4::identity());
          drawData.projTransforms.push_back(interop::float4x4::identity());
          drawData.viewProjTransforms.push_back(interop::float4x4::identity());
-@@ -315,6 +347,82 @@ namespace RT64 {
+@@ -315,6 +348,82 @@ namespace RT64 {
          return addedPair;
      }
  
@@ -2715,7 +2739,7 @@ index b4c85f5..d025d8b 100644
          if (fbPairCount > 0) {
              return fbPairCount - 1;
 diff --git a/src/hle/rt64_workload.h b/src/hle/rt64_workload.h
-index 8ea27d5..d28d37e 100644
+index 8ea27d5..becae48 100644
 --- a/src/hle/rt64_workload.h
 +++ b/src/hle/rt64_workload.h
 @@ -23,6 +23,19 @@
@@ -2747,7 +2771,7 @@ index 8ea27d5..d28d37e 100644
          std::vector<interop::RSPFog> rspFog;
          std::vector<interop::RSPLight> rspLights;
          std::vector<interop::RSPLookAt> rspLookAt;
-@@ -234,11 +249,16 @@ namespace RT64 {
+@@ -234,11 +249,18 @@ namespace RT64 {
          uint64_t workloadId = 0;
          uint64_t presentId = 0;
          bool paused = false;
@@ -2761,10 +2785,12 @@ index 8ea27d5..d28d37e 100644
 +            // Conker: the color image whose picture is blurred once drawn, and by how much (gEXConkerBlurFramebuffer).
 +            uint32_t conkerBlurAddress = 0;
 +            uint8_t conkerBlurStrength = 0;
++            // Conker: the color image whose picture is turned grey once drawn (gEXConkerGreyFramebuffer).
++            uint32_t conkerGreyAddress = 0;
          } extended;
  
          void reset();
-@@ -253,5 +273,17 @@ namespace RT64 {
+@@ -253,5 +275,17 @@ namespace RT64 {
          void begin(uint64_t submissionFrame);
          bool addFramebufferPair(uint32_t colorAddress, uint8_t colorFmt, uint8_t colorSiz, uint16_t colorWidth, uint32_t depthAddress);
          int currentFramebufferPairIndex() const;
@@ -2784,7 +2810,7 @@ index 8ea27d5..d28d37e 100644
  };
 \ No newline at end of file
 diff --git a/src/hle/rt64_workload_queue.cpp b/src/hle/rt64_workload_queue.cpp
-index 5a331aa..c2c5f25 100644
+index 5a331aa..77773ca 100644
 --- a/src/hle/rt64_workload_queue.cpp
 +++ b/src/hle/rt64_workload_queue.cpp
 @@ -4,6 +4,8 @@
@@ -2927,7 +2953,7 @@ index 5a331aa..c2c5f25 100644
                              FramebufferChange *depthFbChange = depthFb->readChangeFromStorage(ext.workloadGraphicsWorker, workload.fbStorage, scratchFbChangePool, Framebuffer::Type::Depth,
                                  G_IM_FMT_DEPTH, f, depthFb->readHeight, readRowCount, ext.shaderLibrary);
  
-@@ -811,6 +874,26 @@ namespace RT64 {
+@@ -811,6 +874,40 @@ namespace RT64 {
                          overrideTarget->resolveFromTarget(ext.workloadGraphicsWorker, colorTarget, ext.shaderLibrary);
                      }
  
@@ -2951,10 +2977,24 @@ index 5a331aa..c2c5f25 100644
 +                        }
 +                    }
 +
++                    // Conker: the picture asked for with gEXConkerGreyFramebuffer is turned grey the same way, once the frame's
++                    // last pair drawing into it is drawn: all of the target, the widened sides too.
++                    const uint32_t conkerGreyAddress = workload.extended.conkerGreyAddress;
++                    if ((conkerGreyAddress != 0) && (colorTarget != nullptr) && ((colorImg.address & 0x00FFFFFF) == conkerGreyAddress)) {
++                        bool lastPair = true;
++                        for (uint32_t g = f + 1; (g < fbPairCount) && lastPair; g++) {
++                            lastPair = ((workload.fbPairs[g].colorImage.address & 0x00FFFFFF) != conkerGreyAddress);
++                        }
++
++                        if (lastPair) {
++                            colorTarget->conkerGrey(ext.workloadGraphicsWorker, ext.shaderLibrary);
++                        }
++                    }
++
                      const uint64_t writeTimestamp = fbManager.nextWriteTimestamp();
                      FixedRect depthFbRect;
                      if (colorFb != nullptr) {
-@@ -986,7 +1069,7 @@ namespace RT64 {
+@@ -986,7 +1083,7 @@ namespace RT64 {
                      matchingProfiler.log();
  
                      const bool displayRateAboveOriginal = (workload.viOriginalRate > 0) && (workloadConfig.targetRate > workload.viOriginalRate);
@@ -3413,7 +3453,7 @@ index e842dcc..5b0ff63 100644
      }
  
 diff --git a/src/render/rt64_render_target.cpp b/src/render/rt64_render_target.cpp
-index 81917bc..34c6034 100644
+index 81917bc..502f55c 100644
 --- a/src/render/rt64_render_target.cpp
 +++ b/src/render/rt64_render_target.cpp
 @@ -5,6 +5,7 @@
@@ -3424,7 +3464,7 @@ index 81917bc..34c6034 100644
  
  #include "gbi/rt64_f3d.h"
  #include "shared/rt64_fb_common.h"
-@@ -51,6 +52,13 @@ namespace RT64 {
+@@ -51,6 +52,15 @@ namespace RT64 {
          textureResolveDescSet.reset();
          filterDescSet.reset();
          fbWriteDescSet.reset();
@@ -3435,10 +3475,12 @@ index 81917bc..34c6034 100644
 +        conkerBlurSmall[0].reset();
 +        conkerBlurSmall[1].reset();
 +        conkerBlurFull.reset();
++        conkerGreySet.reset();
++        conkerGreyFull.reset();
      }
  
      bool RenderTarget::resize(RenderWorker *worker, uint32_t newWidth, uint32_t newHeight) {
-@@ -407,6 +415,132 @@ namespace RT64 {
+@@ -407,6 +417,197 @@ namespace RT64 {
          worker->commandList->dispatch(dispatchX, dispatchY, 1);
      }
  
@@ -3568,14 +3610,79 @@ index 81917bc..34c6034 100644
 +        worker->commandList->barriers(RenderBarrierStage::GRAPHICS_AND_COMPUTE, RenderTextureBarrier(picture, RenderTextureLayout::SHADER_READ));
 +    }
 +
++    // Conker: turns the picture grey in place, each pixel's green in all three channels, as the N64's func_150B1DB0 does to
++    // the frame in RDRAM (It's War's intro). Into a picture of its own (ConkerBlurCS, Mode 3) and copied back in, in the
++    // texture the target is read from, as conkerBlur. For gEXConkerGreyFramebuffer (WorkloadQueue).
++    void RenderTarget::conkerGrey(RenderWorker *worker, const ShaderLibrary *shaderLibrary) {
++        assert(worker != nullptr);
++
++        if ((texture == nullptr) || (width == 0) || (height == 0)) {
++            return;
++        }
++
++        resolveTarget(worker, shaderLibrary);
++
++        RenderTexture *picture = getResolvedTexture();
++        if ((conkerGreyFull == nullptr) || (conkerGreyRevision != textureRevision) || (conkerGreyWidth != width) || (conkerGreyHeight != height)) {
++            const RenderTextureFlags flags = RenderTextureFlag::STORAGE | RenderTextureFlag::UNORDERED_ACCESS;
++            conkerGreyFull = worker->device->createTexture(RenderTextureDesc::Texture2D(width, height, 1, format, flags));
++            conkerGreyFull->setName("Render Target Conker Grey #" + std::to_string(addressForName));
++            conkerGreySet = std::make_unique<BoxFilterDescriptorSet>(worker->device);
++            conkerGreySet->setTexture(conkerGreySet->gInput, picture, RenderTextureLayout::SHADER_READ);
++            conkerGreySet->setTexture(conkerGreySet->gOutput, conkerGreyFull.get(), RenderTextureLayout::GENERAL);
++            conkerGreyRevision = textureRevision;
++            conkerGreyWidth = width;
++            conkerGreyHeight = height;
++        }
++
++        struct ConkerBlurCB {
++            interop::uint2 InputResolution;
++            interop::uint2 OutputResolution;
++            uint32_t Mode;
++            uint32_t Radius;
++            float Sigma;
++            uint32_t Padding;
++        };
++
++        ConkerBlurCB greyCB;
++        greyCB.InputResolution = { width, height };
++        greyCB.OutputResolution = { width, height };
++        greyCB.Mode = 3;
++        greyCB.Radius = 0;
++        greyCB.Sigma = 0.0f;
++        greyCB.Padding = 0;
++        const RenderTextureBarrier greyBarriers[] = {
++            RenderTextureBarrier(picture, RenderTextureLayout::SHADER_READ),
++            RenderTextureBarrier(conkerGreyFull.get(), RenderTextureLayout::GENERAL)
++        };
++
++        worker->commandList->barriers(RenderBarrierStage::COMPUTE, greyBarriers, uint32_t(std::size(greyBarriers)));
++        worker->commandList->setPipeline(shaderLibrary->conkerBlur.pipeline.get());
++        worker->commandList->setComputePipelineLayout(shaderLibrary->conkerBlur.pipelineLayout.get());
++        worker->commandList->setComputePushConstants(0, &greyCB);
++        worker->commandList->setComputeDescriptorSet(conkerGreySet->get(), 0);
++        const uint32_t BlockSize = 8;
++        worker->commandList->dispatch((width + BlockSize - 1) / BlockSize, (height + BlockSize - 1) / BlockSize, 1);
++
++        const RenderTextureBarrier copyBarriers[] = {
++            RenderTextureBarrier(conkerGreyFull.get(), RenderTextureLayout::COPY_SOURCE),
++            RenderTextureBarrier(picture, RenderTextureLayout::COPY_DEST)
++        };
++
++        worker->commandList->barriers(RenderBarrierStage::COPY, copyBarriers, uint32_t(std::size(copyBarriers)));
++        const RenderBox greyBox(0, 0, int32_t(width), int32_t(height));
++        worker->commandList->copyTextureRegion(RenderTextureCopyLocation::Subresource(picture), RenderTextureCopyLocation::Subresource(conkerGreyFull.get()), 0, 0, 0, &greyBox);
++        worker->commandList->barriers(RenderBarrierStage::GRAPHICS_AND_COMPUTE, RenderTextureBarrier(picture, RenderTextureLayout::SHADER_READ));
++    }
++
      void RenderTarget::resolveTarget(RenderWorker *worker, const ShaderLibrary *shaderLibrary) {
          if (!resolvedTextureDirty || !usesResolve()) {
              return;
 diff --git a/src/render/rt64_render_target.h b/src/render/rt64_render_target.h
-index 82d8a36..5f20fe8 100644
+index 82d8a36..b474e68 100644
 --- a/src/render/rt64_render_target.h
 +++ b/src/render/rt64_render_target.h
-@@ -35,6 +35,15 @@ namespace RT64 {
+@@ -35,6 +35,21 @@ namespace RT64 {
          std::unique_ptr<TextureCopyDescriptorSet> textureResolveDescSet;
          std::unique_ptr<BoxFilterDescriptorSet> filterDescSet;
          std::unique_ptr<FramebufferWriteDescriptorTextureSet> fbWriteDescSet;
@@ -3588,14 +3695,21 @@ index 82d8a36..5f20fe8 100644
 +        uint32_t conkerBlurWidth = 0;
 +        uint32_t conkerBlurHeight = 0;
 +        uint32_t conkerBlurDownsample = 0;
++        // Conker: conkerGrey's picture and its descriptor set, kept for the target's textures and size they were made for.
++        std::unique_ptr<RenderTexture> conkerGreyFull;
++        std::unique_ptr<BoxFilterDescriptorSet> conkerGreySet;
++        uint64_t conkerGreyRevision = 0;
++        uint32_t conkerGreyWidth = 0;
++        uint32_t conkerGreyHeight = 0;
          uint32_t addressForName = 0;
          uint32_t width = 0;
          uint32_t height = 0;
-@@ -63,6 +72,7 @@ namespace RT64 {
+@@ -63,6 +78,8 @@ namespace RT64 {
          void clearColorTarget(RenderWorker *worker);
          void clearDepthTarget(RenderWorker *worker);
          void downsampleTarget(RenderWorker *worker, const ShaderLibrary *shaderLibrary);
 +        void conkerBlur(RenderWorker *worker, const ShaderLibrary *shaderLibrary, uint32_t blurWidth, uint32_t blurHeight, uint32_t downsample, float sigma);
++        void conkerGrey(RenderWorker *worker, const ShaderLibrary *shaderLibrary);
          void resolveTarget(RenderWorker *worker, const ShaderLibrary *shaderLibrary);
          void recordRasterResolve(RenderWorker *worker, const TextureCopyDescriptorSet *srcDescriptorSet, uint32_t x, uint32_t y, uint32_t width, uint32_t height, const ShaderLibrary *shaderLibrary);
          void markForResolve();
@@ -3985,10 +4099,10 @@ index 8a3782a..6fd46b1 100644
          const RenderSampler *descriptorSetSampler = nullptr;
 diff --git a/src/shaders/ConkerBlurCS.hlsl b/src/shaders/ConkerBlurCS.hlsl
 new file mode 100644
-index 0000000..5abf5f7
+index 0000000..1568b7b
 --- /dev/null
 +++ b/src/shaders/ConkerBlurCS.hlsl
-@@ -0,0 +1,60 @@
+@@ -0,0 +1,68 @@
 +//
 +// RT64
 +//
@@ -3997,6 +4111,8 @@ index 0000000..5abf5f7
 +// 0 and 1 blur a picture across and down (a separable Gaussian, Radius texels each way), and 2 scales
 +// the blurred picture back up to the target's size, bilinearly. Texels are read with Load, so no
 +// sampler is involved and the picture's edges are clamped to.
++// Mode 3 (RenderTarget::conkerGrey, It's War's intro) turns the picture grey: each texel's green in all three channels,
++// as Conker greys the frame on the N64.
 +
 +#define BLOCK_SIZE 8
 +
@@ -4021,6 +4137,12 @@ index 0000000..5abf5f7
 +[numthreads(BLOCK_SIZE, BLOCK_SIZE, 1)]
 +void CSMain(uint2 coord : SV_DispatchThreadID) {
 +    if ((coord.x >= gConstants.OutputResolution.x) || (coord.y >= gConstants.OutputResolution.y)) {
++        return;
++    }
++
++    if (gConstants.Mode == 3) {
++        const float4 texel = gInput.Load(int3(coord, 0));
++        gOutput[coord] = float4(texel.g, texel.g, texel.g, texel.a);
 +        return;
 +    }
 +

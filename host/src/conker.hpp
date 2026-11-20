@@ -44,6 +44,12 @@ namespace conker {
         void set_dl_ring(uint32_t slot);
     }
 
+    // grey_frame.cpp: It's War's black and white newspaper, greyed by RT64 (issue #162).
+    namespace grey_frame {
+        // Whether the frame whose display list is being made is greyed once drawn.
+        bool this_frame(uint8_t* rdram);
+    }
+
     // rom_versions.cpp: the ROMs the game accepts, and the versions of them kept for the
     // launcher to switch between.
     namespace roms {
@@ -303,6 +309,9 @@ namespace conker {
         // Turns the mouse camera on (Mouse: Sensitivity 50 if it was 0, and Mouse: Turn the Camera), for the
         // keyboard's Standard preset, which has Z and R on the mouse buttons (conker_config.cpp).
         void turn_on_mouse_camera();
+        // Each frame, on the main thread (frontend.cpp): with `mouse_used` (a mouse button or the wheel in play since
+        // the last frame), turns the mouse on (Mouse: Sensitivity 50) if it has never been on.
+        void update_mouse_first_use(bool mouse_used);
         // Aiming: Swap Sticks (issue #84): whether a player (0 to 3) is aiming now (either aiming mode
         // ran for their camera in the last few frames) with the setting on, so their controller's sticks
         // are swapped (frontend.cpp): the right stick aims and the left moves. Not with recompinput's own
@@ -417,6 +426,26 @@ namespace conker {
         // Save states (save_states.cpp), as one is loaded: the scenes it has are put back with the game's memory,
         // so they count for nothing, as a save's do.
         void state_loaded();
+        // For achievement_play.cpp: unlocks the achievement `id` (false if it was already, or there's none).
+        bool earn(const char* id);
+    }
+
+    // achievement_play.cpp: the achievements earned by how you play (issue #171), told by local_achievements.cpp.
+    namespace achievement_play {
+        // With local_achievements::init: reads the game's run so far.
+        void init();
+        // Each game frame; in_play is false at the menus.
+        void game_frame(uint8_t* rdram, bool in_play);
+        // A scene's bit set in play (not a save's, read in).
+        void scene_reached(int scene);
+        // A save's bits read in, at the menus: a new game's (new_game), or another save's.
+        void save_loaded(const std::vector<bool>& bits, bool new_game);
+        // A save state loaded.
+        void state_loaded();
+        // The end of the game (its million).
+        void finished_game();
+        // Player 1's cash collected in the story.
+        void cash_added(int64_t amount);
     }
 
 #if defined(CONKER_RT64) && defined(CONKER_NETPLAY)
